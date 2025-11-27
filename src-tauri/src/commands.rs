@@ -282,7 +282,9 @@ pub fn play_recording(app: tauri::AppHandle, path: String, speed: f32) -> Result
         let mut last_mouse_move_time = 0u64;
         let mut event_count = 0u64;
         const MAX_EVENTS: u64 = 100000; // Safety limit
-        const MIN_MOUSE_MOVE_INTERVAL_MS: u64 = 10; // Minimum 10ms between mouse moves
+        // Minimum interval between mouse move events in the recording (based on event time offset)
+        // This helps prevent system overload from too many rapid mouse moves
+        const MIN_MOUSE_MOVE_INTERVAL_MS: u64 = 5; // 5ms minimum between recorded mouse moves
         
         loop {
             // Safety check: prevent infinite loops
@@ -316,19 +318,19 @@ pub fn play_recording(app: tauri::AppHandle, path: String, speed: f32) -> Result
             }
             
             if let Some(event) = event_opt {
-                // Skip mouse move events that are too frequent
+                // For mouse move events, only skip if the time difference from last mouse move
+                // is too small (based on recorded event times, not system time)
                 if matches!(event.event_type, crate::recording::EventType::MouseMove) {
-                    let current_time = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    
-                    if current_time.saturating_sub(last_mouse_move_time) < MIN_MOUSE_MOVE_INTERVAL_MS {
-                        // Skip this mouse move event to prevent system overload
-                        last_time = event.time_offset_ms;
-                        continue;
+                    if last_mouse_move_time > 0 {
+                        let time_diff = event.time_offset_ms.saturating_sub(last_mouse_move_time);
+                        // Skip only if the recorded interval is less than minimum
+                        if time_diff < MIN_MOUSE_MOVE_INTERVAL_MS && time_diff > 0 {
+                            // Update last_time but skip execution
+                            last_time = event.time_offset_ms;
+                            continue;
+                        }
                     }
-                    last_mouse_move_time = current_time;
+                    last_mouse_move_time = event.time_offset_ms;
                 }
                 
                 // Calculate delay based on time offset
