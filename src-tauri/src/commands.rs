@@ -34,6 +34,13 @@ fn get_app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+pub fn get_recording_status() -> Result<bool, String> {
+    let state = RECORDING_STATE.clone();
+    let state_guard = state.lock().map_err(|e| e.to_string())?;
+    Ok(state_guard.is_recording)
+}
+
+#[tauri::command]
 pub fn start_recording() -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
@@ -44,7 +51,19 @@ pub fn start_recording() -> Result<(), String> {
     let mut state_guard = state.lock().map_err(|e| e.to_string())?;
     
     if state_guard.is_recording {
-        return Err("Already recording".to_string());
+        // If already recording, try to stop and clean up first
+        state_guard.stop();
+        drop(state_guard);
+        hooks::windows::uninstall_hooks().ok(); // Try to uninstall hooks, ignore errors
+        // Try again
+        let mut state_guard = state.lock().map_err(|e| e.to_string())?;
+        if state_guard.is_recording {
+            return Err("Already recording".to_string());
+        }
+        state_guard.start();
+        drop(state_guard);
+        hooks::windows::install_hooks(state)?;
+        return Ok(());
     }
 
     state_guard.start();

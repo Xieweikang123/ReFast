@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import type { RecordingMeta } from "../types";
 
 export const tauriApi = {
+  async getRecordingStatus(): Promise<boolean> {
+    return invoke("get_recording_status");
+  },
+
   async startRecording(): Promise<void> {
     return invoke("start_recording");
   },

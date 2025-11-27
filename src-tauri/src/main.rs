@@ -14,6 +14,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
+            get_recording_status,
             start_recording,
             stop_recording,
             list_recordings,

@@ -15,7 +15,21 @@ function App() {
 
   useEffect(() => {
     loadRecordings();
+    // Sync recording status on app start
+    syncRecordingStatus();
   }, []);
+
+  const syncRecordingStatus = async () => {
+    try {
+      const isRecording = await tauriApi.getRecordingStatus();
+      if (isRecording && status !== "recording") {
+        setStatus("recording");
+        setMessage("检测到正在录制中...");
+      }
+    } catch (error) {
+      console.error("Failed to sync recording status:", error);
+    }
+  };
 
   // Poll playback progress when playing
   useEffect(() => {

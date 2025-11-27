@@ -27,11 +27,11 @@ export const RecordControls: React.FC<RecordControlsProps> = ({
         </button>
         <button
           onClick={onStop}
-          disabled={!isRecording}
-          className={`px-4 py-2 rounded ${
+          {...(!isRecording && { disabled: true })}
+          className={`px-4 py-2 rounded transition-colors ${
             !isRecording
-              ? "bg-gray-300 cursor-not-allowed"
-              : "bg-gray-500 hover:bg-gray-600 text-white"
+              ? "bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
+              : "bg-gray-600 hover:bg-gray-700 active:bg-gray-800 text-white cursor-pointer font-medium"
           }`}
         >
           停止录制
