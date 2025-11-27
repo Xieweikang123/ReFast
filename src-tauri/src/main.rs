@@ -17,6 +17,7 @@ fn main() {
             start_recording,
             stop_recording,
             list_recordings,
+            delete_recording,
             play_recording,
             stop_playback,
             get_playback_progress,

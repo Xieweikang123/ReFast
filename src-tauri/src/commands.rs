@@ -146,6 +146,37 @@ pub fn list_recordings(app: tauri::AppHandle) -> Result<Vec<RecordingMeta>, Stri
     Ok(recordings)
 }
 
+#[tauri::command]
+pub fn delete_recording(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    let recordings_dir = app_data_dir.join("recordings");
+    
+    // Remove "recordings/" prefix if present
+    let file_path = if path.starts_with("recordings/") {
+        let filename = path.strip_prefix("recordings/")
+            .ok_or_else(|| format!("Invalid path format: {}", path))?;
+        recordings_dir.join(filename)
+    } else {
+        recordings_dir.join(&path)
+    };
+    
+    // Validate that the file exists and is within the recordings directory
+    if !file_path.exists() {
+        return Err(format!("Recording file not found: {}", path));
+    }
+    
+    // Ensure the file is actually within the recordings directory (security check)
+    if !file_path.starts_with(&recordings_dir) {
+        return Err("Invalid file path: outside recordings directory".to_string());
+    }
+    
+    // Delete the file
+    fs::remove_file(&file_path)
+        .map_err(|e| format!("Failed to delete recording file: {}", e))?;
+    
+    Ok(())
+}
+
 fn extract_recording_meta(file_path: &Path, recordings_dir: &Path) -> Result<RecordingMeta, String> {
     // Read file content
     let content = fs::read_to_string(file_path)

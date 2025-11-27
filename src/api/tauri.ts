@@ -14,6 +14,10 @@ export const tauriApi = {
     return invoke("list_recordings");
   },
 
+  async deleteRecording(path: string): Promise<void> {
+    return invoke("delete_recording", { path });
+  },
+
   async playRecording(path: string, speed: number): Promise<void> {
     return invoke("play_recording", { path, speed });
   },

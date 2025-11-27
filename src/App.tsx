@@ -103,6 +103,22 @@ function App() {
     setSelectedRecordingPath(recording.file_path);
   };
 
+  const handleDeleteRecording = async (recording: RecordingMeta) => {
+    try {
+      await tauriApi.deleteRecording(recording.file_path);
+      setMessage(`已删除录制: ${recording.file_name}`);
+      // Reload recordings list
+      await loadRecordings();
+      // Clear selection if deleted recording was selected
+      if (selectedRecordingPath === recording.file_path) {
+        setSelectedRecordingPath("");
+      }
+    } catch (error) {
+      setMessage(`删除录制失败: ${error}`);
+      console.error("Failed to delete recording:", error);
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-white">
       <header className="border-b border-gray-300 p-4 bg-gray-50">
@@ -129,6 +145,7 @@ function App() {
         <RecordingList
           recordings={recordings}
           onSelect={handleSelectRecording}
+          onDelete={handleDeleteRecording}
         />
       </main>
 
