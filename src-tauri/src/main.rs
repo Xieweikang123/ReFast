@@ -11,12 +11,70 @@ mod recording;
 mod replay;
 
 use commands::*;
-use tauri::Manager;
+use tauri::{Manager, menu::{Menu, MenuItem}};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Create system tray menu
+            let show_launcher = MenuItem::with_id(app, "show_launcher", "显示启动器", true, None::<&str>)?;
+            let show_main = MenuItem::with_id(app, "show_main", "显示主窗口", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            
+            let menu = Menu::with_items(app, &[
+                &show_launcher,
+                &show_main,
+                &quit,
+            ])?;
+
+            // Create tray icon
+            let _tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("ReFast")
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        // Left click - toggle launcher window
+                        if let Some(window) = tray.app_handle().get_webview_window("launcher") {
+                            let _ = window.is_visible().map(|visible| {
+                                if visible {
+                                    let _ = window.hide();
+                                } else {
+                                    let _ = window.show();
+                                    let _ = window.set_focus();
+                                }
+                            });
+                        }
+                    }
+                })
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show_launcher" => {
+                            if let Some(window) = app.get_webview_window("launcher") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "show_main" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
             // Ensure launcher window has no decorations
             if let Some(window) = app.get_webview_window("launcher") {
                 let _ = window.set_decorations(false);

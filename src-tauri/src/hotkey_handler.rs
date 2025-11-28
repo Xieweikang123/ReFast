@@ -6,7 +6,7 @@ pub mod windows {
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         UI::WindowsAndMessaging::{
             DispatchMessageW, GetMessageW, TranslateMessage,
-            MSG, WM_HOTKEY, WM_QUIT,
+            MSG,
         },
     };
     
@@ -29,8 +29,8 @@ pub mod windows {
         let handle = thread::spawn(move || {
             unsafe {
                 use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    CreateWindowExW, DefWindowProcW, RegisterClassW, UnregisterClassW,
-                    CW_USEDEFAULT, WS_OVERLAPPED, WNDCLASSW, WM_DESTROY, PostQuitMessage,
+                    CreateWindowExW, RegisterClassW, UnregisterClassW,
+                    CW_USEDEFAULT, WS_OVERLAPPED, WNDCLASSW,
                 };
                 use std::ffi::OsStr;
                 use std::os::windows::ffi::OsStrExt;
@@ -91,12 +91,12 @@ pub mod windows {
                 );
 
                 // Register hotkey
-                let result = unsafe { RegisterHotKey(
+                let result = RegisterHotKey(
                     hwnd,
                     HOTKEY_ID_ALT_SPACE,
                     MOD_ALT,
                     VK_SPACE,
-                ) };
+                );
 
                 if result == 0 {
                     eprintln!("Failed to register global hotkey");
@@ -142,7 +142,7 @@ pub mod windows {
                 }
 
                 // Cleanup
-                let _ = unsafe { UnregisterHotKey(hwnd, HOTKEY_ID_ALT_SPACE) };
+                let _ = UnregisterHotKey(hwnd, HOTKEY_ID_ALT_SPACE);
                 
                 // Free the sender pointer
                 let sender_ptr = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
