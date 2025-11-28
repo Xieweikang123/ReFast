@@ -35,12 +35,11 @@ export function LauncherWindow() {
     const setWindowSize = () => {
       const whiteContainer = document.querySelector('.bg-white');
       if (whiteContainer) {
-        const containerRect = whiteContainer.getBoundingClientRect();
-        const containerWidth = containerRect.width;
-        const containerHeight = containerRect.height;
-        // Add some padding for better appearance
-        const targetHeight = Math.max(containerHeight + 40, 80);
-        window.setSize(new LogicalSize(containerWidth, targetHeight)).catch(console.error);
+        // Use scrollHeight to get the full content height including overflow
+        const containerWidth = whiteContainer.scrollWidth;
+        const containerHeight = whiteContainer.scrollHeight;
+        // Use setSize to match content area exactly (decorations are disabled)
+        window.setSize(new LogicalSize(containerWidth, containerHeight)).catch(console.error);
       }
     };
     
@@ -158,13 +157,11 @@ export function LauncherWindow() {
         // Use double requestAnimationFrame to ensure DOM is fully updated
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            const containerRect = whiteContainer.getBoundingClientRect();
-            const containerWidth = containerRect.width;
-            const containerHeight = containerRect.height;
-            // Add some padding for better appearance
-            const targetHeight = Math.max(containerHeight + 40, 80);
-            console.log('Adjusting window size:', { containerWidth, containerHeight, targetHeight });
-            window.setSize(new LogicalSize(containerWidth, targetHeight)).catch(console.error);
+            // Use scrollWidth/scrollHeight to get the full content size
+            const containerWidth = whiteContainer.scrollWidth;
+            const containerHeight = whiteContainer.scrollHeight;
+            // Use setSize to match content area exactly (decorations are disabled)
+            window.setSize(new LogicalSize(containerWidth, containerHeight)).catch(console.error);
           });
         });
       }
@@ -174,34 +171,28 @@ export function LauncherWindow() {
     setTimeout(adjustWindowSize, 200);
   }, [filteredApps, filteredFiles]);
 
-  // Adjust window size when results actually change
-  useEffect(() => {
-    const adjustWindowSize = () => {
-      const window = getCurrentWindow();
-      const whiteContainer = document.querySelector('.bg-white');
-      if (whiteContainer) {
-        // Use double requestAnimationFrame to ensure DOM is fully updated
-        requestAnimationFrame(() => {
+    // Adjust window size when results actually change
+    useEffect(() => {
+      const adjustWindowSize = () => {
+        const window = getCurrentWindow();
+        const whiteContainer = document.querySelector('.bg-white');
+        if (whiteContainer) {
+          // Use double requestAnimationFrame to ensure DOM is fully updated
           requestAnimationFrame(() => {
-            const containerRect = whiteContainer.getBoundingClientRect();
-            const containerWidth = containerRect.width;
-            const containerHeight = containerRect.height;
-            const targetHeight = Math.max(containerHeight + 40, 80);
-            console.log('Adjusting window size (results state changed):', { 
-              resultsCount: results.length,
-              containerWidth, 
-              containerHeight, 
-              targetHeight 
+            requestAnimationFrame(() => {
+              const containerRect = whiteContainer.getBoundingClientRect();
+              const containerWidth = containerRect.width;
+              const containerHeight = containerRect.height;
+              // Use setSize to match content area exactly (decorations are disabled)
+              window.setSize(new LogicalSize(containerWidth, containerHeight)).catch(console.error);
             });
-            window.setSize(new LogicalSize(containerWidth, targetHeight)).catch(console.error);
           });
-        });
-      }
-    };
-    
-    // Adjust size after results state updates
-    setTimeout(adjustWindowSize, 250);
-  }, [results]);
+        }
+      };
+      
+      // Adjust size after results state updates
+      setTimeout(adjustWindowSize, 250);
+    }, [results]);
 
   // Scroll selected item into view and adjust window size
   useEffect(() => {
@@ -223,12 +214,11 @@ export function LauncherWindow() {
         // Use double requestAnimationFrame to ensure DOM is fully updated
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            const containerRect = whiteContainer.getBoundingClientRect();
-            const containerWidth = containerRect.width;
-            const containerHeight = containerRect.height;
-            const targetHeight = Math.max(containerHeight + 40, 80);
-            console.log('Adjusting window size (results changed):', { containerWidth, containerHeight, targetHeight });
-            window.setSize(new LogicalSize(containerWidth, targetHeight)).catch(console.error);
+            // Use scrollWidth/scrollHeight to get the full content size
+            const containerWidth = whiteContainer.scrollWidth;
+            const containerHeight = whiteContainer.scrollHeight;
+            // Use setSize to match content area exactly (decorations are disabled)
+            window.setSize(new LogicalSize(containerWidth, containerHeight)).catch(console.error);
           });
         });
       }
@@ -475,7 +465,7 @@ export function LauncherWindow() {
 
   return (
     <div 
-      className="flex flex-col w-full items-center justify-start pt-4"
+      className="flex flex-col w-full items-center justify-start"
       style={{ 
         backgroundColor: 'transparent',
         margin: 0,
@@ -484,6 +474,18 @@ export function LauncherWindow() {
         minHeight: '100%'
       }}
       tabIndex={-1}
+      onMouseDown={async (e) => {
+        // Allow dragging from empty areas (not on white container)
+        const target = e.target as HTMLElement;
+        if (target === e.currentTarget || !target.closest('.bg-white')) {
+          const window = getCurrentWindow();
+          try {
+            await window.startDragging();
+          } catch (error) {
+            console.error("Failed to start dragging:", error);
+          }
+        }
+      }}
       onKeyDown={async (e) => {
         if (e.key === "Escape" || e.keyCode === 27) {
           e.preventDefault();
@@ -500,9 +502,24 @@ export function LauncherWindow() {
     >
       {/* Main Search Container - utools style */}
       <div className="w-full flex justify-center">
-        <div className="bg-white w-full max-w-2xl overflow-hidden" style={{ height: 'auto' }}>
+        <div className="bg-white w-full overflow-hidden" style={{ height: 'auto' }}>
           {/* Search Box */}
-          <div className="px-6 py-4 border-b border-gray-100">
+          <div 
+            className="px-6 py-4 border-b border-gray-100"
+            onMouseDown={async (e) => {
+              // Only start dragging if clicking on the container or search icon, not on input
+              const target = e.target as HTMLElement;
+              if (target.tagName !== 'INPUT' && !target.closest('input')) {
+                const window = getCurrentWindow();
+                try {
+                  await window.startDragging();
+                } catch (error) {
+                  console.error("Failed to start dragging:", error);
+                }
+              }
+            }}
+            style={{ cursor: 'move' }}
+          >
             <div className="flex items-center gap-3">
               <svg
                 className="w-5 h-5 text-gray-400"
@@ -526,13 +543,14 @@ export function LauncherWindow() {
                 onPaste={handlePaste}
                 placeholder="输入应用名称或粘贴文件路径..."
                 className="flex-1 text-lg border-none outline-none bg-transparent placeholder-gray-400 text-gray-700"
+                style={{ cursor: 'text' }}
                 autoFocus
                 onFocus={(e) => {
                   // Ensure input is focused, but don't select text if user is typing
                   e.target.focus();
                 }}
                 onMouseDown={(e) => {
-                  // Prevent losing focus when clicking on input
+                  // Prevent dragging when clicking on input
                   e.stopPropagation();
                 }}
               />

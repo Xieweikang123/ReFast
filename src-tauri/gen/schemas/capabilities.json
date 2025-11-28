@@ -1,1 +1,1 @@
-{"main":{"identifier":"main","description":"Main application capabilities","local":true,"windows":["*"],"permissions":["core:default","core:event:default","core:window:default","core:window:allow-set-size","core:window:allow-set-decorations"]}}
+{"main":{"identifier":"main","description":"Main application capabilities","local":true,"windows":["*"],"permissions":["core:default","core:event:default","core:window:default","core:window:allow-set-size","core:window:allow-set-decorations","core:window:allow-start-dragging"]}}
