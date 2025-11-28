@@ -69,5 +69,13 @@ export const tauriApi = {
   async launchFile(path: string): Promise<void> {
     return invoke("launch_file", { path });
   },
+
+  async checkPathExists(path: string): Promise<FileHistoryItem | null> {
+    return invoke("check_path_exists", { path });
+  },
+
+  async getClipboardFilePath(): Promise<string | null> {
+    return invoke("get_clipboard_file_path");
+  },
 };
 

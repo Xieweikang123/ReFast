@@ -23,11 +23,13 @@ fn main() {
             // Create system tray menu
             let show_launcher = MenuItem::with_id(app, "show_launcher", "显示启动器", true, None::<&str>)?;
             let show_main = MenuItem::with_id(app, "show_main", "显示主窗口", true, None::<&str>)?;
+            let restart = MenuItem::with_id(app, "restart", "重启程序", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             
             let menu = Menu::with_items(app, &[
                 &show_launcher,
                 &show_main,
+                &restart,
                 &quit,
             ])?;
 
@@ -97,6 +99,9 @@ fn main() {
                                 let _ = window.show();
                                 let _ = window.set_focus();
                             }
+                        }
+                        "restart" => {
+                            app.restart();
                         }
                         "quit" => {
                             app.exit(0);
@@ -174,6 +179,8 @@ fn main() {
             add_file_to_history,
             search_file_history,
             launch_file,
+            check_path_exists,
+            get_clipboard_file_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

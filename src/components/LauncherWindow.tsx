@@ -181,22 +181,134 @@ export function LauncherWindow() {
   };
 
   const handlePaste = async (e: React.ClipboardEvent) => {
-    const pastedText = e.clipboardData.getData("text");
+    const clipboardTypes = Array.from(e.clipboardData.types);
+    console.log("Clipboard types:", clipboardTypes);
+    
+    // Check if clipboard contains files (when copying folders/files in Windows)
+    if (clipboardTypes.includes("Files")) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      const files = e.clipboardData.files;
+      console.log("Files in clipboard:", files.length);
+      
+      if (files.length > 0) {
+        // Get the first file/folder path
+        // Note: In browser, we can't directly get the full path from File object
+        // We need to use Tauri's clipboard API or handle it differently
+        // For now, let's try to get the path from the file name and use a backend command
+        
+        // Try to get text representation if available
+        let pathText = "";
+        try {
+          // Some browsers/clipboard implementations might have text representation
+          pathText = e.clipboardData.getData("text/uri-list") || 
+                     e.clipboardData.getData("text") ||
+                     e.clipboardData.getData("text/plain");
+        } catch (err) {
+          console.log("Could not get text from clipboard:", err);
+        }
+        
+        // If we have a file, we need to get its path from backend
+        // Since browser File API doesn't expose full path, we'll need to use Tauri
+        // Try to get path from Tauri clipboard API (Windows only)
+        if (!pathText) {
+          console.log("Getting path from Tauri clipboard API");
+          try {
+            const clipboardPath = await tauriApi.getClipboardFilePath();
+            if (clipboardPath) {
+              console.log("Got path from clipboard API:", clipboardPath);
+              await processPastedPath(clipboardPath);
+              return;
+            }
+          } catch (error) {
+            console.error("Failed to get clipboard file path:", error);
+          }
+        }
+        
+        if (pathText) {
+          console.log("Processing path from clipboard files:", pathText);
+          await processPastedPath(pathText);
+        } else {
+          console.log("Could not get file path from clipboard");
+        }
+      }
+      return;
+    }
+    
+    // Try to get text from clipboard - Windows may use different formats
+    let pastedText = e.clipboardData.getData("text");
+    
+    // If no text, try text/plain format
+    if (!pastedText) {
+      pastedText = e.clipboardData.getData("text/plain");
+    }
+    
+    // Handle Windows file paths that might have quotes or be on multiple lines
+    if (pastedText) {
+      // Remove quotes if present
+      pastedText = pastedText.replace(/^["']|["']$/g, '');
+      // Take first line if multiple lines
+      pastedText = pastedText.split('\n')[0].split('\r')[0];
+    }
+    
+    console.log("Pasted text:", pastedText);
     
     // Check if pasted text looks like a file path
-    if (pastedText && (pastedText.includes("\\") || pastedText.includes("/") || pastedText.endsWith(".exe") || pastedText.match(/^[A-Za-z]:/))) {
+    const isPath = pastedText && pastedText.trim().length > 0 && (
+      pastedText.includes("\\") || 
+      pastedText.includes("/") || 
+      pastedText.match(/^[A-Za-z]:/)
+    );
+    
+    if (isPath) {
       e.preventDefault();
+      e.stopPropagation();
+      await processPastedPath(pastedText.trim());
+    } else {
+      console.log("Pasted text doesn't look like a path, allowing default paste behavior");
+    }
+  };
+
+  const processPastedPath = async (trimmedPath: string) => {
+    console.log("Processing path:", trimmedPath);
+    
+    // Always set the query first so user sees something
+    setQuery(trimmedPath);
+    
+    try {
+      // Check if path exists (file or folder)
+      console.log("Checking if path exists...");
+      const pathItem = await tauriApi.checkPathExists(trimmedPath);
+      console.log("Path check result:", pathItem);
       
-      try {
-        // Add to history
-        await tauriApi.addFileToHistory(pastedText);
-        // Set query to trigger search
-        setQuery(pastedText);
-      } catch (error) {
-        console.error("Failed to add file to history:", error);
-        // Still set the query even if adding to history fails
-        setQuery(pastedText);
+      if (pathItem) {
+        // Path exists, add to history first
+        try {
+          console.log("Adding to history...");
+          await tauriApi.addFileToHistory(trimmedPath);
+          // Reload file history to get updated item with use_count
+          const searchResults = await tauriApi.searchFileHistory(trimmedPath);
+          console.log("Search results:", searchResults);
+          if (searchResults.length > 0) {
+            setFilteredFiles(searchResults);
+          } else {
+            // If not found in search, use the item we got from check
+            console.log("Using pathItem from check");
+            setFilteredFiles([pathItem]);
+          }
+        } catch (error) {
+          // Ignore errors when adding to history, still show the result
+          console.error("Failed to add file to history:", error);
+          setFilteredFiles([pathItem]);
+        }
+      } else {
+        // Path doesn't exist, search will still run via query change
+        console.log("Path doesn't exist, but query is set for search");
       }
+    } catch (error) {
+      console.error("Failed to check path:", error);
+      // Query is already set, search will still run
     }
   };
 

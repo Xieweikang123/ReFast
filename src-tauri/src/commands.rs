@@ -510,6 +510,106 @@ pub fn search_file_history(query: String) -> Result<Vec<file_history::FileHistor
 }
 
 #[tauri::command]
+pub fn check_path_exists(path: String) -> Result<Option<file_history::FileHistoryItem>, String> {
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    // Normalize path: trim whitespace and remove trailing backslashes/slashes
+    let trimmed = path.trim();
+    let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
+    
+    // Normalize path (convert to absolute if relative)
+    let path_buf = PathBuf::from(trimmed);
+    let normalized_path = if path_buf.is_absolute() {
+        path_buf
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Failed to get current directory: {}", e))?
+            .join(&path_buf)
+    };
+
+    let normalized_path_str = normalized_path.to_string_lossy().to_string();
+
+    // Check if path exists (file or directory)
+    if !Path::new(&normalized_path_str).exists() {
+        return Ok(None);
+    }
+
+    // Get name (file name or directory name)
+    let name = normalized_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| normalized_path.to_string_lossy().to_string());
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Failed to get timestamp: {}", e))?
+        .as_secs();
+
+    Ok(Some(file_history::FileHistoryItem {
+        path: normalized_path_str,
+        name,
+        last_used: timestamp,
+        use_count: 0,
+    }))
+}
+
+#[tauri::command]
+pub fn get_clipboard_file_path() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::DataExchange::*;
+        use windows_sys::Win32::UI::Shell::*;
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        use std::ptr;
+        
+        const CF_HDROP: u32 = 15; // Clipboard format for HDROP
+        
+        unsafe {
+            // Open clipboard
+            if OpenClipboard(0) == 0 {
+                return Err("Failed to open clipboard".to_string());
+            }
+            
+            let result = (|| -> Result<Option<String>, String> {
+                // Get HDROP handle from clipboard
+                let hdrop = GetClipboardData(CF_HDROP) as isize;
+                if hdrop == 0 {
+                    return Ok(None);
+                }
+                
+                // Get file count - DragQueryFileW with 0xFFFFFFFF returns count
+                let file_count = DragQueryFileW(hdrop, 0xFFFFFFFF, ptr::null_mut(), 0);
+                if file_count == 0 {
+                    return Ok(None);
+                }
+                
+                // Get first file path
+                let mut buffer = vec![0u16; 260]; // MAX_PATH
+                let len = DragQueryFileW(hdrop, 0, buffer.as_mut_ptr(), buffer.len() as u32);
+                if len == 0 {
+                    return Ok(None);
+                }
+                
+                buffer.truncate(len as usize);
+                let path = OsString::from_wide(&buffer);
+                Ok(Some(path.to_string_lossy().to_string()))
+            })();
+            
+            CloseClipboard();
+            result
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Clipboard file path is only supported on Windows".to_string())
+    }
+}
+
+#[tauri::command]
 pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
     // Add to history when launched
     let app_data_dir = get_app_data_dir(&app)?;

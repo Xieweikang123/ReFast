@@ -59,8 +59,12 @@ pub fn save_history(app_data_dir: &Path) -> Result<(), String> {
 }
 
 pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
+    // Normalize path: trim whitespace and remove trailing backslashes/slashes
+    let trimmed = path.trim();
+    let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
+    
     // Normalize path (convert to absolute if relative)
-    let path_buf = PathBuf::from(&path);
+    let path_buf = PathBuf::from(trimmed);
     let normalized_path = if path_buf.is_absolute() {
         path_buf
     } else {
@@ -71,17 +75,17 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
 
     let normalized_path_str = normalized_path.to_string_lossy().to_string();
 
-    // Check if file exists
+    // Check if path exists (file or directory)
     if !Path::new(&normalized_path_str).exists() {
-        return Err(format!("File not found: {}", normalized_path_str));
+        return Err(format!("Path not found: {}", normalized_path_str));
     }
 
-    // Get file name
+    // Get name (file name or directory name)
     let name = normalized_path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(&normalized_path_str)
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| normalized_path.to_string_lossy().to_string());
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -166,19 +170,25 @@ pub fn search_file_history(query: &str) -> Vec<FileHistoryItem> {
 pub fn launch_file(path: &str) -> Result<(), String> {
     use std::process::Command;
 
-    let path_buf = PathBuf::from(path);
+    // Normalize path: trim whitespace and remove trailing backslashes/slashes
+    let trimmed = path.trim();
+    let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
+    
+    let path_buf = PathBuf::from(trimmed);
     
     if !path_buf.exists() {
-        return Err(format!("File not found: {}", path));
+        return Err(format!("Path not found: {}", trimmed));
     }
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows, use `start` command to open files with their default application
+        // On Windows, use `start` command to open files/folders with their default application
+        // Use the normalized path (without trailing backslash)
+        let path_str = trimmed.replace("/", "\\");
         Command::new("cmd")
-            .args(&["/C", "start", "", path])
+            .args(&["/C", "start", "", &path_str])
             .spawn()
-            .map_err(|e| format!("Failed to launch file: {}", e))?;
+            .map_err(|e| format!("Failed to launch path: {}", e))?;
     }
 
     #[cfg(not(target_os = "windows"))]
