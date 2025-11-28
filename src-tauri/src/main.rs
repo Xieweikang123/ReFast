@@ -33,30 +33,20 @@ fn main() {
                 &quit,
             ])?;
 
-            // Create tray icon - try to load icon from file or use default
+            // Create tray icon - use default window icon (which loads from tauri.conf.json)
             let mut tray_builder = TrayIconBuilder::new()
                 .menu(&menu)
                 .tooltip("ReFast");
             
-            // Try to set icon from default window icon first
+            // Use default window icon (loaded from tauri.conf.json icons/icon.ico)
+            // This is the simplest and most reliable way to load the icon
             if let Some(default_icon) = app.default_window_icon() {
+                eprintln!("Using default window icon for tray (from tauri.conf.json)");
                 tray_builder = tray_builder.icon(default_icon.clone());
             } else {
-                // Fallback: try to load icon from resource directory
-                if let Ok(resource_dir) = app.path().resource_dir() {
-                    let icon_path = resource_dir.join("icons").join("icon.ico");
-                    if icon_path.exists() {
-                        // Try to read and load the icon file
-                        if std::fs::read(&icon_path).is_ok() {
-                            // Icon file exists but ICO parsing would require additional library
-                            // For now, we'll use the fallback icon below
-                            eprintln!("Found icon file at: {:?}, using fallback icon", icon_path);
-                        }
-                    }
-                }
-                // If still no icon, create a simple colored square as fallback
+                // Fallback: create a simple colored square as fallback
+                eprintln!("Warning: No default window icon found, using fallback icon");
                 use tauri::image::Image;
-                // Create a simple 16x16 red square icon
                 let mut rgba = Vec::with_capacity(16 * 16 * 4);
                 for _ in 0..(16 * 16) {
                     rgba.extend_from_slice(&[255, 100, 100, 255]); // Red color

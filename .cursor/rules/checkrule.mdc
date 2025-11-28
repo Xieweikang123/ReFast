@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+
+每次改完代码，cargo check 
+---
