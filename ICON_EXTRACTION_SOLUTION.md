@@ -28,3 +28,4 @@
 See the updated `src-tauri/src/app_search.rs` for the complete implementation.
 
 
+

@@ -98,6 +98,14 @@ export const tauriApi = {
     return invoke("get_everything_path");
   },
 
+  async getEverythingVersion(): Promise<string | null> {
+    return invoke("get_everything_version");
+  },
+
+  async getEverythingLogFilePath(): Promise<string | null> {
+    return invoke("get_everything_log_file_path");
+  },
+
   async openEverythingDownload(): Promise<void> {
     return invoke("open_everything_download");
   },
@@ -108,6 +116,10 @@ export const tauriApi = {
 
   async downloadEsExe(): Promise<string> {
     return invoke("download_es_exe");
+  },
+
+  async startEverything(): Promise<void> {
+    return invoke("start_everything");
   },
 };
 

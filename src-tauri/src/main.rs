@@ -149,6 +149,15 @@ fn main() {
             // Load file history on startup
             let app_data_dir = get_app_data_dir(app.handle())?;
             file_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
+            
+            // Initialize Everything log file on startup to ensure path is displayed
+            #[cfg(target_os = "windows")]
+            {
+                use crate::everything_search::windows;
+                // Force initialization by calling log_debug with a startup message
+                // This will create the log file and display its path
+                windows::init_log_file_early();
+            }
 
             // Load app cache on startup and start background scan
             let app_data_dir_clone = app_data_dir.clone();
@@ -188,6 +197,9 @@ fn main() {
             is_everything_available,
             get_everything_status,
             get_everything_path,
+            get_everything_version,
+            get_everything_log_file_path,
+            start_everything,
             open_everything_download,
             download_everything,
             download_es_exe,

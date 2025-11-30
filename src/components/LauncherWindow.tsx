@@ -22,7 +22,9 @@ export function LauncherWindow() {
   const [everythingResults, setEverythingResults] = useState<EverythingResult[]>([]);
   const [isEverythingAvailable, setIsEverythingAvailable] = useState(false);
   const [everythingPath, setEverythingPath] = useState<string | null>(null);
+  const [everythingVersion, setEverythingVersion] = useState<string | null>(null);
   const [everythingError, setEverythingError] = useState<string | null>(null);
+  const [isSearchingEverything, setIsSearchingEverything] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -41,7 +43,7 @@ export function LauncherWindow() {
         setIsEverythingAvailable(status.available);
         setEverythingError(status.error || null);
         
-        // Get Everything path for debugging
+        // Get Everything path and version for debugging
         if (status.available) {
           try {
             const path = await tauriApi.getEverythingPath();
@@ -49,17 +51,30 @@ export function LauncherWindow() {
             if (path) {
               console.log("Everything found at:", path);
             }
+            
+            // Get Everything version
+            try {
+              const version = await tauriApi.getEverythingVersion();
+              setEverythingVersion(version);
+              if (version) {
+                console.log("Everything version:", version);
+              }
+            } catch (error) {
+              console.error("Failed to get Everything version:", error);
+            }
           } catch (error) {
             console.error("Failed to get Everything path:", error);
           }
         } else {
           console.warn("Everything is not available:", status.error);
           setEverythingPath(null);
+          setEverythingVersion(null);
         }
       } catch (error) {
         console.error("Failed to check Everything availability:", error);
         setIsEverythingAvailable(false);
         setEverythingPath(null);
+        setEverythingVersion(null);
         setEverythingError("检查失败");
       }
     };
@@ -233,11 +248,17 @@ export function LauncherWindow() {
   // Search applications, file history, and Everything when query changes (with debounce)
   useEffect(() => {
     if (query.trim() === "") {
+      // Cancel any ongoing search
+      if (currentSearchRef.current) {
+        currentSearchRef.current.cancelled = true;
+        currentSearchRef.current = null;
+      }
       setFilteredApps([]);
       setFilteredFiles([]);
       setEverythingResults([]);
       setResults([]);
       setSelectedIndex(0);
+      setIsSearchingEverything(false);
       return;
     }
     
@@ -420,13 +441,45 @@ export function LauncherWindow() {
     }
   };
 
+  // Use ref to track current search request and allow cancellation
+  const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
+
   const searchEverything = async (searchQuery: string) => {
+    if (!isEverythingAvailable) {
+      setEverythingResults([]);
+      setIsSearchingEverything(false);
+      return;
+    }
+    
+    // Cancel previous search if still running
+    if (currentSearchRef.current) {
+      currentSearchRef.current.cancelled = true;
+    }
+    
+    // Create new search request
+    const searchRequest = { query: searchQuery, cancelled: false };
+    currentSearchRef.current = searchRequest;
+    
     try {
+      setIsSearchingEverything(true);
       console.log("Searching Everything with query:", searchQuery);
       const results = await tauriApi.searchEverything(searchQuery);
-      console.log("Everything search results:", results);
+      
+      // Check if this search was cancelled
+      if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
+        console.log("Search was cancelled or superseded, ignoring results");
+        return;
+      }
+      
+      console.log("Everything search results:", results.length, "results found");
       setEverythingResults(results);
     } catch (error) {
+      // Check if this search was cancelled
+      if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
+        console.log("Search was cancelled, ignoring error");
+        return;
+      }
+      
       console.error("Failed to search Everything:", error);
       setEverythingResults([]);
       
@@ -456,6 +509,14 @@ export function LauncherWindow() {
           setEverythingError("搜索失败后无法重新检查状态");
         }
       }
+    } finally {
+      // Only update state if this is still the current search
+      if (currentSearchRef.current?.query === searchQuery && !currentSearchRef.current?.cancelled) {
+        setIsSearchingEverything(false);
+      } else if (currentSearchRef.current?.query !== searchQuery) {
+        // New search started, don't update state
+        return;
+      }
     }
   };
 
@@ -484,6 +545,20 @@ export function LauncherWindow() {
     setShowDownloadModal(false);
   };
 
+  const handleStartEverything = async () => {
+    try {
+      console.log("手动启动 Everything...");
+      await tauriApi.startEverything();
+      // 等待一下让 Everything 启动并初始化
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      // 重新检查状态
+      await handleCheckAgain();
+    } catch (error) {
+      console.error("启动 Everything 失败:", error);
+      alert(`启动失败: ${error}`);
+    }
+  };
+
   const handleDownloadEsExe = async () => {
     try {
       setIsDownloading(true);
@@ -510,6 +585,33 @@ export function LauncherWindow() {
     try {
       // Force a fresh check with detailed status
       const status = await tauriApi.getEverythingStatus();
+      
+      // 如果服务未运行，尝试自动启动
+      if (!status.available && status.error === "SERVICE_NOT_RUNNING") {
+        try {
+          console.log("Everything 服务未运行，尝试自动启动...");
+          await tauriApi.startEverything();
+          // 等待一下让 Everything 启动并初始化
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          // 重新检查状态
+          const newStatus = await tauriApi.getEverythingStatus();
+          setIsEverythingAvailable(newStatus.available);
+          setEverythingError(newStatus.error || null);
+          
+          if (newStatus.available) {
+            console.log("Everything 启动成功");
+          } else {
+            console.warn("Everything 启动后仍未可用:", newStatus.error);
+          }
+          return;
+        } catch (error) {
+          console.error("自动启动 Everything 失败:", error);
+          setIsEverythingAvailable(false);
+          setEverythingError("无法自动启动 Everything，请手动启动");
+          return;
+        }
+      }
+      
       setIsEverythingAvailable(status.available);
       setEverythingError(status.error || null);
       
@@ -529,7 +631,7 @@ export function LauncherWindow() {
           } else if (status.error.startsWith("EXECUTABLE_CORRUPTED")) {
             errorMessage += "es.exe 文件损坏。\n请删除损坏的文件后重新下载。\n\n文件位置：C:\\Program Files\\Everything\\es.exe";
           } else if (status.error.startsWith("SERVICE_NOT_RUNNING")) {
-            errorMessage += "Everything 服务未运行。\n请启动 Everything 主程序，然后点击\"刷新\"按钮。";
+            errorMessage += "Everything 服务未运行。\n已尝试自动启动，如果仍然失败，请手动启动 Everything 主程序后点击\"刷新\"按钮。";
           } else {
             errorMessage += `错误：${status.error}\n\n请确保：\n1. Everything 已正确安装\n2. es.exe 文件存在于 Everything 安装目录中\n3. Everything 主程序正在运行`;
           }
@@ -958,6 +1060,20 @@ export function LauncherWindow() {
                           使用 {result.file.use_count} 次
                         </div>
                       )}
+                      {result.type === "everything" && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded ${
+                              index === selectedIndex
+                                ? "bg-blue-400 text-white"
+                                : "bg-green-100 text-green-700"
+                            }`}
+                            title="来自 Everything 搜索结果"
+                          >
+                            Everything
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -976,6 +1092,38 @@ export function LauncherWindow() {
           {!isLoading && results.length === 0 && query && (
             <div className="px-6 py-8 text-center text-gray-500">
               未找到匹配的应用或文件
+            </div>
+          )}
+
+          {/* Everything Search Status */}
+          {query.trim() && isEverythingAvailable && (
+            <div className="px-6 py-2 border-t border-gray-200 bg-gray-50">
+              <div className="flex items-center justify-between text-xs text-gray-600">
+                <div className="flex items-center gap-2">
+                  {isSearchingEverything ? (
+                    <>
+                      <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
+                      <span className="text-blue-600">Everything 搜索中...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                      </svg>
+                      <span>
+                        Everything: {everythingResults.length > 0 
+                          ? `找到 ${everythingResults.length} 个结果` 
+                          : "无结果"}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {everythingVersion && (
+                  <div className="text-gray-500 text-xs">
+                    v{everythingVersion}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1006,6 +1154,15 @@ export function LauncherWindow() {
                 </div>
                 {!isEverythingAvailable && (
                   <div className="flex items-center gap-2">
+                    {everythingError && everythingError.startsWith("SERVICE_NOT_RUNNING") && (
+                      <button
+                        onClick={handleStartEverything}
+                        className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
+                        title="启动 Everything"
+                      >
+                        启动 Everything
+                      </button>
+                    )}
                     <button
                       onClick={handleCheckAgain}
                       className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors"
@@ -1013,18 +1170,20 @@ export function LauncherWindow() {
                     >
                       刷新
                     </button>
-                    <button
-                      onClick={handleDownloadEsExe}
-                      disabled={isDownloading}
-                      className={`px-2 py-1 text-xs rounded transition-colors ${
-                        isDownloading
-                          ? 'bg-gray-400 text-white cursor-not-allowed'
-                          : 'bg-blue-500 text-white hover:bg-blue-600'
-                      }`}
-                      title="下载 es.exe（需要先安装 Everything）"
-                    >
-                      {isDownloading ? `下载中 ${downloadProgress}%` : '下载 es.exe'}
-                    </button>
+                    {(!everythingError || everythingError.startsWith("NOT_INSTALLED") || everythingError.startsWith("EXECUTABLE_CORRUPTED")) && (
+                      <button
+                        onClick={handleDownloadEsExe}
+                        disabled={isDownloading}
+                        className={`px-2 py-1 text-xs rounded transition-colors ${
+                          isDownloading
+                            ? 'bg-gray-400 text-white cursor-not-allowed'
+                            : 'bg-blue-500 text-white hover:bg-blue-600'
+                        }`}
+                        title="下载 es.exe（需要先安装 Everything）"
+                      >
+                        {isDownloading ? `下载中 ${downloadProgress}%` : '下载 es.exe'}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

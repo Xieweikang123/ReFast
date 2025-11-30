@@ -571,12 +571,18 @@ pub fn search_file_history(query: String) -> Result<Vec<file_history::FileHistor
 }
 
 #[tauri::command]
-pub fn search_everything(query: String) -> Result<Vec<everything_search::EverythingResult>, String> {
+pub async fn search_everything(query: String) -> Result<Vec<everything_search::EverythingResult>, String> {
     #[cfg(target_os = "windows")]
     {
-        // Limit to 20 results for performance
-        everything_search::windows::search_files(&query, 20)
-            .map_err(|e| e.to_string())
+        // 在后台线程执行搜索，避免阻塞
+        let query_clone = query.clone();
+        tokio::task::spawn_blocking(move || {
+            // Limit to 20 results for performance
+            everything_search::windows::search_files(&query_clone, 20)
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("搜索任务失败: {}", e))?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -614,36 +620,39 @@ pub fn get_everything_status() -> (bool, Option<String>) {
 pub fn get_everything_path() -> Result<Option<String>, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::path::PathBuf;
-        // Try to find Everything executable
-        let common_paths = [
-            r"C:\Program Files\Everything\es.exe",
-            r"C:\Program Files (x86)\Everything\es.exe",
-            r"C:\Tools\Everything\es.exe",
-            r"C:\Everything\es.exe",
-        ];
-        
-        for path in &common_paths {
-            let exe_path = PathBuf::from(path);
-            if exe_path.exists() {
-                return Ok(Some(path.to_string()));
-            }
+        if let Some(path) = everything_search::windows::get_everything_path() {
+            Ok(path.to_str().map(|s| s.to_string()))
+        } else {
+            Ok(None)
         }
-        
-        // Try to find in PATH
-        if let Ok(output) = std::process::Command::new("where")
-            .arg("es.exe")
-            .output()
-        {
-            if output.status.success() {
-                let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path_str.is_empty() {
-                    return Ok(Some(path_str));
-                }
-            }
-        }
-        
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
         Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn get_everything_version() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        Ok(everything_search::windows::get_everything_version())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub fn get_everything_log_file_path() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = everything_search::windows::get_log_file_path() {
+            Ok(path.to_str().map(|s| s.to_string()))
+        } else {
+            Ok(None)
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -1074,6 +1083,39 @@ fn find_everything_installation_dir() -> Option<std::path::PathBuf> {
     }
     
     None
+}
+
+#[tauri::command]
+pub async fn start_everything() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        
+        // 在后台线程执行，避免阻塞
+        tokio::task::spawn_blocking(move || {
+            // 查找 Everything.exe
+            let everything_exe = everything_search::windows::find_everything_main_exe()
+                .ok_or_else(|| "Everything.exe 未找到，请确保 Everything 已安装".to_string())?;
+            
+            // 启动 Everything.exe
+            // 如果 Everything 已配置后台运行，启动后会自动最小化到托盘
+            std::process::Command::new(&everything_exe)
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
+                .spawn()
+                .map_err(|e| format!("无法启动 Everything: {}", e))?;
+            
+            // 等待 Everything 启动并初始化服务（通常需要 1-2 秒）
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| format!("启动任务失败: {}", e))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Everything 仅在 Windows 上可用".to_string())
+    }
 }
 
 #[tauri::command]
