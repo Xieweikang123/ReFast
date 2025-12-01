@@ -1024,6 +1024,22 @@ export function LauncherWindow() {
     }
   };
 
+  // 根据路径粗略判断是否更像“文件夹”
+  const isFolderLikePath = (path: string | undefined | null): boolean => {
+    if (!path) return false;
+    // 去掉末尾的 / 或 \
+    const normalized = path.replace(/[\\/]+$/, "");
+    const segments = normalized.split(/[\\/]/);
+    const last = segments[segments.length - 1] || "";
+    if (!last) return false;
+    // 如果最后一段里有扩展名（排除以点开头的特殊情况），认为是文件
+    const dotIndex = last.indexOf(".");
+    if (dotIndex > 0 && dotIndex < last.length - 1) {
+      return false;
+    }
+    return true;
+  };
+
   const handleKeyDown = async (e: React.KeyboardEvent) => {
     if (e.key === "Escape" || e.keyCode === 27) {
       e.preventDefault();
@@ -1296,8 +1312,15 @@ export function LauncherWindow() {
                             d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
                           />
                         </svg>
-                      ) : result.type === "everything" && result.everything?.is_folder ? (
-                        // 文件夹（Everything 结果）
+                      ) : (result.type === "file" &&
+                          ((result.file?.is_folder ?? null) !== null
+                            ? !!result.file?.is_folder
+                            : isFolderLikePath(result.path))) ||
+                        (result.type === "everything" &&
+                          ((result.everything?.is_folder ?? null) !== null
+                            ? !!result.everything?.is_folder
+                            : isFolderLikePath(result.path))) ? (
+                        // 文件夹（历史记录或 Everything 结果）
                         <svg
                           className={`w-5 h-5 ${
                             index === selectedIndex ? "text-white" : "text-amber-500"

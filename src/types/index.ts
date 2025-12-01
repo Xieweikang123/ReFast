@@ -42,6 +42,7 @@ export interface FileHistoryItem {
   name: string;
   last_used: number;
   use_count: number;
+  is_folder?: boolean | null; // 是否为文件夹
 }
 
 export interface EverythingResult {

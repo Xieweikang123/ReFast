@@ -13,6 +13,8 @@ pub struct FileHistoryItem {
     pub name: String,
     pub last_used: u64, // Unix timestamp
     pub use_count: u64,
+    #[serde(default)]
+    pub is_folder: Option<bool>, // 是否为文件夹
 }
 
 static FILE_HISTORY: LazyLock<Arc<Mutex<HashMap<String, FileHistoryItem>>>> =
@@ -138,6 +140,9 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
         return Err(format!("Path not found: {}", normalized_path_str));
     }
 
+    // Check if path is a directory
+    let is_folder = normalized_path.is_dir();
+
     // Get name (file name or directory name)
     let name = normalized_path
         .file_name()
@@ -156,6 +161,7 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
     if let Some(item) = state.get_mut(&normalized_path_str) {
         item.last_used = timestamp;
         item.use_count += 1;
+        item.is_folder = Some(is_folder); // Update is_folder in case it changed
     } else {
         state.insert(
             normalized_path_str.clone(),
@@ -164,6 +170,7 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
                 name,
                 last_used: timestamp,
                 use_count: 1,
+                is_folder: Some(is_folder),
             },
         );
     }

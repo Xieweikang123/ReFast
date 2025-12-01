@@ -1382,6 +1382,9 @@ pub fn check_path_exists(path: String) -> Result<Option<file_history::FileHistor
         return Ok(None);
     }
 
+    // Check if path is a directory
+    let is_folder = normalized_path.is_dir();
+
     // Get name (file name or directory name)
     let name = normalized_path
         .file_name()
@@ -1399,6 +1402,7 @@ pub fn check_path_exists(path: String) -> Result<Option<file_history::FileHistor
         name,
         last_used: timestamp,
         use_count: 0,
+        is_folder: Some(is_folder),
     }))
 }
 
