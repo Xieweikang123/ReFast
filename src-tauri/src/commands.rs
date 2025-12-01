@@ -4,6 +4,7 @@ use crate::file_history;
 use crate::hooks;
 use crate::recording::{RecordingMeta, RecordingState};
 use crate::replay::ReplayState;
+use crate::shortcuts;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -568,6 +569,73 @@ pub fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), St
 #[tauri::command]
 pub fn search_file_history(query: String) -> Result<Vec<file_history::FileHistoryItem>, String> {
     Ok(file_history::search_file_history(&query))
+}
+
+#[tauri::command]
+pub fn get_all_file_history(app: tauri::AppHandle) -> Result<Vec<file_history::FileHistoryItem>, String> {
+    println!("[后端] get_all_file_history: START");
+    let start_time = std::time::Instant::now();
+    
+    let app_data_dir = match get_app_data_dir(&app) {
+        Ok(dir) => {
+            println!("[后端] get_all_file_history: App data dir = {:?}", dir);
+            dir
+        }
+        Err(e) => {
+            println!("[后端] get_all_file_history: ERROR getting app data dir: {}", e);
+            return Err(e);
+        }
+    };
+    
+    // CRITICAL: Lock only once, then do all operations within the lock
+    // This prevents nested locking and potential deadlocks
+    println!("[后端] get_all_file_history: Acquiring lock...");
+    let mut state = match file_history::lock_history() {
+        Ok(guard) => {
+            println!("[后端] get_all_file_history: Lock acquired successfully");
+            guard
+        }
+        Err(e) => {
+            println!("[后端] get_all_file_history: ERROR acquiring lock: {}", e);
+            return Err(e);
+        }
+    };
+    
+    // Load history into the locked state (no additional locking)
+    println!("[后端] get_all_file_history: Loading history from disk...");
+    match file_history::load_history_into(&mut state, &app_data_dir) {
+        Ok(_) => {
+            println!("[后端] get_all_file_history: History loaded successfully, {} items in memory", state.len());
+        }
+        Err(e) => {
+            println!("[后端] get_all_file_history: ERROR loading history: {}", e);
+            return Err(e);
+        }
+    }
+    
+    // Search within the locked state (no additional locking)
+    println!("[后端] get_all_file_history: Searching history (empty query = all items)...");
+    let result = file_history::search_in_history(&state, "");
+    println!("[后端] get_all_file_history: Search completed, {} items found", result.len());
+    
+    // Lock is automatically released when state goes out of scope
+    let elapsed = start_time.elapsed();
+    println!("[后端] get_all_file_history: END (took {:?})", elapsed);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn delete_file_history(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    file_history::load_history(&app_data_dir)?;
+    file_history::delete_file_history(path, &app_data_dir)
+}
+
+#[tauri::command]
+pub fn update_file_history_name(path: String, new_name: String, app: tauri::AppHandle) -> Result<file_history::FileHistoryItem, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    file_history::load_history(&app_data_dir)?;
+    file_history::update_file_history_name(path, new_name, &app_data_dir)
 }
 
 #[tauri::command]
@@ -1287,5 +1355,108 @@ pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
     
     // Launch the file
     file_history::launch_file(&path)
+}
+
+#[tauri::command]
+pub fn get_all_shortcuts(app: tauri::AppHandle) -> Result<Vec<shortcuts::ShortcutItem>, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    shortcuts::load_shortcuts(&app_data_dir)?;
+    Ok(shortcuts::get_all_shortcuts())
+}
+
+#[tauri::command]
+pub fn add_shortcut(
+    name: String,
+    path: String,
+    icon: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<shortcuts::ShortcutItem, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    shortcuts::load_shortcuts(&app_data_dir)?;
+    shortcuts::add_shortcut(name, path, icon, &app_data_dir)
+}
+
+#[tauri::command]
+pub fn update_shortcut(
+    id: String,
+    name: Option<String>,
+    path: Option<String>,
+    icon: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<shortcuts::ShortcutItem, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    shortcuts::load_shortcuts(&app_data_dir)?;
+    shortcuts::update_shortcut(id, name, path, icon, &app_data_dir)
+}
+
+#[tauri::command]
+pub fn delete_shortcut(id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    shortcuts::load_shortcuts(&app_data_dir)?;
+    shortcuts::delete_shortcut(id, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn show_shortcuts_config(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    
+    println!("[后端] show_shortcuts_config: START");
+    
+    // 1. 尝试获取现有窗口
+    if let Some(window) = app.get_webview_window("shortcuts-config") {
+        println!("[后端] show_shortcuts_config: 窗口已存在，执行显示操作");
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        
+        // 既然窗口没销毁，前端组件还在，需要通知它刷新数据
+        let window_clone = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            match window_clone.emit("shortcuts-config:refresh", ()) {
+                Ok(_) => {
+                    println!("[后端] show_shortcuts_config: Refresh event emitted successfully");
+                }
+                Err(e) => {
+                    println!("[后端] show_shortcuts_config: ERROR emitting refresh event: {}", e);
+                }
+            }
+        });
+    } else {
+        println!("[后端] show_shortcuts_config: 窗口不存在，开始动态创建");
+        
+        // 2. 动态创建窗口
+        // 注意：这里 URL 设为 index.html，React 会根据 window label 路由到正确的组件
+        let window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "shortcuts-config",
+            tauri::WebviewUrl::App("index.html".into())
+        )
+        .title("快捷访问配置")
+        .inner_size(700.0, 600.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|e| format!("创建窗口失败: {}", e))?;
+
+        println!("[后端] show_shortcuts_config: 窗口创建成功");
+        
+        // 新窗口创建后，前端组件挂载会自动 loadData，不需要 emit refresh
+        // 但为了保险，可以保留 emit，前端防抖即可
+        let window_clone = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match window_clone.emit("shortcuts-config:refresh", ()) {
+                Ok(_) => {
+                    println!("[后端] show_shortcuts_config: Refresh event emitted for new window");
+                }
+                Err(e) => {
+                    println!("[后端] show_shortcuts_config: ERROR emitting refresh event: {}", e);
+                }
+            }
+        });
+    }
+    
+    println!("[后端] show_shortcuts_config: END");
+    Ok(())
 }
 

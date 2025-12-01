@@ -56,3 +56,12 @@ export interface EverythingSearchResponse {
   total_count: number;
 }
 
+export interface ShortcutItem {
+  id: string;
+  name: string;
+  path: string;
+  icon?: string;
+  created_at: number;
+  updated_at: number;
+}
+

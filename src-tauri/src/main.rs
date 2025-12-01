@@ -11,6 +11,7 @@ mod hotkey;
 mod hotkey_handler;
 mod recording;
 mod replay;
+mod shortcuts;
 
 use commands::*;
 use crate::commands::get_app_data_dir;
@@ -149,6 +150,7 @@ fn main() {
             // Load file history on startup
             let app_data_dir = get_app_data_dir(app.handle())?;
             file_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
+            shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             
             // Initialize Everything log file on startup to ensure path is displayed
             #[cfg(target_os = "windows")]
@@ -206,6 +208,14 @@ fn main() {
             launch_file,
             check_path_exists,
             get_clipboard_file_path,
+            get_all_shortcuts,
+            add_shortcut,
+            update_shortcut,
+            delete_shortcut,
+            get_all_file_history,
+            delete_file_history,
+            update_file_history_name,
+            show_shortcuts_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

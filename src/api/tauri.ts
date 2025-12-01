@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RecordingMeta, AppInfo, FileHistoryItem, EverythingSearchResponse } from "../types";
+import type { RecordingMeta, AppInfo, FileHistoryItem, EverythingSearchResponse, ShortcutItem } from "../types";
 
 export const tauriApi = {
   async getRecordingStatus(): Promise<boolean> {
@@ -66,6 +66,18 @@ export const tauriApi = {
     return invoke("search_file_history", { query });
   },
 
+  async getAllFileHistory(): Promise<FileHistoryItem[]> {
+    return invoke("get_all_file_history");
+  },
+
+  async deleteFileHistory(path: string): Promise<void> {
+    return invoke("delete_file_history", { path });
+  },
+
+  async updateFileHistoryName(path: string, newName: string): Promise<FileHistoryItem> {
+    return invoke("update_file_history_name", { path, newName });
+  },
+
   async launchFile(path: string): Promise<void> {
     return invoke("launch_file", { path });
   },
@@ -120,6 +132,31 @@ export const tauriApi = {
 
   async startEverything(): Promise<void> {
     return invoke("start_everything");
+  },
+
+  async getAllShortcuts(): Promise<ShortcutItem[]> {
+    return invoke("get_all_shortcuts");
+  },
+
+  async addShortcut(name: string, path: string, icon?: string): Promise<ShortcutItem> {
+    return invoke("add_shortcut", { name, path, icon });
+  },
+
+  async updateShortcut(
+    id: string,
+    name?: string,
+    path?: string,
+    icon?: string
+  ): Promise<ShortcutItem> {
+    return invoke("update_shortcut", { id, name, path, icon });
+  },
+
+  async deleteShortcut(id: string): Promise<void> {
+    return invoke("delete_shortcut", { id });
+  },
+
+  async showShortcutsConfig(): Promise<void> {
+    return invoke("show_shortcuts_config");
   },
 };
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, EverythingResult, EverythingSearchResponse } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -33,6 +33,7 @@ export function LauncherWindow() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const [isHoveringConfigIcon, setIsHoveringConfigIcon] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -527,27 +528,6 @@ export function LauncherWindow() {
     }
   };
 
-  const handleDownloadEverything = async () => {
-    try {
-      setIsDownloading(true);
-      setDownloadProgress(0);
-      setDownloadedPath(null);
-      setShowDownloadModal(true); // 显示下载进度模态框
-      
-      const path = await tauriApi.downloadEverything();
-      setDownloadedPath(path);
-      setDownloadProgress(100);
-      setIsDownloading(false);
-      // 下载完成后，模态框会显示下载完成的内容
-    } catch (error) {
-      console.error("Failed to download Everything:", error);
-      setIsDownloading(false);
-      setDownloadProgress(0);
-      setShowDownloadModal(false);
-      alert(`下载失败: ${error}`);
-    }
-  };
-
   const handleCloseDownloadModal = () => {
     setShowDownloadModal(false);
   };
@@ -650,36 +630,6 @@ export function LauncherWindow() {
     } catch (error) {
       console.error("Failed to check Everything:", error);
       alert(`检测失败: ${error}`);
-    }
-  };
-
-  const handleOpenInstaller = async () => {
-    if (downloadedPath) {
-      try {
-        // Hide launcher window first to ensure installer window is visible
-        await tauriApi.hideLauncher();
-        setShowDownloadModal(false);
-        
-        // Small delay to ensure window is hidden before launching installer
-        setTimeout(async () => {
-          try {
-            await tauriApi.launchFile(downloadedPath);
-          } catch (error) {
-            console.error("Failed to open installer:", error);
-            alert(`无法打开安装程序: ${error}`);
-          }
-        }, 100);
-      } catch (error) {
-        console.error("Failed to hide launcher:", error);
-        // Still try to launch installer even if hiding fails
-        try {
-          await tauriApi.launchFile(downloadedPath);
-          setShowDownloadModal(false);
-        } catch (launchError) {
-          console.error("Failed to open installer:", launchError);
-          alert(`无法打开安装程序: ${launchError}`);
-        }
-      }
     }
   };
 
@@ -963,6 +913,42 @@ export function LauncherWindow() {
                   e.stopPropagation();
                 }}
               />
+              {/* Shortcuts Config Icon Button */}
+              <div
+                className="relative flex items-center justify-center"
+                onMouseEnter={() => setIsHoveringConfigIcon(true)}
+                onMouseLeave={() => setIsHoveringConfigIcon(false)}
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  try {
+                    await tauriApi.showShortcutsConfig();
+                  } catch (error) {
+                    console.error("Failed to show shortcuts config:", error);
+                  }
+                }}
+                onMouseDown={(e) => {
+                  // Prevent dragging when clicking on icon
+                  e.stopPropagation();
+                }}
+                style={{ cursor: 'pointer', minWidth: '24px', minHeight: '24px' }}
+                title="快捷访问配置"
+              >
+                <svg
+                  className={`w-5 h-5 transition-all ${
+                    isHoveringConfigIcon ? 'text-gray-600 opacity-100' : 'text-gray-300 opacity-50'
+                  }`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"
+                  />
+                </svg>
+              </div>
             </div>
           </div>
 
