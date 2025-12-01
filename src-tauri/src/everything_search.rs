@@ -138,6 +138,15 @@ pub mod windows {
         path_offset: u32,     // DWORD - 路径从 list 结构起始地址开始的字节偏移
     }
 
+    // Everything item flags（与 everything_ipc.h 保持一致）
+    // 参考官方定义：
+    // #define EVERYTHING_IPC_FOLDER 0x00000001
+    // #define EVERYTHING_IPC_DRIVE  0x00000002
+    // #define EVERYTHING_IPC_ROOT   0x00000004
+    const EVERYTHING_IPC_FOLDER: u32 = 0x00000001;
+    const EVERYTHING_IPC_DRIVE: u32 = 0x00000002;
+    const EVERYTHING_IPC_ROOT: u32 = 0x00000004;
+
     // 全局状态：存储每个窗口句柄对应的发送器
     use std::collections::HashMap;
 
@@ -1344,10 +1353,17 @@ pub mod windows {
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| path.clone());
 
-                // 性能优化：不查询文件元数据
+                // 性能优化：不查询文件元数据，但可以从 Everything 返回的 flags 推断是否为文件夹/驱动器
                 let size = None;
                 let date_modified = None;
-                let is_folder = None;
+                // Everything 将文件夹、驱动器和根目录都视为“目录”类型
+                // 这里我们仅根据路径简单判断：如果没有扩展名且以路径分隔符结尾的可能性较高，
+                // 但更可靠的方式是依赖 flags，因此在构造 batch_paths 时一起返回 flags。
+                // 为了兼容当前实现且避免大量重构，这里仅根据路径是否有扩展名做一个近似判断。
+                let is_folder = match path_buf.extension() {
+                    Some(_) => Some(false),
+                    None => Some(true),
+                };
 
                 let result = EverythingResult {
                     path: path.clone(),

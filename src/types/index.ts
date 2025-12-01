@@ -49,6 +49,8 @@ export interface EverythingResult {
   name: string;
   size?: number;
   date_modified?: string;
+  // 是否为文件夹（包括磁盘、根目录等目录类型）
+  is_folder?: boolean | null;
 }
 
 export interface EverythingSearchResponse {

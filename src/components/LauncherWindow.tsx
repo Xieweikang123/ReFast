@@ -47,7 +47,7 @@ export function LauncherWindow() {
   const listRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const shouldPreserveScrollRef = useRef(false); // 标记是否需要保持滚动位置
-  const finalResultsSetRef = useRef(false); // 标记是否已经设置了最终结果
+  const finalResultsSetRef = useRef(false); // 方案 B 中仅用于调试/校验，不再阻止批次更新
 
   // Check if Everything is available on mount
   useEffect(() => {
@@ -537,7 +537,7 @@ export function LauncherWindow() {
   // Use ref to track current search request and allow cancellation
   const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
 
-  // 监听 Everything 搜索的批次事件，仅用于更新进度，不在这里累积结果
+  // 监听 Everything 搜索的批次事件：实时累积结果 + 更新进度（方案 B）
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
 
@@ -547,16 +547,47 @@ export function LauncherWindow() {
         total_count: number;
         current_count: number;
       }>("everything-search-batch", (event) => {
-        const { total_count, current_count } = event.payload;
+        const { results: batchResults, total_count, current_count } = event.payload;
 
-        // 检查是否是当前搜索的结果
+        // 搜索已取消，忽略本批次
         if (currentSearchRef.current?.cancelled) {
-          return; // 搜索已取消，忽略结果
+          return;
         }
 
-        // 更新总数和当前已加载数量，用于进度显示
+        // 更新总数和当前已加载数量（用于进度显示）
         setEverythingTotalCount(total_count);
         setEverythingCurrentCount(current_count);
+
+        // 累积批次结果，实现真正的流式展示
+        setEverythingResults((prev) => {
+          // 如果之前已经有完整结果，忽略后续批次
+          if (prev.length >= total_count) {
+            return prev;
+          }
+
+          // 如果这是新搜索的第一批（prev.length === 0），直接用这一批
+          if (prev.length === 0) {
+            return batchResults.slice(); // 拷贝一份
+          }
+
+          // 按顺序追加当前批次结果
+          const next = [...prev, ...batchResults];
+
+          // 防止理论误差：如果长度超过 total_count，则截断
+          if (next.length > total_count) {
+            return next.slice(0, total_count);
+          }
+
+          return next;
+        });
+
+        // 如果当前显示数量还没初始化，按已加载数量和上限初始化
+        setDisplayedResultsCount((prev) => {
+          if (prev === 0) {
+            return Math.min(current_count, MAX_DISPLAY_RESULTS);
+          }
+          return prev;
+        });
       });
 
       unlistenFn = unlisten;
@@ -575,67 +606,72 @@ export function LauncherWindow() {
     if (!isEverythingAvailable) {
       setEverythingResults([]);
       setEverythingTotalCount(null);
-      setEverythingTotalCount(null);
+      setEverythingCurrentCount(0);
+      setDisplayedResultsCount(0);
       setIsSearchingEverything(false);
       return;
     }
     
-    // Cancel previous search if still running
+    // 取消上一次搜索
     if (currentSearchRef.current) {
       currentSearchRef.current.cancelled = true;
     }
     
-    // Create new search request
+    // 创建新的搜索请求
     const searchRequest = { query: searchQuery, cancelled: false };
     currentSearchRef.current = searchRequest;
     
-    // 重置状态，准备新的搜索
+    // 重置状态，准备新的搜索（结果由批次事件逐步填充）
     setEverythingResults([]);
     setEverythingTotalCount(null);
     setEverythingCurrentCount(0);
-    setDisplayedResultsCount(MAX_DISPLAY_RESULTS); // 重置显示数量
+    setDisplayedResultsCount(0);
     setIsSearchingEverything(true);
     
-    // 重置最终结果标记
+    // 标记：最终结果尚未设置，仅用于后面做校验日志
     finalResultsSetRef.current = false;
     
     try {
-      console.log("Searching Everything with query:", searchQuery);
+      console.log("Searching Everything with query (streaming):", searchQuery);
       const response = await tauriApi.searchEverything(searchQuery);
       
-      // Check if this search was cancelled
+      // 检查是否是当前搜索
       if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
-        console.log("Search was cancelled or superseded, ignoring results");
+        console.log("Search was cancelled or superseded, ignoring final response");
         return;
       }
       
-      // 无论是否启用了流式加载，后端最终会返回完整结果
-      // 在这里统一用最终结果覆盖前端的临时结果，确保数量一致
+      // 只做校验：比较批次累积结果与最终结果是否一致
       console.log(
-        "[最终结果] Everything search results (final):",
+        "[最终结果校验] Everything search results (final):",
         response.results.length,
         "results found (total:",
         response.total_count,
-        "), 前端当前有:",
-        everythingResults.length,
-        "条"
+        "), 当前前端 everythingResults.length=",
+        everythingResults.length
       );
       
-      // 先标记最终结果已设置，防止批次事件覆盖
       finalResultsSetRef.current = true;
       
-      // 设置最终结果
-      setEverythingResults(response.results);
-      setEverythingTotalCount(response.total_count);
-      setEverythingCurrentCount(response.results.length);
+      if (everythingResults.length !== response.total_count) {
+        console.warn(
+          "[最终结果校验] 累积结果条数与后端 total_count 不一致，累积=",
+          everythingResults.length,
+          " total_count=",
+          response.total_count,
+          "（为避免闪烁，暂不强制覆盖，仅输出警告）"
+        );
+      }
       
-      // 设置显示数量：初始显示 MAX_DISPLAY_RESULTS 条，但不超过总结果数
-      setDisplayedResultsCount(Math.min(response.results.length, MAX_DISPLAY_RESULTS));
-      
-      // 调试：确认最终结果数量
-      console.log(`[最终结果] 设置 everythingResults.length = ${response.results.length}, everythingTotalCount = ${response.total_count}, displayedResultsCount = ${Math.min(response.results.length, MAX_DISPLAY_RESULTS)}`);
+      // 如果此时还没有设置显示数量（例如非常快的搜索），初始化一次
+      setDisplayedResultsCount((prev) => {
+        if (prev === 0) {
+          const total = response.total_count ?? everythingResults.length;
+          return Math.min(total, MAX_DISPLAY_RESULTS);
+        }
+        return prev;
+      });
     } catch (error) {
-      // Check if this search was cancelled
       if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
         console.log("Search was cancelled, ignoring error");
         return;
@@ -645,19 +681,18 @@ export function LauncherWindow() {
       setEverythingResults([]);
       setEverythingTotalCount(null);
       setEverythingCurrentCount(0);
+      setDisplayedResultsCount(0);
       
-      // If search fails, re-check Everything status to keep state in sync
-      // This handles cases where status check passes but actual search fails
+      // 失败时重查状态
       const errorStr = typeof error === 'string' ? error : String(error);
-      
-      // Check if it's a known error that indicates Everything is not available
-      if (errorStr.includes('NOT_INSTALLED') || 
-          errorStr.includes('EXECUTABLE_CORRUPTED') ||
-          errorStr.includes('SERVICE_NOT_RUNNING') ||
-          errorStr.includes('not found') ||
-          errorStr.includes('未找到') ||
-          errorStr.includes('未运行')) {
-        // Re-check status and update state
+      if (
+        errorStr.includes('NOT_INSTALLED') || 
+        errorStr.includes('EXECUTABLE_CORRUPTED') ||
+        errorStr.includes('SERVICE_NOT_RUNNING') ||
+        errorStr.includes('not found') ||
+        errorStr.includes('未找到') ||
+        errorStr.includes('未运行')
+      ) {
         try {
           const status = await tauriApi.getEverythingStatus();
           setIsEverythingAvailable(status.available);
@@ -673,12 +708,9 @@ export function LauncherWindow() {
         }
       }
     } finally {
-      // Only update state if this is still the current search
+      // 只有当前仍是本次搜索时才结束 loading 状态
       if (currentSearchRef.current?.query === searchQuery && !currentSearchRef.current?.cancelled) {
         setIsSearchingEverything(false);
-      } else if (currentSearchRef.current?.query !== searchQuery) {
-        // New search started, don't update state
-        return;
       }
     }
   };
@@ -1262,6 +1294,23 @@ export function LauncherWindow() {
                             strokeLinejoin="round"
                             strokeWidth={2}
                             d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+                          />
+                        </svg>
+                      ) : result.type === "everything" && result.everything?.is_folder ? (
+                        // 文件夹（Everything 结果）
+                        <svg
+                          className={`w-5 h-5 ${
+                            index === selectedIndex ? "text-white" : "text-amber-500"
+                          }`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
                           />
                         </svg>
                       ) : result.type === "file" || result.type === "everything" ? (
