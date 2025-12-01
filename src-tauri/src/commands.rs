@@ -9,6 +9,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 
@@ -20,6 +21,16 @@ static REPLAY_STATE: LazyLock<Arc<Mutex<ReplayState>>> =
 
 pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Vec<app_search::AppInfo>>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
+
+// 搜索任务管理器：管理 Everything 搜索的取消标志
+// 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
+struct SearchTaskManager {
+    cancel_flag: Option<Arc<AtomicBool>>,
+}
+
+static SEARCH_TASK_MANAGER: LazyLock<Arc<Mutex<SearchTaskManager>>> = LazyLock::new(|| {
+    Arc::new(Mutex::new(SearchTaskManager { cancel_flag: None }))
+});
 
 pub fn get_app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     // Try to use Tauri's path API first
@@ -671,12 +682,30 @@ pub async fn search_everything(
 ) -> Result<everything_search::EverythingSearchResponse, String> {
     #[cfg(target_os = "windows")]
     {
+        // 为新搜索准备取消标志，同时通知旧搜索退出
+        let cancel_flag = {
+            let mut manager = SEARCH_TASK_MANAGER
+                .lock()
+                .map_err(|e| format!("锁定搜索管理器失败: {}", e))?;
+
+            // 如果存在旧的搜索标志，先将其置为取消
+            if let Some(old_flag) = &manager.cancel_flag {
+                old_flag.store(true, Ordering::Relaxed);
+            }
+
+            // 为本次搜索创建新的标志，并保存下来
+            let new_flag = Arc::new(AtomicBool::new(false));
+            manager.cancel_flag = Some(new_flag.clone());
+            new_flag
+        };
+
         // 在后台线程执行搜索，避免阻塞
         let query_clone = query.clone();
+
         tokio::task::spawn_blocking(move || {
             // No limit - request maximum results from Everything
             // Using u32::MAX would be too large, so use a practical maximum (1 million)
-            everything_search::windows::search_files(&query_clone, 1_000_000)
+            everything_search::windows::search_files(&query_clone, 1_000_000, Some(&cancel_flag))
                 .map_err(|e| e.to_string())
         })
         .await

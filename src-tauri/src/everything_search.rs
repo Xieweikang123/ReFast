@@ -374,7 +374,10 @@ pub mod windows {
                     let result = parse_ipc_reply(&cds);
                     match &result {
                         Ok((paths, tot, num, _off)) => {
-                            log_debug!("[DEBUG] Parsed result: {} paths (Total: {}, This batch: {})", paths.len(), tot, num);
+                            // 只在批次数量很大或出错时输出详细日志，减少日志噪音
+                            if *tot > 100_000 || paths.len() != *num as usize {
+                                log_debug!("[DEBUG] Parsed result: {} paths (Total: {}, This batch: {})", paths.len(), tot, num);
+                            }
                         }
                         Err(e) => {
                             log_debug!("[DEBUG] Parsed result error: {:?}", e);
@@ -852,13 +855,16 @@ pub mod windows {
                 }
             }
 
-            log_debug!(
-                "[DEBUG] Parse summary: Total items={}, Parsed={}, Skipped={}, Invalid offsets={}",
-                items_to_process,
-                results.len(),
-                skipped_count,
-                invalid_offset_count
-            );
+            // 只在出错或批次很大时输出解析摘要，减少日志噪音
+            if skipped_count > 0 || invalid_offset_count > 0 || items_to_process > 5000 {
+                log_debug!(
+                    "[DEBUG] Parse summary: Total items={}, Parsed={}, Skipped={}, Invalid offsets={}",
+                    items_to_process,
+                    results.len(),
+                    skipped_count,
+                    invalid_offset_count
+                );
+            }
 
             // 返回四元组：(结果列表, 总条数, 当前页条数, 当前页偏移量)
             Ok((results, totitems, numitems, offset))
@@ -1086,40 +1092,8 @@ pub mod windows {
             // SendMessageW 返回后，Everything 可能已经发送了回复
             // 如果是通过 SendMessageW 发送的，窗口过程已经在 SendMessageW 期间被调用了
             // 如果是通过 PostMessage 发送的，需要在消息循环中等待
-            log_debug!("[DEBUG] ===== CRITICAL: SendMessageW returned successfully =====");
-            log_debug!("[DEBUG] If Everything sent reply via SendMessageW, window_proc should have been called");
-            log_debug!(
-                "[DEBUG] If Everything sent reply via PostMessage, we need to wait in message loop"
-            );
-            log_debug!(
-                "[DEBUG] Checking for any pending messages immediately after SendMessageW..."
-            );
-
-            let mut msg = MSG {
-                hwnd: 0,
-                message: 0,
-                wParam: 0,
-                lParam: 0,
-                time: 0,
-                pt: POINT { x: 0, y: 0 },
-            };
-
-            // 尝试立即获取一条消息（非阻塞）
-            let has_msg = PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE);
-            if has_msg != 0 {
-                log_debug!(
-                    "[DEBUG] Found pending message after SendMessageW: msg=0x{:X} ({}), hwnd={:?}",
-                    msg.message,
-                    msg.message,
-                    msg.hwnd
-                );
-            } else {
-                log_debug!("[DEBUG] No pending messages immediately after SendMessageW");
-            }
-
-            log_debug!(
-                "[DEBUG] ===== SendMessageW completed, will wait for reply in message loop ====="
-            );
+            // 移除详细的 SendMessageW 日志，减少日志噪音
+            // 这些日志在正常运行时不需要，只在调试时有用
         }
 
         Ok(())
@@ -1201,9 +1175,15 @@ pub mod windows {
     }
 
     /// 搜索文件（使用 Everything IPC）
+    /// 
+    /// # Arguments
+    /// * `query` - 搜索查询字符串
+    /// * `max_results` - 最大结果数量
+    /// * `cancelled` - 可选的取消标志，如果设置为 true，搜索将提前终止
     pub fn search_files(
         query: &str,
         max_results: usize,
+        cancelled: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<EverythingSearchResponse, EverythingError> {
         log_debug!("[DEBUG] ===== search_files called =====");
         log_debug!("[DEBUG] Query: '{}', max_results: {}", query, max_results);
@@ -1237,12 +1217,30 @@ pub mod windows {
         let timeout = Duration::from_secs(5);
 
         // 分页循环：直到获取所有结果
+        let mut batch_count = 0;
         loop {
-            log_debug!(
-                "[DEBUG] Requesting batch: offset={}, batch_size={}",
-                current_offset,
-                batch_size
-            );
+            // 检查是否被取消
+            if let Some(cancel_flag) = cancelled {
+                if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                    log_debug!("[DEBUG] Search cancelled by user");
+                    return Err(EverythingError::Other("搜索已取消".to_string()));
+                }
+            }
+            
+            batch_count += 1;
+            
+            // 每100批次或每10万条记录输出一次进度，减少日志噪音
+            // 第一次循环总是输出，让用户知道搜索开始了
+            let should_log_detail = batch_count == 1 || batch_count % 100 == 0 || (current_offset > 0 && current_offset % 100_000 == 0);
+            
+            if should_log_detail {
+                log_debug!(
+                    "[DEBUG] Requesting batch #{}: offset={}, batch_size={}",
+                    batch_count,
+                    current_offset,
+                    batch_size
+                );
+            }
 
             // 发送查询（带 offset）
             send_search_query(
@@ -1257,10 +1255,12 @@ pub mod windows {
                 e
             })?;
 
-            log_debug!(
-                "[DEBUG] Search query sent successfully (offset={})",
-                current_offset
-            );
+            if should_log_detail {
+                log_debug!(
+                    "[DEBUG] Search query sent successfully (offset={})",
+                    current_offset
+                );
+            }
 
             // 等待回复
             let start = Instant::now();
@@ -1269,6 +1269,14 @@ pub mod windows {
                 None;
 
             loop {
+                // 检查是否被取消
+                if let Some(cancel_flag) = cancelled {
+                    if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        log_debug!("[DEBUG] Search cancelled while waiting for batch reply");
+                        return Err(EverythingError::Other("搜索已取消".to_string()));
+                    }
+                }
+                
                 iteration += 1;
                 if iteration % 10 == 0 {
                     log_debug!(
@@ -1376,12 +1384,20 @@ pub mod windows {
             }
 
             // 如果没有退出，继续下一轮循环
-            log_debug!(
-                "[DEBUG] Continuing pagination loop: need {} more items (current: {}, target: {})",
-                tot_items as usize - all_results.len(),
-                all_results.len(),
-                tot_items
-            );
+            // 只在每100批次或每10万条记录时输出进度，减少日志噪音
+            if should_log_detail {
+                let remaining = (tot_items as usize).saturating_sub(all_results.len());
+                let max_remaining = (max_results as usize).saturating_sub(all_results.len());
+                let actual_remaining = remaining.min(max_remaining);
+                log_debug!(
+                    "[DEBUG] Progress: {}/{} items ({}%), batch #{}, remaining: {}",
+                    all_results.len(),
+                    tot_items.min(max_results as u32),
+                    (all_results.len() * 100 / tot_items.min(max_results as u32) as usize),
+                    batch_count,
+                    actual_remaining
+                );
+            }
         }
 
         log_debug!(
