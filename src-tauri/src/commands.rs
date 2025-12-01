@@ -679,6 +679,7 @@ pub fn update_file_history_name(
 #[tauri::command]
 pub async fn search_everything(
     query: String,
+    app: tauri::AppHandle,
 ) -> Result<everything_search::EverythingSearchResponse, String> {
     #[cfg(target_os = "windows")]
     {
@@ -699,14 +700,58 @@ pub async fn search_everything(
             new_flag
         };
 
+        // 获取窗口用于发送事件
+        let window = app
+            .get_webview_window("launcher")
+            .ok_or_else(|| "无法获取 launcher 窗口".to_string())?;
+
         // 在后台线程执行搜索，避免阻塞
         let query_clone = query.clone();
+        let window_clone = window.clone();
 
+        // 获取异步运行时句柄，用于在阻塞线程中发送事件
+        let rt_handle = tokio::runtime::Handle::current();
+        
         tokio::task::spawn_blocking(move || {
+            // 创建批次回调，用于实时发送结果（仅用于进度显示）
+            let on_batch = |batch_results: &[everything_search::EverythingResult], total_count: u32, current_count: u32| {
+                // 在异步运行时中发送事件
+                let window = window_clone.clone();
+                let batch_results = batch_results.to_vec();
+                let handle = rt_handle.clone();
+                
+                // 使用运行时句柄在阻塞线程中发送异步事件
+                handle.spawn(async move {
+                    // 发送增量结果事件
+                    let event_data = serde_json::json!({
+                        "results": batch_results,
+                        "total_count": total_count,
+                        "current_count": current_count,
+                    });
+                    if let Err(e) = window.emit("everything-search-batch", &event_data) {
+                        eprintln!("[DEBUG] Failed to emit search batch event: {}", e);
+                    }
+                });
+            };
+
             // No limit - request maximum results from Everything
             // Using u32::MAX would be too large, so use a practical maximum (1 million)
-            everything_search::windows::search_files(&query_clone, 1_000_000, Some(&cancel_flag))
-                .map_err(|e| e.to_string())
+            let resp = everything_search::windows::search_files(
+                &query_clone,
+                1_000_000,
+                Some(&cancel_flag),
+                Some(on_batch),
+            )
+            .map_err(|e| e.to_string())?;
+
+            // 调试：确认后端实际返回了多少条结果
+            eprintln!(
+                "[RUST] search_everything: search_files returned {} results (total_count={})",
+                resp.results.len(),
+                resp.total_count
+            );
+
+            Ok(resp)
         })
         .await
         .map_err(|e| format!("搜索任务失败: {}", e))?

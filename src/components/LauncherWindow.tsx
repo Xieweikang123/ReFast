@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { tauriApi } from "../api/tauri";
 import type { AppInfo, FileHistoryItem, EverythingResult } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,6 +23,11 @@ export function LauncherWindow() {
   const [filteredFiles, setFilteredFiles] = useState<FileHistoryItem[]>([]);
   const [everythingResults, setEverythingResults] = useState<EverythingResult[]>([]);
   const [everythingTotalCount, setEverythingTotalCount] = useState<number | null>(null);
+  const [everythingCurrentCount, setEverythingCurrentCount] = useState<number>(0); // 当前已加载的数量
+  const [displayedResultsCount, setDisplayedResultsCount] = useState<number>(500); // 当前显示的结果数量
+  
+  // 限制显示的结果数量，避免 DOM 节点过多导致卡顿
+  const MAX_DISPLAY_RESULTS = 500; // 每次加载 500 条结果
   const [isEverythingAvailable, setIsEverythingAvailable] = useState(false);
   const [everythingPath, setEverythingPath] = useState<string | null>(null);
   const [everythingVersion, setEverythingVersion] = useState<string | null>(null);
@@ -41,6 +46,8 @@ export function LauncherWindow() {
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const shouldPreserveScrollRef = useRef(false); // 标记是否需要保持滚动位置
+  const finalResultsSetRef = useRef(false); // 标记是否已经设置了最终结果
 
   // Check if Everything is available on mount
   useEffect(() => {
@@ -303,7 +310,8 @@ export function LauncherWindow() {
       setFilteredFiles([]);
       setEverythingResults([]);
       setEverythingTotalCount(null);
-      setEverythingTotalCount(null);
+      setEverythingCurrentCount(0);
+      setDisplayedResultsCount(MAX_DISPLAY_RESULTS); // 重置显示数量
       setDetectedUrls([]);
       setResults([]);
       setSelectedIndex(0);
@@ -332,8 +340,9 @@ export function LauncherWindow() {
   }, [query, isEverythingAvailable]);
 
   // Combine apps, files, Everything results, and URLs into results when they change
-  useEffect(() => {
-    const combinedResults: SearchResult[] = [
+  // 使用 useMemo 优化，避免不必要的重新计算
+  const combinedResults = useMemo(() => {
+    const results: SearchResult[] = [
       // URLs first (highest priority when detected)
       ...detectedUrls.map((url) => ({
         type: "url" as const,
@@ -353,40 +362,81 @@ export function LauncherWindow() {
         displayName: file.name,
         path: file.path,
       })),
-      ...everythingResults.map((everything) => ({
+      // 限制 Everything 结果显示数量，支持滚动加载更多
+      ...everythingResults.slice(0, displayedResultsCount).map((everything) => ({
         type: "everything" as const,
         everything,
         displayName: everything.name,
         path: everything.path,
       })),
     ];
-    setResults(combinedResults); // Show all results (with scroll if needed)
-    setSelectedIndex(0);
+    return results;
+  }, [filteredApps, filteredFiles, everythingResults, detectedUrls, displayedResultsCount]);
+
+  useEffect(() => {
+    // 保存当前滚动位置（如果需要保持）
+    const needPreserveScroll = shouldPreserveScrollRef.current;
+    const savedScrollTop = needPreserveScroll && listRef.current 
+      ? listRef.current.scrollTop 
+      : null;
+    const savedScrollHeight = needPreserveScroll && listRef.current
+      ? listRef.current.scrollHeight
+      : null;
     
-    // Adjust window size based on content
-    const adjustWindowSize = () => {
-      const window = getCurrentWindow();
-      const whiteContainer = document.querySelector('.bg-white');
-      if (whiteContainer && !showDownloadModal) {
-        // Use double requestAnimationFrame to ensure DOM is fully updated
+    // 只有在结果真正变化时才更新，避免不必要的重新渲染
+    setResults(combinedResults);
+    
+    // 如果需要保持滚动位置，在 DOM 更新后恢复
+    if (needPreserveScroll && savedScrollTop !== null && savedScrollHeight !== null) {
+      // 使用多个 requestAnimationFrame 确保 DOM 完全更新
+      requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            // Use scrollWidth/scrollHeight to get the full content size
-            const containerWidth = whiteContainer.scrollWidth;
-            const containerHeight = whiteContainer.scrollHeight;
-            // Limit max width to prevent window from being too wide
-            const maxWidth = 600;
-            const targetWidth = Math.min(containerWidth, maxWidth);
-            // Use setSize to match content area exactly (decorations are disabled)
-            window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+            if (listRef.current) {
+              const newScrollHeight = listRef.current.scrollHeight;
+              // 计算新的滚动位置（保持相对位置）
+              const scrollRatio = savedScrollTop / savedScrollHeight;
+              const newScrollTop = newScrollHeight * scrollRatio;
+              listRef.current.scrollTop = newScrollTop;
+              shouldPreserveScrollRef.current = false;
+              console.log(`[滚动保持] 恢复滚动位置: ${savedScrollTop} -> ${newScrollTop} (ratio: ${scrollRatio.toFixed(3)})`);
+            }
           });
         });
-      }
-    };
+      });
+    } else if (!needPreserveScroll && listRef.current) {
+      // 如果不是保持滚动位置，且列表有滚动，不要重置滚动位置
+      // 这样可以避免意外的滚动重置
+    }
     
-    // Adjust size after results update - use longer delay to ensure DOM is ready
-    setTimeout(adjustWindowSize, 200);
-  }, [filteredApps, filteredFiles, everythingResults, detectedUrls]);
+    // 使用节流优化窗口大小调整，避免频繁调用导致卡顿
+    // 如果正在保持滚动位置，延迟窗口大小调整，让滚动位置先恢复
+    const delay = needPreserveScroll ? 600 : 300;
+    const timeoutId = setTimeout(() => {
+      const adjustWindowSize = () => {
+        const window = getCurrentWindow();
+        const whiteContainer = document.querySelector('.bg-white');
+        if (whiteContainer && !showDownloadModal) {
+          // Use double requestAnimationFrame to ensure DOM is fully updated
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              // Use scrollWidth/scrollHeight to get the full content size
+              const containerWidth = whiteContainer.scrollWidth;
+              const containerHeight = whiteContainer.scrollHeight;
+              // Limit max width to prevent window from being too wide
+              const maxWidth = 600;
+              const targetWidth = Math.min(containerWidth, maxWidth);
+              // Use setSize to match content area exactly (decorations are disabled)
+              window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+            });
+          });
+        }
+      };
+      adjustWindowSize();
+    }, delay);
+    
+    return () => clearTimeout(timeoutId);
+  }, [combinedResults, showDownloadModal]);
 
     // Adjust window size when results actually change
     useEffect(() => {
@@ -415,7 +465,13 @@ export function LauncherWindow() {
     }, [results, showDownloadModal]);
 
   // Scroll selected item into view and adjust window size
+  // 只在 selectedIndex 变化时滚动，避免在结果更新时意外滚动
   useEffect(() => {
+    // 如果正在保持滚动位置，不要执行 scrollIntoView
+    if (shouldPreserveScrollRef.current) {
+      return;
+    }
+    
     if (listRef.current && selectedIndex >= 0 && results.length > 0) {
       const items = listRef.current.children;
       if (items[selectedIndex]) {
@@ -425,31 +481,8 @@ export function LauncherWindow() {
         });
       }
     }
-    
-    // Adjust window size when results change
-    const adjustWindowSize = () => {
-      const window = getCurrentWindow();
-      const whiteContainer = document.querySelector('.bg-white');
-      if (whiteContainer && !showDownloadModal) {
-        // Use double requestAnimationFrame to ensure DOM is fully updated
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            // Use scrollWidth/scrollHeight to get the full content size
-            const containerWidth = whiteContainer.scrollWidth;
-            const containerHeight = whiteContainer.scrollHeight;
-            // Limit max width to prevent window from being too wide
-            const maxWidth = 600;
-            const targetWidth = Math.min(containerWidth, maxWidth);
-            // Use setSize to match content area exactly (decorations are disabled)
-            window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
-          });
-        });
-      }
-    };
-    
-    // Adjust size after scroll animation
-    setTimeout(adjustWindowSize, 200);
-  }, [selectedIndex, results.length, results, showDownloadModal]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIndex]); // 只依赖 selectedIndex，避免在结果更新时触发滚动
 
   const loadApplications = async () => {
     try {
@@ -504,6 +537,40 @@ export function LauncherWindow() {
   // Use ref to track current search request and allow cancellation
   const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
 
+  // 监听 Everything 搜索的批次事件，仅用于更新进度，不在这里累积结果
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+
+    const setupBatchListener = async () => {
+      const unlisten = await listen<{
+        results: EverythingResult[];
+        total_count: number;
+        current_count: number;
+      }>("everything-search-batch", (event) => {
+        const { total_count, current_count } = event.payload;
+
+        // 检查是否是当前搜索的结果
+        if (currentSearchRef.current?.cancelled) {
+          return; // 搜索已取消，忽略结果
+        }
+
+        // 更新总数和当前已加载数量，用于进度显示
+        setEverythingTotalCount(total_count);
+        setEverythingCurrentCount(current_count);
+      });
+
+      unlistenFn = unlisten;
+    };
+
+    setupBatchListener();
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
+  }, []);
+
   const searchEverything = async (searchQuery: string) => {
     if (!isEverythingAvailable) {
       setEverythingResults([]);
@@ -522,8 +589,17 @@ export function LauncherWindow() {
     const searchRequest = { query: searchQuery, cancelled: false };
     currentSearchRef.current = searchRequest;
     
+    // 重置状态，准备新的搜索
+    setEverythingResults([]);
+    setEverythingTotalCount(null);
+    setEverythingCurrentCount(0);
+    setDisplayedResultsCount(MAX_DISPLAY_RESULTS); // 重置显示数量
+    setIsSearchingEverything(true);
+    
+    // 重置最终结果标记
+    finalResultsSetRef.current = false;
+    
     try {
-      setIsSearchingEverything(true);
       console.log("Searching Everything with query:", searchQuery);
       const response = await tauriApi.searchEverything(searchQuery);
       
@@ -533,9 +609,31 @@ export function LauncherWindow() {
         return;
       }
       
-      console.log("Everything search results:", response.results.length, "results found (total:", response.total_count, ")");
+      // 无论是否启用了流式加载，后端最终会返回完整结果
+      // 在这里统一用最终结果覆盖前端的临时结果，确保数量一致
+      console.log(
+        "[最终结果] Everything search results (final):",
+        response.results.length,
+        "results found (total:",
+        response.total_count,
+        "), 前端当前有:",
+        everythingResults.length,
+        "条"
+      );
+      
+      // 先标记最终结果已设置，防止批次事件覆盖
+      finalResultsSetRef.current = true;
+      
+      // 设置最终结果
       setEverythingResults(response.results);
       setEverythingTotalCount(response.total_count);
+      setEverythingCurrentCount(response.results.length);
+      
+      // 设置显示数量：初始显示 MAX_DISPLAY_RESULTS 条，但不超过总结果数
+      setDisplayedResultsCount(Math.min(response.results.length, MAX_DISPLAY_RESULTS));
+      
+      // 调试：确认最终结果数量
+      console.log(`[最终结果] 设置 everythingResults.length = ${response.results.length}, everythingTotalCount = ${response.total_count}, displayedResultsCount = ${Math.min(response.results.length, MAX_DISPLAY_RESULTS)}`);
     } catch (error) {
       // Check if this search was cancelled
       if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
@@ -546,6 +644,7 @@ export function LauncherWindow() {
       console.error("Failed to search Everything:", error);
       setEverythingResults([]);
       setEverythingTotalCount(null);
+      setEverythingCurrentCount(0);
       
       // If search fails, re-check Everything status to keep state in sync
       // This handles cases where status check passes but actual search fails
@@ -1065,6 +1164,41 @@ export function LauncherWindow() {
             <div
               ref={listRef}
               className="max-h-96 overflow-y-auto"
+              onScroll={(e) => {
+                const target = e.currentTarget;
+                const scrollTop = target.scrollTop;
+                const scrollHeight = target.scrollHeight;
+                const clientHeight = target.clientHeight;
+                
+                // 检测是否滚动到底部（距离底部 50px 内）
+                const isNearBottom = scrollHeight - scrollTop - clientHeight < 50;
+                
+                if (isNearBottom) {
+                  // 检查是否有更多 Everything 结果可以加载
+                  // 使用 everythingTotalCount 判断总数，而不是依赖当前数组长度，避免中间状态导致无法继续加载
+                  const totalCount = everythingTotalCount ?? everythingResults.length;
+                  const hasMoreEverythingResults = totalCount > displayedResultsCount;
+                  
+                  console.log(`[滚动加载] 检查加载更多: totalCount=${totalCount}, displayedResultsCount=${displayedResultsCount}, everythingResults.length=${everythingResults.length}, hasMore=${hasMoreEverythingResults}`);
+                  
+                  if (hasMoreEverythingResults) {
+                    // 标记需要保持滚动位置
+                    shouldPreserveScrollRef.current = true;
+                    
+                    // 加载更多结果（每次增加 500 条）
+                    setDisplayedResultsCount((prev) => {
+                      const next = prev + MAX_DISPLAY_RESULTS;
+                      // 使用 totalCount 和 everythingResults.length 的最小值，确保不超过实际结果数
+                      const maxCount = Math.min(totalCount, everythingResults.length || totalCount);
+                      const actualNext = Math.min(next, maxCount);
+                      console.log(`[滚动加载] 加载更多: ${prev} -> ${actualNext} (max: ${maxCount}, totalCount: ${totalCount}, everythingResults.length: ${everythingResults.length})`);
+                      return actualNext;
+                    });
+                  } else {
+                    console.log(`[滚动加载] 没有更多结果可加载: totalCount=${totalCount}, displayedResultsCount=${displayedResultsCount}`);
+                  }
+                }
+              }}
             >
               {results.map((result, index) => (
                 <div
@@ -1078,6 +1212,12 @@ export function LauncherWindow() {
                   }`}
                 >
                   <div className="flex items-center gap-3">
+                    {/* 序号 */}
+                    <div className={`text-sm font-medium flex-shrink-0 w-8 text-center ${
+                      index === selectedIndex ? "text-white" : "text-gray-400"
+                    }`}>
+                      {index + 1}
+                    </div>
                     <div className={`w-8 h-8 rounded flex items-center justify-center flex-shrink-0 overflow-hidden ${
                       index === selectedIndex ? "bg-blue-400" : "bg-gray-200"
                     }`}>
@@ -1210,6 +1350,23 @@ export function LauncherWindow() {
                   </div>
                 </div>
               ))}
+              
+              {/* 加载更多提示 - 只在有 Everything 结果且未全部显示时显示 */}
+              {everythingResults.length > 0 && everythingResults.length > displayedResultsCount && (
+                <div className="px-6 py-4 text-center text-gray-500 text-sm border-t border-gray-100 bg-gray-50">
+                  <div className="flex items-center justify-center gap-2">
+                    <svg className="w-4 h-4 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                    <span>
+                      已显示 {displayedResultsCount.toLocaleString()} / {everythingResults.length.toLocaleString()} 条 Everything 结果
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-400">
+                    滚动到底部自动加载更多（每次 {MAX_DISPLAY_RESULTS.toLocaleString()} 条）
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1230,31 +1387,55 @@ export function LauncherWindow() {
           {/* Everything Search Status */}
           {query.trim() && isEverythingAvailable && (
             <div className="px-6 py-2 border-t border-gray-200 bg-gray-50">
-              <div className="flex items-center justify-between text-xs text-gray-600">
-                <div className="flex items-center gap-2">
-                  {isSearchingEverything ? (
-                    <>
-                      <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
-                      <span className="text-blue-600">Everything 搜索中...</span>
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                      </svg>
-                      <span>
-                        Everything: {everythingTotalCount !== null 
-                          ? `找到 ${everythingTotalCount} 个结果` 
-                          : everythingResults.length > 0
-                          ? `找到 ${everythingResults.length} 个结果`
-                          : "无结果"}
-                      </span>
-                    </>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between text-xs text-gray-600">
+                  <div className="flex items-center gap-2">
+                    {isSearchingEverything ? (
+                      <>
+                        <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
+                        <span className="text-blue-600">Everything 搜索中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        <span>
+                          Everything: {everythingTotalCount !== null 
+                            ? `找到 ${everythingTotalCount.toLocaleString()} 个结果${everythingTotalCount > displayedResultsCount ? ` (显示 ${displayedResultsCount.toLocaleString()} 条)` : ''}` 
+                            : everythingResults.length > 0
+                            ? `找到 ${everythingResults.length.toLocaleString()} 个结果${everythingResults.length > displayedResultsCount ? ` (显示 ${displayedResultsCount.toLocaleString()} 条)` : ''}`
+                            : "无结果"}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {everythingVersion && (
+                    <div className="text-gray-500 text-xs">
+                      v{everythingVersion}
+                    </div>
                   )}
                 </div>
-                {everythingVersion && (
-                  <div className="text-gray-500 text-xs">
-                    v{everythingVersion}
+                
+                {/* 流式加载进度条 */}
+                {isSearchingEverything && everythingTotalCount !== null && everythingTotalCount > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span>
+                        已加载 {everythingCurrentCount.toLocaleString()} / {everythingTotalCount.toLocaleString()} 条
+                      </span>
+                      <span className="font-medium text-blue-600">
+                        {Math.round((everythingCurrentCount / everythingTotalCount) * 100)}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                        style={{
+                          width: `${Math.min((everythingCurrentCount / everythingTotalCount) * 100, 100)}%`,
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
               </div>

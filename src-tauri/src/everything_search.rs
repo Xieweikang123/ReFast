@@ -1180,11 +1180,16 @@ pub mod windows {
     /// * `query` - 搜索查询字符串
     /// * `max_results` - 最大结果数量
     /// * `cancelled` - 可选的取消标志，如果设置为 true，搜索将提前终止
-    pub fn search_files(
+    /// * `on_batch` - 可选的批次回调函数，每获取一批结果时调用
+    pub fn search_files<F>(
         query: &str,
         max_results: usize,
         cancelled: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<EverythingSearchResponse, EverythingError> {
+        mut on_batch: Option<F>,
+    ) -> Result<EverythingSearchResponse, EverythingError>
+    where
+        F: FnMut(&[EverythingResult], u32, u32), // (batch_results, total_count, current_count)
+    {
         log_debug!("[DEBUG] ===== search_files called =====");
         log_debug!("[DEBUG] Query: '{}', max_results: {}", query, max_results);
 
@@ -1330,6 +1335,7 @@ pub mod windows {
             }
 
             // 转换路径为 EverythingResult
+            let mut batch_results = Vec::new();
             for path in batch_paths.iter() {
                 let path_buf = PathBuf::from(path);
                 let name = path_buf
@@ -1343,13 +1349,22 @@ pub mod windows {
                 let date_modified = None;
                 let is_folder = None;
 
-                all_results.push(EverythingResult {
+                let result = EverythingResult {
                     path: path.clone(),
                     name,
                     size,
                     date_modified,
                     is_folder,
-                });
+                };
+                
+                batch_results.push(result.clone());
+                all_results.push(result);
+            }
+            
+            // 调用批次回调，实时发送结果
+            if let Some(ref mut callback) = on_batch {
+                let total = total_count.unwrap_or(tot_items);
+                callback(&batch_results, total, all_results.len() as u32);
             }
 
             // 更新偏移量：始终使用累积的结果数量作为下一次请求的 offset
@@ -1398,6 +1413,18 @@ pub mod windows {
                     actual_remaining
                 );
             }
+        }
+
+        // 额外输出一次最终进度日志，明确已经到 100%
+        if let Some(tot) = total_count {
+            let effective_total = tot.min(max_results as u32);
+            log_debug!(
+                "[DEBUG] Final progress: {}/{} items ({}%), total batches: {}",
+                all_results.len(),
+                effective_total,
+                (all_results.len() * 100 / effective_total as usize),
+                batch_count
+            );
         }
 
         log_debug!(
