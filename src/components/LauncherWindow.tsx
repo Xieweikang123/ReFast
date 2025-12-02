@@ -42,7 +42,12 @@ export function LauncherWindow() {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
-  const [isHoveringConfigIcon, setIsHoveringConfigIcon] = useState(false);
+  const [isHoveringAiIcon, setIsHoveringAiIcon] = useState(false);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [ollamaSettings, setOllamaSettings] = useState<{ model: string; base_url: string }>({
+    model: "llama2",
+    base_url: "http://localhost:11434",
+  });
   const [detectedUrls, setDetectedUrls] = useState<string[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SearchResult } | null>(null);
   const [selectedMemo, setSelectedMemo] = useState<MemoItem | null>(null);
@@ -86,6 +91,28 @@ export function LauncherWindow() {
   };
 
   // 插件列表已从 plugins/index.ts 导入
+
+  // Load settings on mount and reload when settings window closes
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const settings = await tauriApi.getSettings();
+        setOllamaSettings(settings.ollama);
+      } catch (error) {
+        console.error("Failed to load settings:", error);
+      }
+    };
+    loadSettings();
+
+    // 监听设置窗口关闭事件，重新加载设置
+    const unlisten = listen("settings:updated", () => {
+      loadSettings();
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   // Check if Everything is available on mount
   useEffect(() => {
@@ -445,6 +472,79 @@ export function LauncherWindow() {
     })
     .filter((url): url is string => url !== null && url.length > 0) // Remove nulls and empty strings
     .filter((url, index, self) => self.indexOf(url) === index); // Remove duplicates
+  };
+
+  // Call Ollama API to ask AI
+  const askOllama = async (prompt: string) => {
+    if (!prompt.trim()) {
+      return;
+    }
+
+    setIsAiLoading(true);
+    try {
+      const baseUrl = ollamaSettings.base_url || 'http://localhost:11434';
+      const model = ollamaSettings.model || 'llama2';
+      
+      // 尝试使用 chat API (更现代的方式)
+      const response = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        // 如果chat API失败，尝试使用generate API作为后备
+        const generateResponse = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: model,
+            prompt: prompt,
+            stream: false,
+          }),
+        });
+
+        if (!generateResponse.ok) {
+          throw new Error(`Ollama API error: ${generateResponse.statusText}`);
+        }
+
+        const generateData = await generateResponse.json();
+        const answer = generateData.response || '未收到响应';
+        setQuery(answer);
+        console.log('AI回答:', answer);
+        return;
+      }
+
+      const data = await response.json();
+      const answer = data.message?.content || data.response || '未收到响应';
+      
+      // 将AI的回答设置到搜索框中
+      setQuery(answer);
+      
+      console.log('AI回答:', answer);
+    } catch (error: any) {
+      console.error('调用Ollama API失败:', error);
+      // 显示错误提示
+      const errorMessage = error.message || '未知错误';
+      const baseUrl = ollamaSettings.base_url || 'http://localhost:11434';
+      const model = ollamaSettings.model || 'llama2';
+      alert(`调用AI失败: ${errorMessage}\n\n请确保:\n1. Ollama服务正在运行\n2. 已安装模型 (例如: ollama pull ${model})\n3. 服务地址为 ${baseUrl}`);
+    } finally {
+      setIsAiLoading(false);
+    }
   };
 
   // Search applications, file history, and Everything when query changes (with debounce)
@@ -1748,17 +1848,18 @@ export function LauncherWindow() {
                   e.stopPropagation();
                 }}
               />
-              {/* Shortcuts Config Icon Button */}
+              {/* AI Assistant Icon Button */}
               <div
                 className="relative flex items-center justify-center"
-                onMouseEnter={() => setIsHoveringConfigIcon(true)}
-                onMouseLeave={() => setIsHoveringConfigIcon(false)}
+                onMouseEnter={() => setIsHoveringAiIcon(true)}
+                onMouseLeave={() => setIsHoveringAiIcon(false)}
                 onClick={async (e) => {
                   e.stopPropagation();
-                  try {
-                    await tauriApi.showShortcutsConfig();
-                  } catch (error) {
-                    console.error("Failed to show shortcuts config:", error);
+                  if (query.trim()) {
+                    await askOllama(query);
+                  } else {
+                    // 如果没有输入，可以显示提示或使用默认提示
+                    await askOllama('你好，请介绍一下你自己');
                   }
                 }}
                 onMouseDown={(e) => {
@@ -1766,23 +1867,42 @@ export function LauncherWindow() {
                   e.stopPropagation();
                 }}
                 style={{ cursor: 'pointer', minWidth: '24px', minHeight: '24px' }}
-                title="历史访问"
+                title="询问AI"
               >
-                <svg
-                  className={`w-5 h-5 transition-all ${
-                    isHoveringConfigIcon ? 'text-gray-600 opacity-100' : 'text-gray-300 opacity-50'
-                  }`}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"
-                  />
-                </svg>
+                {isAiLoading ? (
+                  <svg
+                    className="w-5 h-5 text-blue-500 animate-spin"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                ) : (
+                  <svg
+                    className={`w-5 h-5 transition-all ${
+                      isHoveringAiIcon ? 'text-blue-600 opacity-100' : 'text-gray-400 opacity-70'
+                    }`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    {/* AI/Robot Icon */}
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                    />
+                    <circle cx="9" cy="9" r="1" fill="currentColor"/>
+                    <circle cx="15" cy="9" r="1" fill="currentColor"/>
+                  </svg>
+                )}
               </div>
             </div>
           </div>

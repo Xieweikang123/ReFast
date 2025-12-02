@@ -241,5 +241,18 @@ export const tauriApi = {
   async searchSystemFolders(query: string): Promise<SystemFolderItem[]> {
     return invoke("search_system_folders", { query });
   },
+
+  // Settings APIs
+  async getSettings(): Promise<{ ollama: { model: string; base_url: string } }> {
+    return invoke("get_settings");
+  },
+
+  async saveSettings(settings: { ollama: { model: string; base_url: string } }): Promise<void> {
+    return invoke("save_settings", { settings });
+  },
+
+  async showSettingsWindow(): Promise<void> {
+    return invoke("show_settings_window");
+  },
 };
 

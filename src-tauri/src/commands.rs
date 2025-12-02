@@ -6,6 +6,7 @@ use crate::memos;
 use crate::open_history;
 use crate::recording::{RecordingMeta, RecordingState};
 use crate::replay::ReplayState;
+use crate::settings;
 use crate::shortcuts;
 use crate::window_config;
 use std::env;
@@ -2010,4 +2011,86 @@ pub fn read_plugin_manifest(plugin_dir: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to read manifest: {}", e))?;
     
     Ok(content)
+}
+
+// ===== Settings commands =====
+
+#[tauri::command]
+pub fn get_settings(app: tauri::AppHandle) -> Result<settings::Settings, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    settings::load_settings(&app_data_dir)
+}
+
+#[tauri::command]
+pub fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    settings::save_settings(&app_data_dir, &settings)
+}
+
+#[tauri::command]
+pub async fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    println!("[后端] show_settings_window: START");
+
+    // 1. 尝试获取现有窗口
+    if let Some(window) = app.get_webview_window("settings") {
+        println!("[后端] show_settings_window: 窗口已存在，执行显示操作");
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+
+        // 通知前端刷新数据
+        let window_clone = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            match window_clone.emit("settings:refresh", ()) {
+                Ok(_) => {
+                    println!("[后端] show_settings_window: Refresh event emitted successfully");
+                }
+                Err(e) => {
+                    println!(
+                        "[后端] show_settings_window: ERROR emitting refresh event: {}",
+                        e
+                    );
+                }
+            }
+        });
+    } else {
+        println!("[后端] show_settings_window: 窗口不存在，开始动态创建");
+
+        // 2. 动态创建窗口
+        let window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "settings",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("设置")
+        .inner_size(600.0, 500.0)
+        .resizable(true)
+        .center()
+        .build()
+        .map_err(|e| format!("创建设置窗口失败: {}", e))?;
+
+        println!("[后端] show_settings_window: 窗口创建成功");
+
+        // 通知前端刷新数据
+        let window_clone = window.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            match window_clone.emit("settings:refresh", ()) {
+                Ok(_) => {
+                    println!("[后端] show_settings_window: Refresh event emitted for new window");
+                }
+                Err(e) => {
+                    println!(
+                        "[后端] show_settings_window: ERROR emitting refresh event: {}",
+                        e
+                    );
+                }
+            }
+        });
+    }
+
+    println!("[后端] show_settings_window: END");
+    Ok(())
 }

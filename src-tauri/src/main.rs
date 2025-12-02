@@ -13,6 +13,7 @@ mod memos;
 mod open_history;
 mod recording;
 mod replay;
+mod settings;
 mod shortcuts;
 mod system_folders_search;
 mod window_config;
@@ -186,14 +187,13 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Create system tray menu
-            let show_launcher =
-                MenuItem::with_id(app, "show_launcher", "显示启动器", true, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
             let open_logs = MenuItem::with_id(app, "open_logs", "打开日志文件夹", true, None::<&str>)?;
             let about = MenuItem::with_id(app, "about", "关于", true, None::<&str>)?;
             let restart = MenuItem::with_id(app, "restart", "重启程序", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show_launcher, &open_logs, &restart, &about, &quit])?;
+            let menu = Menu::with_items(app, &[&settings, &open_logs, &restart, &about, &quit])?;
 
             // Create tray icon - use default window icon (which loads from tauri.conf.json)
             // 禁用左键点击显示菜单，左键只用于切换启动器窗口
@@ -223,7 +223,6 @@ fn main() {
             let app_data_dir = get_app_data_dir(app.handle())?;
 
             let app_data_dir_clone1 = app_data_dir.clone();
-            let app_data_dir_clone2 = app_data_dir.clone();
             let app_data_dir_clone3 = app_data_dir.clone();
 
             let _tray = tray_builder
@@ -249,12 +248,14 @@ fn main() {
                     }
                 })
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show_launcher" => {
-                        if let Some(window) = app.get_webview_window("launcher") {
-                            set_launcher_window_position(&window, &app_data_dir_clone2);
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+                    "settings" => {
+                        // 调用设置窗口命令
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = show_settings_window(app_handle).await {
+                                eprintln!("Failed to show settings: {}", e);
+                            }
+                        });
                     }
                     "open_logs" => {
                         #[cfg(target_os = "windows")]
@@ -482,6 +483,9 @@ fn main() {
             scan_plugin_directory,
             read_plugin_manifest,
             search_system_folders,
+            get_settings,
+            save_settings,
+            show_settings_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
