@@ -1,5 +1,4 @@
 import type { PluginContext } from "../../../types";
-import { tauriApi } from "../../../api/tauri";
 
 export default async function execute(context: PluginContext) {
   // 打开独立的 JSON 格式化窗口

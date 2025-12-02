@@ -1,17 +1,10 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 type JsonObject = { [key: string]: JsonValue };
 type JsonArray = JsonValue[];
-
-interface JsonNode {
-  key: string;
-  value: JsonValue;
-  type: "string" | "number" | "boolean" | "null" | "object" | "array";
-  path: string;
-}
 
 export function JsonFormatterWindow() {
   const [input, setInput] = useState("");
@@ -250,7 +243,7 @@ export function JsonFormatterWindow() {
   };
 
   // 渲染 JSON 值
-  const renderJsonValue = (value: JsonValue, path: string, key: string = "", showComma: boolean = false): JSX.Element => {
+  const renderJsonValue = (value: JsonValue, path: string, _key: string = "", showComma: boolean = false): JSX.Element => {
     const isExpanded = expandedPaths.has(path);
     
     if (value === null) {
