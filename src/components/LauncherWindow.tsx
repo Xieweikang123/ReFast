@@ -63,6 +63,7 @@ export function LauncherWindow() {
   const isPluginListModalOpenRef = useRef(false);
   const shouldPreserveScrollRef = useRef(false); // 标记是否需要保持滚动位置
   const finalResultsSetRef = useRef(false); // 方案 B 中仅用于调试/校验，不再阻止批次更新
+  const incrementalLoadRef = useRef<number | null>(null); // 用于取消增量加载
 
   useEffect(() => {
     isMemoModalOpenRef.current = isMemoModalOpen;
@@ -565,6 +566,64 @@ export function LauncherWindow() {
     return [...urlResults, ...otherResults];
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, openHistory]);
 
+  // 分批加载结果的函数
+  const loadResultsIncrementally = (allResults: SearchResult[]) => {
+    // 取消之前的增量加载
+    if (incrementalLoadRef.current !== null) {
+      cancelAnimationFrame(incrementalLoadRef.current);
+    }
+
+    const INITIAL_COUNT = 100; // 初始显示100条
+    const INCREMENT = 50; // 每次增加50条
+    const DELAY_MS = 16; // 每帧延迟（约60fps）
+
+    // 重置显示数量
+    setResults(allResults.slice(0, INITIAL_COUNT));
+
+    // 如果结果数量少于初始数量，直接返回
+    if (allResults.length <= INITIAL_COUNT) {
+      setResults(allResults);
+      return;
+    }
+
+    // 逐步加载更多结果
+    let currentCount = INITIAL_COUNT;
+    const loadMore = () => {
+      if (currentCount < allResults.length) {
+        currentCount = Math.min(currentCount + INCREMENT, allResults.length);
+        setResults(allResults.slice(0, currentCount));
+        
+        if (currentCount < allResults.length) {
+          incrementalLoadRef.current = requestAnimationFrame(() => {
+            setTimeout(loadMore, DELAY_MS);
+          });
+        } else {
+          incrementalLoadRef.current = null;
+        }
+      } else {
+        incrementalLoadRef.current = null;
+      }
+    };
+
+    // 开始增量加载
+    incrementalLoadRef.current = requestAnimationFrame(() => {
+      setTimeout(loadMore, DELAY_MS);
+    });
+  };
+
+  useEffect(() => {
+    // 使用分批加载来更新结果，避免一次性渲染大量DOM导致卡顿
+    loadResultsIncrementally(combinedResults);
+    
+    // 清理函数：取消增量加载
+    return () => {
+      if (incrementalLoadRef.current !== null) {
+        cancelAnimationFrame(incrementalLoadRef.current);
+        incrementalLoadRef.current = null;
+      }
+    };
+  }, [combinedResults]);
+
   useEffect(() => {
     // 保存当前滚动位置（如果需要保持）
     const needPreserveScroll = shouldPreserveScrollRef.current;
@@ -574,9 +633,6 @@ export function LauncherWindow() {
     const savedScrollHeight = needPreserveScroll && listRef.current
       ? listRef.current.scrollHeight
       : null;
-    
-    // 只有在结果真正变化时才更新，避免不必要的重新渲染
-    setResults(combinedResults);
     
     // 如果需要保持滚动位置，在 DOM 更新后恢复
     if (needPreserveScroll && savedScrollTop !== null && savedScrollHeight !== null) {
@@ -608,7 +664,7 @@ export function LauncherWindow() {
       return;
     }
     
-    const delay = needPreserveScroll ? 600 : 300;
+    const delay = needPreserveScroll ? 600 : 100; // 减少延迟，让响应更快
     const timeoutId = setTimeout(() => {
       const adjustWindowSize = () => {
         const window = getCurrentWindow();
@@ -623,8 +679,14 @@ export function LauncherWindow() {
               // Limit max width to prevent window from being too wide
               const maxWidth = 600;
               const targetWidth = Math.min(containerWidth, maxWidth);
-              // Use setSize to match content area exactly (decorations are disabled)
-              window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+              
+              // 限制最大高度，避免窗口突然撑高导致不丝滑
+              const MAX_HEIGHT = 600; // 最大高度600px
+              const MIN_HEIGHT = 80; // 最小高度80px
+              const targetHeight = Math.max(MIN_HEIGHT, Math.min(containerHeight, MAX_HEIGHT));
+              
+              // 直接设置窗口大小（简化版本，不使用动画过渡以避免复杂性）
+              window.setSize(new LogicalSize(targetWidth, targetHeight)).catch(console.error);
             });
           });
         }
@@ -655,15 +717,21 @@ export function LauncherWindow() {
               // Limit max width to prevent window from being too wide
               const maxWidth = 600;
               const targetWidth = Math.min(containerWidth, maxWidth);
-              // Use setSize to match content area exactly (decorations are disabled)
-              window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+              
+              // 限制最大高度，避免窗口突然撑高导致不丝滑
+              const MAX_HEIGHT = 600; // 最大高度600px
+              const MIN_HEIGHT = 80; // 最小高度80px
+              const targetHeight = Math.max(MIN_HEIGHT, Math.min(containerHeight, MAX_HEIGHT));
+              
+              // 直接设置窗口大小（简化版本，不使用动画过渡以避免复杂性）
+              window.setSize(new LogicalSize(targetWidth, targetHeight)).catch(console.error);
             });
           });
         }
       };
       
-      // Adjust size after results state updates
-      setTimeout(adjustWindowSize, 250);
+      // Adjust size after results state updates (减少延迟)
+      setTimeout(adjustWindowSize, 100);
     }, [results, showDownloadModal, isMemoModalOpen]);
 
   // Scroll selected item into view and adjust window size
@@ -1412,10 +1480,10 @@ export function LauncherWindow() {
       {/* 当显示插件模态框时，隐藏搜索界面 */}
       {!(isMemoModalOpen || isPluginListModalOpen) && (
       <div className="w-full flex justify-center">
-        <div className="bg-white w-full overflow-hidden" style={{ height: 'auto' }}>
+        <div className="bg-white w-full flex flex-col rounded-lg shadow-xl" style={{ minHeight: '80px' }}>
           {/* Search Box */}
           <div 
-            className="px-6 py-4 border-b border-gray-100"
+            className="px-6 py-4 border-b border-gray-100 flex-shrink-0"
             onMouseDown={async (e) => {
               // Only start dragging if clicking on the container or search icon, not on input
               const target = e.target as HTMLElement;
@@ -1507,7 +1575,8 @@ export function LauncherWindow() {
           {results.length > 0 && (
             <div
               ref={listRef}
-              className="max-h-96 overflow-y-auto"
+              className="flex-1 overflow-y-auto min-h-0"
+              style={{ maxHeight: '500px' }}
             >
               {results.map((result, index) => (
                 <div
@@ -1839,7 +1908,7 @@ export function LauncherWindow() {
           )}
 
           {/* Footer */}
-          <div className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50">
+          <div className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0">
             <div className="flex items-center gap-3">
               {results.length > 0 && <span>{results.length} 个结果</span>}
               <div className="flex items-center gap-2">
