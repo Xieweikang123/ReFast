@@ -7,6 +7,7 @@ use crate::open_history;
 use crate::recording::{RecordingMeta, RecordingState};
 use crate::replay::ReplayState;
 use crate::shortcuts;
+use crate::window_config;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -557,10 +558,32 @@ pub fn launch_application(app: app_search::AppInfo) -> Result<(), String> {
 }
 
 /// 设置 launcher 窗口位置（居中但稍微偏上）
-fn set_launcher_window_position(window: &tauri::WebviewWindow) {
+/// 优先使用保存的位置，如果没有保存的位置则计算默认位置
+fn set_launcher_window_position(window: &tauri::WebviewWindow, app_data_dir: &std::path::Path) {
     use tauri::PhysicalPosition;
+    use crate::window_config;
     
-    // 获取窗口大小
+    // 首先尝试加载保存的位置
+    if let Some(saved_pos) = window_config::get_launcher_position(app_data_dir) {
+        // 验证保存的位置是否仍然有效（在屏幕范围内）
+        if let Ok(monitor) = window.primary_monitor() {
+            if let Some(monitor) = monitor {
+                let monitor_size = monitor.size();
+                let monitor_width = monitor_size.width as i32;
+                let monitor_height = monitor_size.height as i32;
+                
+                // 检查位置是否在屏幕范围内（允许窗口稍微超出屏幕边界）
+                if saved_pos.x >= -100 && saved_pos.x <= monitor_width + 100
+                    && saved_pos.y >= -100 && saved_pos.y <= monitor_height + 100
+                {
+                    let _ = window.set_position(PhysicalPosition::new(saved_pos.x, saved_pos.y));
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果没有保存的位置或位置无效，则计算默认位置（居中但稍微偏上）
     if let Ok(size) = window.outer_size() {
         let window_width = size.width as f64;
         let window_height = size.height as f64;
@@ -578,7 +601,11 @@ fn set_launcher_window_position(window: &tauri::WebviewWindow) {
                 let y = center_y - window_height / 2.0; // 向上移动半个窗口高度
                 
                 // 设置窗口位置
-                let _ = window.set_position(PhysicalPosition::new(x as i32, y as i32));
+                let pos = PhysicalPosition::new(x as i32, y as i32);
+                let _ = window.set_position(pos);
+                
+                // 保存这个计算出的位置作为默认位置
+                let _ = window_config::save_launcher_position(app_data_dir, pos.x, pos.y);
             }
         }
     }
@@ -586,11 +613,17 @@ fn set_launcher_window_position(window: &tauri::WebviewWindow) {
 
 #[tauri::command]
 pub fn toggle_launcher(app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    
     if let Some(window) = app.get_webview_window("launcher") {
         if window.is_visible().unwrap_or(false) {
+            // 在隐藏前保存当前位置
+            if let Ok(position) = window.outer_position() {
+                let _ = window_config::save_launcher_position(&app_data_dir, position.x, position.y);
+            }
             let _ = window.hide();
         } else {
-            set_launcher_window_position(&window);
+            set_launcher_window_position(&window, &app_data_dir);
             let _ = window.show();
             let _ = window.set_focus();
         }
@@ -602,7 +635,13 @@ pub fn toggle_launcher(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn hide_launcher(app: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    
     if let Some(window) = app.get_webview_window("launcher") {
+        // 在隐藏前保存当前位置
+        if let Ok(position) = window.outer_position() {
+            let _ = window_config::save_launcher_position(&app_data_dir, position.x, position.y);
+        }
         let _ = window.hide();
     }
     Ok(())

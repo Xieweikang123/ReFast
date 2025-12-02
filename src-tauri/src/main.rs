@@ -15,6 +15,7 @@ mod recording;
 mod replay;
 mod shortcuts;
 mod system_folders_search;
+mod window_config;
 
 use crate::commands::get_app_data_dir;
 use commands::*;
@@ -122,10 +123,31 @@ fn cleanup_lock_file() {
 }
 
 /// 设置 launcher 窗口位置（居中但稍微偏上）
-fn set_launcher_window_position(window: &tauri::WebviewWindow) {
+/// 优先使用保存的位置，如果没有保存的位置则计算默认位置
+fn set_launcher_window_position(window: &tauri::WebviewWindow, app_data_dir: &std::path::Path) {
     use tauri::PhysicalPosition;
     
-    // 获取窗口大小
+    // 首先尝试加载保存的位置
+    if let Some(saved_pos) = window_config::get_launcher_position(app_data_dir) {
+        // 验证保存的位置是否仍然有效（在屏幕范围内）
+        if let Ok(monitor) = window.primary_monitor() {
+            if let Some(monitor) = monitor {
+                let monitor_size = monitor.size();
+                let monitor_width = monitor_size.width as i32;
+                let monitor_height = monitor_size.height as i32;
+                
+                // 检查位置是否在屏幕范围内（允许窗口稍微超出屏幕边界）
+                if saved_pos.x >= -100 && saved_pos.x <= monitor_width + 100
+                    && saved_pos.y >= -100 && saved_pos.y <= monitor_height + 100
+                {
+                    let _ = window.set_position(PhysicalPosition::new(saved_pos.x, saved_pos.y));
+                    return;
+                }
+            }
+        }
+    }
+    
+    // 如果没有保存的位置或位置无效，则计算默认位置（居中但稍微偏上）
     if let Ok(size) = window.outer_size() {
         let window_width = size.width as f64;
         let window_height = size.height as f64;
@@ -143,7 +165,11 @@ fn set_launcher_window_position(window: &tauri::WebviewWindow) {
                 let y = center_y - window_height / 2.0; // 向上移动半个窗口高度
                 
                 // 设置窗口位置
-                let _ = window.set_position(PhysicalPosition::new(x as i32, y as i32));
+                let pos = PhysicalPosition::new(x as i32, y as i32);
+                let _ = window.set_position(pos);
+                
+                // 保存这个计算出的位置作为默认位置
+                let _ = window_config::save_launcher_position(app_data_dir, pos.x, pos.y);
             }
         }
     }
@@ -193,8 +219,15 @@ fn main() {
                 tray_builder = tray_builder.icon(fallback_icon);
             }
 
+            // Get app_data_dir early for use in closures
+            let app_data_dir = get_app_data_dir(app.handle())?;
+
+            let app_data_dir_clone1 = app_data_dir.clone();
+            let app_data_dir_clone2 = app_data_dir.clone();
+            let app_data_dir_clone3 = app_data_dir.clone();
+
             let _tray = tray_builder
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(move |tray, event| {
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
@@ -207,7 +240,7 @@ fn main() {
                                 if visible {
                                     let _ = window.hide();
                                 } else {
-                                    set_launcher_window_position(&window);
+                                    set_launcher_window_position(&window, &app_data_dir_clone1);
                                     let _ = window.show();
                                     let _ = window.set_focus();
                                 }
@@ -215,10 +248,10 @@ fn main() {
                         }
                     }
                 })
-                .on_menu_event(|app, event| match event.id.as_ref() {
+                .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show_launcher" => {
                         if let Some(window) = app.get_webview_window("launcher") {
-                            set_launcher_window_position(&window);
+                            set_launcher_window_position(&window, &app_data_dir_clone2);
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -327,6 +360,7 @@ fn main() {
                 use std::time::Duration;
 
                 let app_handle = app.handle().clone();
+                let app_data_dir_hotkey = app_data_dir.clone();
                 let (tx, rx) = mpsc::channel();
 
                 // Start hotkey listener thread in background
@@ -347,7 +381,7 @@ fn main() {
                                         if visible {
                                             let _ = window.hide();
                                         } else {
-                                            set_launcher_window_position(&window);
+                                            set_launcher_window_position(&window, &app_data_dir_hotkey);
                                             let _ = window.show();
                                             let _ = window.set_focus();
                                         }
@@ -363,7 +397,6 @@ fn main() {
             }
 
             // Load file history on startup
-            let app_data_dir = get_app_data_dir(app.handle())?;
             file_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             open_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist

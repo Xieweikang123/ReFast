@@ -2,8 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
+html, body {
   margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: transparent;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
     sans-serif;
@@ -14,8 +19,10 @@ body {
 #root {
   width: 100%;
   height: 100vh;
+  min-height: 80px;
   margin: 0;
   padding: 0;
   overflow: hidden;
+  background-color: transparent;
 }
 
