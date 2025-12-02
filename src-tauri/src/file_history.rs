@@ -373,21 +373,34 @@ pub fn update_file_history_name(
 pub fn launch_file(path: &str) -> Result<(), String> {
     use std::process::Command;
 
-    // Normalize path: trim whitespace and remove trailing backslashes/slashes
     let trimmed = path.trim();
-    let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
-
-    let path_buf = PathBuf::from(trimmed);
-
-    if !path_buf.exists() {
-        return Err(format!("Path not found: {}", trimmed));
-    }
-
+    
     #[cfg(target_os = "windows")]
     {
+        // Check if this is a CLSID path (virtual folder like Recycle Bin)
+        // CLSID paths start with "::"
+        let is_clsid_path = trimmed.starts_with("::");
+        
+        let path_str = if is_clsid_path {
+            // For CLSID paths, use as-is (don't normalize)
+            trimmed.to_string()
+        } else {
+            // For normal paths, normalize: remove trailing backslashes/slashes and convert to backslashes
+            let normalized = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
+            normalized.replace("/", "\\")
+        };
+        
+        if !is_clsid_path {
+            // For normal paths, check if they exist
+            let path_buf = PathBuf::from(&path_str);
+            if !path_buf.exists() {
+                return Err(format!("Path not found: {}", path_str));
+            }
+        }
+        
+        eprintln!("[DEBUG] launch_file: opening path '{}' (is_clsid: {})", path_str, is_clsid_path);
+        
         // On Windows, use `start` command to open files/folders with their default application
-        // Use the normalized path (without trailing backslash)
-        let path_str = trimmed.replace("/", "\\");
         Command::new("cmd")
             .args(&["/C", "start", "", &path_str])
             .spawn()

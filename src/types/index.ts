@@ -59,6 +59,13 @@ export interface EverythingSearchResponse {
   total_count: number;
 }
 
+export interface SystemFolderItem {
+  name: string;
+  path: string;
+  display_name: string;
+  is_folder: boolean;
+}
+
 export interface ShortcutItem {
   id: string;
   name: string;

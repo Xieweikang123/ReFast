@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, SystemFolderItem } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -8,13 +8,14 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { plugins, searchPlugins, executePlugin } from "../plugins";
 
 type SearchResult = {
-  type: "app" | "file" | "everything" | "url" | "memo" | "plugin";
+  type: "app" | "file" | "everything" | "url" | "memo" | "plugin" | "system_folder";
   app?: AppInfo;
   file?: FileHistoryItem;
   everything?: EverythingResult;
   url?: string;
   memo?: MemoItem;
   plugin?: { id: string; name: string; description?: string };
+  systemFolder?: SystemFolderItem;
   displayName: string;
   path: string;
 };
@@ -53,6 +54,7 @@ export function LauncherWindow() {
   const [isMemoListMode, setIsMemoListMode] = useState(true);
   const [filteredPlugins, setFilteredPlugins] = useState<Array<{ id: string; name: string; description?: string }>>([]);
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
+  const [systemFolders, setSystemFolders] = useState<SystemFolderItem[]>([]);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -457,6 +459,7 @@ export function LauncherWindow() {
       setFilteredFiles([]);
       setFilteredMemos([]);
       setFilteredPlugins([]);
+      setSystemFolders([]);
       setEverythingResults([]);
       setEverythingTotalCount(null);
       setEverythingCurrentCount(0);
@@ -477,6 +480,7 @@ export function LauncherWindow() {
       searchFileHistory(query);
       searchMemos(query);
       handleSearchPlugins(query);
+      searchSystemFolders(query);
       if (isEverythingAvailable) {
         console.log("Everything is available, calling searchEverything with query:", query);
         searchEverything(query);
@@ -544,6 +548,13 @@ export function LauncherWindow() {
         displayName: plugin.name,
         path: plugin.id,
       })),
+      // 显示系统文件夹结果
+      ...systemFolders.map((folder) => ({
+        type: "system_folder" as const,
+        systemFolder: folder,
+        displayName: folder.display_name,
+        path: folder.path,
+      })),
       // 显示所有 Everything 结果
       ...everythingResults.map((everything) => ({
         type: "everything" as const,
@@ -564,7 +575,7 @@ export function LauncherWindow() {
     
     // URLs always come first, then other results sorted by open history
     return [...urlResults, ...otherResults];
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, openHistory]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, systemFolders, everythingResults, detectedUrls, openHistory]);
 
   // 分批加载结果的函数
   const loadResultsIncrementally = (allResults: SearchResult[]) => {
@@ -801,6 +812,17 @@ export function LauncherWindow() {
       setFilteredFiles(results);
     } catch (error) {
       console.error("Failed to search file history:", error);
+    }
+  };
+
+  const searchSystemFolders = async (searchQuery: string) => {
+    try {
+      console.log("[前端] searchSystemFolders called with query:", searchQuery);
+      const results = await tauriApi.searchSystemFolders(searchQuery);
+      console.log("[前端] searchSystemFolders returned results:", results);
+      setSystemFolders(results);
+    } catch (error) {
+      console.error("Failed to search system folders:", error);
     }
   };
 
@@ -1082,6 +1104,10 @@ export function LauncherWindow() {
         // Launch Everything result and add to file history
         await tauriApi.launchFile(result.everything.path);
         await tauriApi.addFileToHistory(result.everything.path);
+      } else if (result.type === "system_folder" && result.systemFolder) {
+        // Launch system folder
+        await tauriApi.launchFile(result.systemFolder.path);
+        await tauriApi.addFileToHistory(result.systemFolder.path);
       } else if (result.type === "memo" && result.memo) {
         // 打开备忘录详情弹窗（单条模式）
         setIsMemoListMode(false);
@@ -1674,7 +1700,8 @@ export function LauncherWindow() {
                             d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
                           />
                         </svg>
-                      ) : (result.type === "file" &&
+                      ) : (result.type === "system_folder" && result.systemFolder?.is_folder) ||
+                        (result.type === "file" &&
                           ((result.file?.is_folder ?? null) !== null
                             ? !!result.file?.is_folder
                             : isFolderLikePath(result.path))) ||
@@ -1698,7 +1725,7 @@ export function LauncherWindow() {
                             d="M3 7a2 2 0 012-2h4l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
                           />
                         </svg>
-                      ) : result.type === "file" || result.type === "everything" ? (
+                      ) : result.type === "file" || result.type === "everything" || result.type === "system_folder" ? (
                         <svg
                           className={`w-5 h-5 ${
                             index === selectedIndex ? "text-white" : "text-gray-500"
@@ -2057,6 +2084,7 @@ export function LauncherWindow() {
         >
           {(contextMenu.result.type === "file" ||
             contextMenu.result.type === "everything" ||
+            contextMenu.result.type === "system_folder" ||
             contextMenu.result.type === "app") && (
             <button
               onClick={(e) => {

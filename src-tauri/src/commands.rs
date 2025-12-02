@@ -626,6 +626,35 @@ pub fn search_file_history(query: String) -> Result<Vec<file_history::FileHistor
 }
 
 #[tauri::command]
+#[cfg(target_os = "windows")]
+pub fn search_system_folders(query: String) -> Result<Vec<SystemFolderResult>, String> {
+    use crate::system_folders_search;
+    Ok(system_folders_search::windows::search_system_folders(&query)
+        .into_iter()
+        .map(|item| SystemFolderResult {
+            name: item.name,
+            path: item.path,
+            display_name: item.display_name,
+            is_folder: item.is_folder,
+        })
+        .collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn search_system_folders(_query: String) -> Result<Vec<SystemFolderResult>, String> {
+    Ok(Vec::new())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct SystemFolderResult {
+    pub name: String,
+    pub path: String,
+    pub display_name: String,
+    pub is_folder: bool,
+}
+
+#[tauri::command]
 pub fn get_all_file_history(
     app: tauri::AppHandle,
 ) -> Result<Vec<file_history::FileHistoryItem>, String> {

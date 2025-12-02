@@ -6,6 +6,7 @@ import type {
   EverythingSearchResponse,
   ShortcutItem,
   MemoItem,
+  SystemFolderItem,
 } from "../types";
 
 export const tauriApi = {
@@ -231,6 +232,10 @@ export const tauriApi = {
 
   async readPluginManifest(pluginDir: string): Promise<string> {
     return invoke("read_plugin_manifest", { pluginDir });
+  },
+
+  async searchSystemFolders(query: string): Promise<SystemFolderItem[]> {
+    return invoke("search_system_folders", { query });
   },
 };
 

@@ -14,6 +14,7 @@ mod open_history;
 mod recording;
 mod replay;
 mod shortcuts;
+mod system_folders_search;
 
 use crate::commands::get_app_data_dir;
 use commands::*;
@@ -446,6 +447,7 @@ fn main() {
             get_plugin_directory,
             scan_plugin_directory,
             read_plugin_manifest,
+            search_system_folders,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
