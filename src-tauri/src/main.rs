@@ -342,13 +342,16 @@ fn main() {
                         }
                     }
                     "about" => {
+                        // 使用 Cargo 包版本，确保与应用实际版本保持一致
+                        let version = env!("CARGO_PKG_VERSION");
+
                         #[cfg(target_os = "windows")]
                         {
+                            use std::ffi::OsStr;
+                            use std::os::windows::ffi::OsStrExt;
                             use windows_sys::Win32::UI::WindowsAndMessaging::{
                                 MessageBoxW, MB_ICONINFORMATION, MB_OK,
                             };
-                            use std::ffi::OsStr;
-                            use std::os::windows::ffi::OsStrExt;
 
                             // 将字符串转换为宽字符
                             fn to_wide_string(s: &str) -> Vec<u16> {
@@ -359,7 +362,11 @@ fn main() {
                             }
 
                             let title = to_wide_string("关于 ReFast");
-                            let message = to_wide_string("ReFast\n\n一个快速启动器和输入宏录制工具\n\n版本: 0.1.0");
+                            let message_str = format!(
+                                "ReFast\n\n一个快速启动器和输入宏录制工具\n\n版本: {}",
+                                version
+                            );
+                            let message = to_wide_string(&message_str);
 
                             unsafe {
                                 MessageBoxW(
@@ -373,7 +380,10 @@ fn main() {
                         #[cfg(not(target_os = "windows"))]
                         {
                             // 其他平台可以使用其他方式显示关于对话框
-                            eprintln!("ReFast - 一个快速启动器和输入宏录制工具\n版本: 0.1.0");
+                            eprintln!(
+                                "ReFast - 一个快速启动器和输入宏录制工具\n版本: {}",
+                                version
+                            );
                         }
                     }
                     "restart" => {

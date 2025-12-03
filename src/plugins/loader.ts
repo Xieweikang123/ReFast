@@ -188,6 +188,8 @@ export class PluginLoader {
       show_main_window: () => import("./builtin/show_main_window/index"),
       memo_center: () => import("./builtin/memo_center/index"),
       show_plugin_list: () => import("./builtin/show_plugin_list/index"),
+      // JSON 格式化查看插件
+      json_formatter: () => import("./builtin/json_formatter/index"),
     };
 
     const importFn = pluginMap[pluginId];
