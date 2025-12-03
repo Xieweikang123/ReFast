@@ -2728,51 +2728,59 @@ export function LauncherWindow() {
           )}
 
           {/* Footer */}
-          <div className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0">
-            <div className="flex items-center gap-3">
-              {!showAiAnswer && results.length > 0 && <span>{results.length} 个结果</span>}
-              {showAiAnswer && <span>AI 回答模式</span>}
-              <div className="flex items-center gap-2">
+          <div className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0 gap-2 min-w-0">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              {!showAiAnswer && results.length > 0 && <span className="whitespace-nowrap">{results.length} 个结果</span>}
+              {showAiAnswer && <span className="whitespace-nowrap">AI 回答模式</span>}
+              <div className="flex items-center gap-2 min-w-0 flex-1">
                 <div 
-                  className="flex items-center gap-1 cursor-help" 
+                  className="flex items-center gap-1 cursor-help whitespace-nowrap" 
                   title={everythingPath ? `Everything 路径: ${everythingPath}` : 'Everything 未安装或未在 PATH 中'}
                 >
-                  <div className={`w-2 h-2 rounded-full ${isEverythingAvailable ? 'bg-green-500' : 'bg-gray-300'}`}></div>
+                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isEverythingAvailable ? 'bg-green-500' : 'bg-gray-300'}`}></div>
                   <span className={isEverythingAvailable ? 'text-green-600' : 'text-gray-400'}>
-                    Everything {isEverythingAvailable ? '已启用' : '未检测到'}
+                    {isEverythingAvailable ? 'Everything 已启用' : (
+                      everythingError?.startsWith("NOT_INSTALLED") 
+                        ? 'Everything 未安装' 
+                        : everythingError?.startsWith("SERVICE_NOT_RUNNING")
+                        ? 'Everything 服务未运行'
+                        : 'Everything 未检测到'
+                    )}
                   </span>
-                  {everythingError && !isEverythingAvailable && (
-                    <span className="text-xs text-red-500 ml-2" title={everythingError}>
+                  {everythingError && !isEverythingAvailable && !everythingError.startsWith("NOT_INSTALLED") && !everythingError.startsWith("SERVICE_NOT_RUNNING") && (
+                    <span className="text-xs text-red-500 ml-2 whitespace-nowrap" title={everythingError}>
                       ({everythingError.split(':')[0]})
                     </span>
                   )}
                 </div>
                 {!isEverythingAvailable && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-shrink-0">
                     {everythingError && everythingError.startsWith("SERVICE_NOT_RUNNING") && (
                       <button
                         onClick={handleStartEverything}
-                        className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors"
+                        className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors whitespace-nowrap"
                         title="启动 Everything"
                       >
-                        启动 Everything
+                        启动
+                      </button>
+                    )}
+                    {(!everythingError || !everythingError.startsWith("SERVICE_NOT_RUNNING")) && (
+                      <button
+                        onClick={handleDownloadEverything}
+                        disabled={isDownloadingEverything}
+                        className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                          isDownloadingEverything
+                            ? 'bg-gray-400 text-white cursor-not-allowed'
+                            : 'bg-blue-500 text-white hover:bg-blue-600'
+                        }`}
+                        title="下载并安装 Everything"
+                      >
+                        {isDownloadingEverything ? `下载中 ${everythingDownloadProgress}%` : '下载'}
                       </button>
                     )}
                     <button
-                      onClick={handleDownloadEverything}
-                      disabled={isDownloadingEverything}
-                      className={`px-2 py-1 text-xs rounded transition-colors ${
-                        isDownloadingEverything
-                          ? 'bg-gray-400 text-white cursor-not-allowed'
-                          : 'bg-blue-500 text-white hover:bg-blue-600'
-                      }`}
-                      title="下载并安装 Everything"
-                    >
-                      {isDownloadingEverything ? `下载中 ${everythingDownloadProgress}%` : '下载 Everything'}
-                    </button>
-                    <button
                       onClick={handleCheckAgain}
-                      className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors"
+                      className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors whitespace-nowrap"
                       title="重新检测 Everything"
                     >
                       刷新
@@ -2782,10 +2790,10 @@ export function LauncherWindow() {
               </div>
             </div>
             {!showAiAnswer && results.length > 0 && (
-              <span>↑↓ 选择 · Enter 打开 · Esc 关闭</span>
+              <span className="whitespace-nowrap flex-shrink-0">↑↓ 选择 · Enter 打开 · Esc 关闭</span>
             )}
             {showAiAnswer && (
-              <span>Esc 返回搜索结果</span>
+              <span className="whitespace-nowrap flex-shrink-0">Esc 返回搜索结果</span>
             )}
           </div>
         </div>
