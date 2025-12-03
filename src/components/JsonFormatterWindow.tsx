@@ -452,16 +452,17 @@ export function JsonFormatterWindow() {
         flexDirection: "column",
         height: "100%",
         width: "100%",
-        backgroundColor: "#f9fafb",
+        backgroundColor: "#1e1e1e", // 深色背景
         fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        color: "#cccccc", // 默认文本颜色
       }}
     >
       {/* 标题栏 */}
       <div
         style={{
           padding: "16px 20px",
-          backgroundColor: "#ffffff",
-          borderBottom: "1px solid #e5e7eb",
+          backgroundColor: "#252526", // 深色标题栏
+          borderBottom: "1px solid #3e3e42", // 深色边框
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
@@ -472,7 +473,7 @@ export function JsonFormatterWindow() {
             margin: 0,
             fontSize: "18px",
             fontWeight: 600,
-            color: "#111827",
+            color: "#cccccc", // 浅色文字
           }}
         >
           JSON 格式化查看器
@@ -507,8 +508,8 @@ export function JsonFormatterWindow() {
       <div
         style={{
           padding: "12px 20px",
-          backgroundColor: "#ffffff",
-          borderBottom: "1px solid #e5e7eb",
+          backgroundColor: "#252526", // 深色工具栏
+          borderBottom: "1px solid #3e3e42", // 深色边框
           display: "flex",
           gap: "8px",
           alignItems: "center",
@@ -672,8 +673,8 @@ export function JsonFormatterWindow() {
             }}
             style={{
               padding: "6px 12px",
-              backgroundColor: mode === "single" ? "#6366f1" : "#e5e7eb",
-              color: mode === "single" ? "white" : "#374151",
+              backgroundColor: mode === "single" ? "#6366f1" : "#3c3c3c", // 深色模式按钮
+              color: mode === "single" ? "white" : "#cccccc", // 浅色文字
               border: "none",
               borderRadius: "6px",
               cursor: "pointer",
@@ -682,27 +683,28 @@ export function JsonFormatterWindow() {
             }}
             onMouseOver={(e) => {
               if (mode === "split") {
-                e.currentTarget.style.backgroundColor = "#d1d5db";
+                e.currentTarget.style.backgroundColor = "#4a4a4a"; // 深色 hover
               }
             }}
             onMouseOut={(e) => {
               if (mode === "split") {
-                e.currentTarget.style.backgroundColor = "#e5e7eb";
+                e.currentTarget.style.backgroundColor = "#3c3c3c"; // 深色背景
               }
             }}
           >
             {mode === "split" ? "单框模式" : "分栏模式"}
           </button>
-          <label style={{ fontSize: "14px", color: "#374151" }}>缩进:</label>
+          <label style={{ fontSize: "14px", color: "#cccccc" }}>缩进:</label>
           <select
             value={indent}
             onChange={(e) => setIndent(Number(e.target.value))}
             style={{
               padding: "6px 10px",
-              border: "1px solid #d1d5db",
+              border: "1px solid #3e3e42", // 深色边框
               borderRadius: "6px",
               fontSize: "14px",
-              backgroundColor: "white",
+              backgroundColor: "#3c3c3c", // 深色下拉框背景
+              color: "#cccccc", // 浅色文字
               cursor: "pointer",
             }}
           >
@@ -718,9 +720,9 @@ export function JsonFormatterWindow() {
         <div
           style={{
             padding: "12px 20px",
-            backgroundColor: "#fef2f2",
-            borderBottom: "1px solid #fecaca",
-            color: "#dc2626",
+            backgroundColor: "#3c1f1f", // 深色错误背景
+            borderBottom: "1px solid #5a2a2a", // 深色错误边框
+            color: "#f48771", // 浅色错误文字
             fontSize: "14px",
           }}
         >
@@ -744,17 +746,17 @@ export function JsonFormatterWindow() {
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              backgroundColor: "#ffffff",
+              backgroundColor: "#1e1e1e", // 深色背景
             }}
           >
             <div
               style={{
                 padding: "8px 12px",
-                backgroundColor: "#f3f4f6",
-                borderBottom: "1px solid #e5e7eb",
+                backgroundColor: "#2d2d30", // 深色区域标题
+                borderBottom: "1px solid #3e3e42", // 深色边框
                 fontSize: "13px",
                 fontWeight: 500,
-                color: "#374151",
+                color: "#cccccc", // 浅色文字
               }}
             >
               输入 JSON
@@ -772,8 +774,8 @@ export function JsonFormatterWindow() {
                 fontFamily: "'Courier New', monospace",
                 fontSize: "14px",
                 lineHeight: "1.6",
-                backgroundColor: "#ffffff",
-                color: "#111827",
+                backgroundColor: "#1e1e1e", // 深色背景
+                color: "#cccccc", // 浅色文字
               }}
               spellCheck={false}
             />
@@ -785,18 +787,18 @@ export function JsonFormatterWindow() {
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              backgroundColor: "#ffffff",
-              borderLeft: "1px solid #e5e7eb",
+              backgroundColor: "#1e1e1e", // 深色背景
+              borderLeft: "1px solid #3e3e42", // 深色边框
             }}
           >
             <div
               style={{
                 padding: "8px 12px",
-                backgroundColor: "#f3f4f6",
-                borderBottom: "1px solid #e5e7eb",
+                backgroundColor: "#2d2d30", // 深色区域标题
+                borderBottom: "1px solid #3e3e42", // 深色边框
                 fontSize: "13px",
                 fontWeight: 500,
-                color: "#374151",
+                color: "#cccccc", // 浅色文字
                 display: "flex",
                 justifyContent: "space-between",
                 alignItems: "center",
@@ -838,8 +840,8 @@ export function JsonFormatterWindow() {
                 fontFamily: "'Courier New', monospace",
                 fontSize: "14px",
                 lineHeight: "1.6",
-                backgroundColor: "#ffffff",
-                color: "#111827",
+                backgroundColor: "#1e1e1e", // 深色背景
+                color: "#cccccc", // 浅色文字
               }}
             >
               {parsedData ? (
@@ -850,12 +852,13 @@ export function JsonFormatterWindow() {
                     margin: 0,
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
+                    color: "#cccccc", // 浅色文字
                   }}
                 >
                   {formatted}
                 </pre>
               ) : (
-                <div style={{ color: "#9ca3af" }}>格式化后的 JSON 将显示在这里...</div>
+                <div style={{ color: "#858585" }}>格式化后的 JSON 将显示在这里...</div>
               )}
             </div>
           </div>
@@ -867,7 +870,7 @@ export function JsonFormatterWindow() {
             flex: 1,
             display: "flex",
             flexDirection: "column",
-            backgroundColor: "#ffffff",
+            backgroundColor: "#1e1e1e", // 深色背景
             overflow: "auto",
             height: "100%",
           }}
@@ -875,11 +878,11 @@ export function JsonFormatterWindow() {
           <div
             style={{
               padding: "8px 12px",
-              backgroundColor: "#f3f4f6",
-              borderBottom: "1px solid #e5e7eb",
+              backgroundColor: "#2d2d30", // 深色区域标题
+              borderBottom: "1px solid #3e3e42", // 深色边框
               fontSize: "13px",
               fontWeight: 500,
-              color: "#374151",
+              color: "#cccccc", // 浅色文字
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
