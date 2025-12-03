@@ -8,12 +8,13 @@ type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 type JsonObject = { [key: string]: JsonValue };
 type JsonArray = JsonValue[];
 
+const DEFAULT_INDENT = 2; // 固定缩进为 2 空格
+
 export function JsonFormatterWindow() {
   const [input, setInput] = useState("");
   const [formatted, setFormatted] = useState("");
   const [parsedData, setParsedData] = useState<JsonValue | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [indent, setIndent] = useState(2);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<"split" | "single">("single"); // 模式：分栏模式或单框模式
   const [singleModeInput, setSingleModeInput] = useState<string>(""); // 单框模式下的输入内容（使用 state）
@@ -36,7 +37,7 @@ export function JsonFormatterWindow() {
             // 自动格式化
             try {
               const parsed = JSON.parse(jsonContent);
-              const formattedJson = JSON.stringify(parsed, null, indent);
+              const formattedJson = JSON.stringify(parsed, null, DEFAULT_INDENT);
               setFormatted(formattedJson);
               setParsedData(parsed);
               setError(null);
@@ -71,7 +72,7 @@ export function JsonFormatterWindow() {
         unlisten();
       }
     };
-  }, [indent]);
+  }, []);
 
   // 格式化输入的 JSON 内容
   const formatJsonContent = (content: string, preserveCursor: boolean = false) => {
@@ -86,7 +87,7 @@ export function JsonFormatterWindow() {
 
     try {
       const parsed = JSON.parse(content);
-      const formattedJson = JSON.stringify(parsed, null, indent);
+      const formattedJson = JSON.stringify(parsed, null, DEFAULT_INDENT);
       setFormatted(formattedJson);
       setParsedData(parsed);
       setError(null);
@@ -117,14 +118,7 @@ export function JsonFormatterWindow() {
     if (mode === "split") {
       formatJsonContent(input);
     }
-  }, [input, indent, mode]);
-
-  // 当缩进改变时，如果单框模式有内容且不在编辑状态，重新格式化
-  useEffect(() => {
-    if (mode === "single" && singleModeInput && !singleModeEditingRef.current && formatted) {
-      formatJsonContent(singleModeInput, true);
-    }
-  }, [indent]);
+  }, [input, mode]);
 
   // 格式化 JSON
   const handleFormat = () => {
@@ -140,7 +134,7 @@ export function JsonFormatterWindow() {
 
     try {
       const parsed = JSON.parse(content);
-      const formattedJson = JSON.stringify(parsed, null, indent);
+      const formattedJson = JSON.stringify(parsed, null, DEFAULT_INDENT);
       setFormatted(formattedJson);
       setParsedData(parsed);
       setError(null);
@@ -309,7 +303,7 @@ export function JsonFormatterWindow() {
     } else {
       // 分栏模式：如果有解析的数据，复制格式化后的文本；否则复制 formatted
       textToCopy = parsedData 
-        ? JSON.stringify(parsedData, null, indent)
+        ? JSON.stringify(parsedData, null, DEFAULT_INDENT)
         : formatted || "";
     }
     
@@ -455,7 +449,7 @@ export function JsonFormatterWindow() {
           {!isEmpty && (
             <>
               {isExpanded && (
-                <div style={{ marginLeft: `${indent * 8}px` }}>
+                <div style={{ marginLeft: `${DEFAULT_INDENT * 8}px` }}>
                   {value.map((item, index) => {
                     const itemPath = `${path}[${index}]`;
                     const isLast = index === value.length - 1;
@@ -522,7 +516,7 @@ export function JsonFormatterWindow() {
           {!isEmpty && (
             <>
               {isExpanded && (
-                <div style={{ marginLeft: `${indent * 8}px` }}>
+                <div style={{ marginLeft: `${DEFAULT_INDENT * 8}px` }}>
                   {keys.map((k, index) => {
                     const itemPath = path ? `${path}.${k}` : k;
                     const isLast = index === keys.length - 1;
@@ -861,24 +855,6 @@ export function JsonFormatterWindow() {
           >
             {mode === "split" ? "单框模式" : "分栏模式"}
           </button>
-          <label style={{ fontSize: "14px", color: "#cccccc" }}>缩进:</label>
-          <select
-            value={indent}
-            onChange={(e) => setIndent(Number(e.target.value))}
-            style={{
-              padding: "6px 10px",
-              border: "1px solid #3e3e42", // 深色边框
-              borderRadius: "6px",
-              fontSize: "14px",
-              backgroundColor: "#3c3c3c", // 深色下拉框背景
-              color: "#cccccc", // 浅色文字
-              cursor: "pointer",
-            }}
-          >
-            <option value={2}>2 空格</option>
-            <option value={4}>4 空格</option>
-            <option value={0}>无缩进</option>
-          </select>
         </div>
       </div>
 
@@ -1097,33 +1073,21 @@ export function JsonFormatterWindow() {
               language="json"
               value={singleModeInput}
               onChange={(value) => {
+                // 单框模式下只更新内容，不再自动格式化
                 if (value !== undefined) {
                   setSingleModeInput(value);
                   singleModeEditingRef.current = true;
-                  
-                  // 清除之前的定时器
+
+                  // 清理历史定时器，避免内存泄漏
                   if (formatTimeoutRef.current) {
                     window.clearTimeout(formatTimeoutRef.current);
+                    formatTimeoutRef.current = null;
                   }
-                  
-                  // 防抖：停止输入 500ms 后自动格式化
-                  formatTimeoutRef.current = window.setTimeout(() => {
-                    singleModeEditingRef.current = false;
-                    formatJsonContent(value, true);
-                  }, 500);
                 }
               }}
               onMount={(editor) => {
+                // 仅记录 editor 实例，不再在失焦时自动格式化
                 monacoEditorRef.current = editor;
-                // 监听失去焦点事件
-                editor.onDidBlurEditorText(() => {
-                  // 失去焦点时立即格式化
-                  if (formatTimeoutRef.current) {
-                    window.clearTimeout(formatTimeoutRef.current);
-                  }
-                  singleModeEditingRef.current = false;
-                  formatJsonContent(singleModeInput, true);
-                });
               }}
               options={{
                 fontSize: 14,
@@ -1143,7 +1107,7 @@ export function JsonFormatterWindow() {
                 },
                 scrollBeyondLastLine: false,
                 automaticLayout: true,
-                tabSize: indent,
+                tabSize: DEFAULT_INDENT,
                 insertSpaces: true,
                 formatOnPaste: false,
                 formatOnType: false,
