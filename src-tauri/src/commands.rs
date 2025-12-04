@@ -903,10 +903,10 @@ pub async fn search_everything(
                 });
             };
 
-            // Request maximum 500 results from Everything
+            // Request maximum 50 results from Everything
             let resp = everything_search::windows::search_files(
                 &query_clone,
-                500,
+                50,
                 Some(&cancel_flag),
                 Some(on_batch),
             )
