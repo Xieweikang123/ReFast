@@ -30,10 +30,14 @@ pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Vec<app_search::AppInfo>>
 // 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
 struct SearchTaskManager {
     cancel_flag: Option<Arc<AtomicBool>>,
+    current_query: Option<String>, // 当前搜索的 query，用于避免相同 query 的重复搜索
 }
 
 static SEARCH_TASK_MANAGER: LazyLock<Arc<Mutex<SearchTaskManager>>> = LazyLock::new(|| {
-    Arc::new(Mutex::new(SearchTaskManager { cancel_flag: None }))
+    Arc::new(Mutex::new(SearchTaskManager { 
+        cancel_flag: None,
+        current_query: None,
+    }))
 });
 
 pub fn get_app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -858,14 +862,54 @@ pub async fn search_everything(
                 .lock()
                 .map_err(|e| format!("锁定搜索管理器失败: {}", e))?;
 
-            // 如果存在旧的搜索标志，先将其置为取消
+            // 检查是否是相同 query 的重复搜索
+            if let Some(ref current_query) = manager.current_query {
+                if current_query == &query {
+                    // query 相同，说明是重复搜索，返回错误
+                    eprintln!("[RUST] Duplicate search detected for query: {}, skipping", query);
+                    return Err(format!("搜索 '{}' 正在进行中，跳过重复调用", query));
+                }
+            }
+
+            // 只有当 query 不同时，才取消旧搜索
+            // 这样可以避免新搜索被误取消
             if let Some(old_flag) = &manager.cancel_flag {
-                old_flag.store(true, Ordering::Relaxed);
+                // 只有当 query 不同时才取消
+                if manager.current_query.as_ref() != Some(&query) {
+                    eprintln!("[RUST] Cancelling previous search (query: {:?}) for new search (query: {})", 
+                        manager.current_query, query);
+                    old_flag.store(true, Ordering::Relaxed);
+                } else {
+                    eprintln!("[RUST] Same query detected, not cancelling previous search: {}", query);
+                }
             }
 
             // 为本次搜索创建新的标志，并保存下来
+            // 注意：新标志初始值为 false，确保新搜索不会被误取消
             let new_flag = Arc::new(AtomicBool::new(false));
+            
+            // 验证新标志的初始值
+            let initial_flag_value = new_flag.load(Ordering::Relaxed);
+            if initial_flag_value {
+                eprintln!("[RUST] ERROR: New flag initial value is true! This should never happen!");
+            }
+            
+            // 先更新 current_query，再更新 cancel_flag，确保状态一致性
+            // 这样可以避免在更新过程中，其他线程看到不一致的状态
+            let old_query = manager.current_query.clone();
+            manager.current_query = Some(query.clone());
             manager.cancel_flag = Some(new_flag.clone());
+            
+            // 再次验证新标志的值，确保在更新过程中没有被修改
+            let flag_value_after_update = new_flag.load(Ordering::Relaxed);
+            eprintln!("[RUST] Created new search flag for query: {} (old query: {:?}, flag value: {})", 
+                query, old_query, flag_value_after_update);
+            
+            // 如果标志值不是 false，说明有问题
+            if flag_value_after_update {
+                eprintln!("[RUST] CRITICAL ERROR: New flag is true after update! This indicates a serious bug!");
+            }
+            
             new_flag
         };
 
@@ -904,13 +948,25 @@ pub async fn search_everything(
             };
 
             // Request maximum 50 results from Everything
-            let resp = everything_search::windows::search_files(
+            let result = everything_search::windows::search_files(
                 &query_clone,
                 50,
                 Some(&cancel_flag),
                 Some(on_batch),
-            )
-            .map_err(|e| e.to_string())?;
+            );
+
+            // 无论搜索成功还是失败，都要清理 current_query
+            {
+                let mut manager = SEARCH_TASK_MANAGER
+                    .lock()
+                    .map_err(|e| format!("锁定搜索管理器失败: {}", e))?;
+                // 只有当当前 query 匹配时才清理（避免清理新搜索的 query）
+                if manager.current_query.as_ref() == Some(&query_clone) {
+                    manager.current_query = None;
+                }
+            }
+
+            let resp = result.map_err(|e| e.to_string())?;
 
             // 调试：确认后端实际返回了多少条结果
             eprintln!(

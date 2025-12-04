@@ -99,6 +99,104 @@ export function LauncherWindow() {
     isPluginListModalOpenRef.current = isPluginListModalOpen;
   }, [isPluginListModalOpen]);
 
+  // 动态注入滚动条样式，确保样式生效
+  // 注意：Windows 11 可能使用系统原生滚动条，webkit-scrollbar 样式可能不生效
+  useEffect(() => {
+    const styleId = 'custom-scrollbar-style';
+    
+    const injectStyle = () => {
+      // 如果样式已存在，先移除
+      const existingStyle = document.getElementById(styleId);
+      if (existingStyle) {
+        existingStyle.remove();
+      }
+      
+      // 创建新的 style 标签
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        /* 针对搜索结果列表的滚动条样式 - 宽滚动条，类似缩略图效果 */
+        /* 重要：不要使用 scrollbar-width 和 scrollbar-color，它们会与 -webkit-scrollbar 冲突 */
+        .results-list-scroll {
+          overflow-y: scroll !important; /* 强制显示滚动轨道 */
+        }
+        
+        .results-list-scroll::-webkit-scrollbar {
+          width: 20px !important; /* 更宽的滚动条，适合缩略图效果 */
+          height: 20px !important;
+          display: block !important;
+          -webkit-appearance: none !important;
+          background-color: transparent !important;
+        }
+        
+        /* 隐藏滚动条按钮（箭头） */
+        .results-list-scroll::-webkit-scrollbar-button {
+          display: none !important;
+          width: 0 !important;
+          height: 0 !important;
+        }
+        
+        .results-list-scroll::-webkit-scrollbar-track {
+          background: #f0f0f0 !important; /* 稍深的轨道背景，增强对比 */
+          border-left: 1px solid #e0e0e0 !important;
+        }
+        
+        .results-list-scroll::-webkit-scrollbar-thumb {
+          background-color: #a0a0a0 !important; /* 更深的灰色滑块，增强对比 */
+          border-radius: 10px !important; /* 圆角 */
+          border: 4px solid #f0f0f0 !important; /* 更大的边框，形成明显的缩略图间隙效果 */
+          background-clip: content-box !important; /* 关键：确保背景色只在内容区，配合 border 实现间隙 */
+          min-height: 40px !important;
+          transition: background-color 0.2s ease, box-shadow 0.2s ease !important;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important; /* 添加阴影，增强悬浮感 */
+        }
+        
+        .results-list-scroll::-webkit-scrollbar-thumb:hover {
+          background-color: #888888 !important; /* 悬停时更深的灰色 */
+          border: 4px solid #f0f0f0 !important;
+          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15) !important; /* 悬停时阴影更深 */
+        }
+        
+        .results-list-scroll::-webkit-scrollbar-thumb:active {
+          background-color: #707070 !important; /* 点击时最深的灰色 */
+          border: 4px solid #f0f0f0 !important;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+        }
+      `;
+      document.head.appendChild(style);
+    };
+    
+    // 立即注入样式
+    injectStyle();
+    
+    // 延迟再次注入，确保在元素渲染后也能应用
+    const timeoutId = setTimeout(() => {
+      injectStyle();
+    }, 100);
+    
+    // 监听 DOM 变化，当滚动容器出现时再次注入
+    const observer = new MutationObserver(() => {
+      if (document.querySelector('.results-list-scroll')) {
+        injectStyle();
+      }
+    });
+    
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+    
+    return () => {
+      clearTimeout(timeoutId);
+      observer.disconnect();
+      // 清理：组件卸载时移除样式
+      const styleToRemove = document.getElementById(styleId);
+      if (styleToRemove) {
+        styleToRemove.remove();
+      }
+    };
+  }, []);
+
   // 重置备忘录相关状态的辅助函数
   const resetMemoState = () => {
     setIsMemoModalOpen(false);
@@ -717,24 +815,22 @@ export function LauncherWindow() {
       }
       lastSearchQueryRef.current = "";
       
-      // 使用批量更新减少渲染次数
-      flushSync(() => {
-        setFilteredApps([]);
-        setFilteredFiles([]);
-        setFilteredMemos([]);
-        setFilteredPlugins([]);
-        setSystemFolders([]);
-        setEverythingResults([]);
-        setEverythingTotalCount(null);
-        setEverythingCurrentCount(0);
-        setDetectedUrls([]);
-        setDetectedJson(null);
-        setAiAnswer(null); // 清空 AI 回答
-        setShowAiAnswer(false); // 退出 AI 回答模式
-        setResults([]);
-        setSelectedIndex(0);
-        setIsSearchingEverything(false);
-      });
+      // React 会自动批处理 useEffect 中的状态更新，不需要 flushSync
+      setFilteredApps([]);
+      setFilteredFiles([]);
+      setFilteredMemos([]);
+      setFilteredPlugins([]);
+      setSystemFolders([]);
+      setEverythingResults([]);
+      setEverythingTotalCount(null);
+      setEverythingCurrentCount(0);
+      setDetectedUrls([]);
+      setDetectedJson(null);
+      setAiAnswer(null); // 清空 AI 回答
+      setShowAiAnswer(false); // 退出 AI 回答模式
+      setResults([]);
+      setSelectedIndex(0);
+      setIsSearchingEverything(false);
       return;
     }
     
@@ -781,6 +877,26 @@ export function LauncherWindow() {
         return;
       }
       
+      // 在防抖结束后、开始搜索前，取消之前的 Everything 搜索
+      // 这样可以确保只有在真正开始新搜索时才取消旧搜索
+      if (currentSearchRef.current) {
+        if (currentSearchRef.current.query !== trimmedQuery) {
+          console.log("[DEBUG] Cancelling previous Everything search before starting new search:", {
+            previousQuery: currentSearchRef.current.query,
+            newQuery: trimmedQuery,
+            wasCancelled: currentSearchRef.current.cancelled
+          });
+          // 标记旧搜索为已取消
+          currentSearchRef.current.cancelled = true;
+          // 立即清空引用，避免状态混乱
+          currentSearchRef.current = null;
+        } else {
+          console.log("[DEBUG] Same query detected, previous search should continue:", trimmedQuery);
+          // query 相同，不取消，直接返回（避免重复搜索）
+          return;
+        }
+      }
+      
       // 标记当前查询为已搜索
       lastSearchQueryRef.current = trimmedQuery;
       
@@ -791,7 +907,9 @@ export function LauncherWindow() {
       searchSystemFolders(trimmedQuery);
       if (isEverythingAvailable) {
         console.log("Everything is available, calling searchEverything with query:", trimmedQuery);
-        searchEverything(trimmedQuery);
+        searchEverything(trimmedQuery).catch((error) => {
+          console.error("searchEverything threw an error:", error);
+        });
       } else {
         console.log("Everything is not available, skipping search. isEverythingAvailable:", isEverythingAvailable);
       }
@@ -1719,14 +1837,30 @@ export function LauncherWindow() {
       return;
     }
     
-    // 取消上一次搜索
+    // 检查是否是重复调用
+    // 注意：防抖结束后已经检查过了，但这里需要再次检查，因为可能有异步调用
     if (currentSearchRef.current) {
-      currentSearchRef.current.cancelled = true;
+      if (currentSearchRef.current.query === searchQuery) {
+        // 如果 query 相同，说明是重复调用，不应该取消
+        console.log("[DEBUG] Search with same query already in progress, skipping duplicate call:", searchQuery);
+        return;
+      }
+      // 如果 query 不同，说明在防抖结束后已经被取消了
+      // 清空旧引用，确保状态一致性
+      console.log("[DEBUG] Previous search was already cancelled in debounce handler, clearing ref:", {
+        previousQuery: currentSearchRef.current.query,
+        newQuery: searchQuery
+      });
+      currentSearchRef.current = null;
     }
     
-    // 创建新的搜索请求
+    // 创建新的搜索请求（确保在清空旧引用后才创建新引用）
     const searchRequest = { query: searchQuery, cancelled: false };
     currentSearchRef.current = searchRequest;
+    console.log("[DEBUG] Starting new Everything search:", {
+      query: searchQuery,
+      timestamp: new Date().toISOString()
+    });
     
     // 重置状态，准备新的搜索（结果由批次事件逐步填充）
     setEverythingResults([]);
@@ -1738,14 +1872,25 @@ export function LauncherWindow() {
     finalResultsSetRef.current = false;
     
     try {
-      console.log("Searching Everything with query (streaming):", searchQuery);
+      console.log("[DEBUG] About to call tauriApi.searchEverything with query:", searchQuery);
+      console.log("[DEBUG] Current search ref state:", {
+        current: currentSearchRef.current ? {
+          query: currentSearchRef.current.query,
+          cancelled: currentSearchRef.current.cancelled
+        } : null
+      });
       const response = await tauriApi.searchEverything(searchQuery);
+      console.log("[DEBUG] tauriApi.searchEverything returned successfully for query:", searchQuery);
       
       // 检查是否是当前搜索，以及 query 是否仍然有效
       if (currentSearchRef.current?.cancelled || 
           currentSearchRef.current?.query !== searchQuery ||
           query.trim() !== searchQuery.trim()) {
         console.log("Search was cancelled or superseded, ignoring final response");
+        // 如果搜索被取消，确保清理状态
+        if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
+          setIsSearchingEverything(false);
+        }
         return;
       }
       
@@ -1780,6 +1925,8 @@ export function LauncherWindow() {
     } catch (error) {
       if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
         console.log("Search was cancelled, ignoring error");
+        // 如果搜索被取消，确保清理状态
+        setIsSearchingEverything(false);
         return;
       }
       
@@ -1788,8 +1935,12 @@ export function LauncherWindow() {
       setEverythingTotalCount(null);
       setEverythingCurrentCount(0);
       
-      // 失败时重查状态
+      // 失败时重查状态（只有在特定错误时才更新状态）
       const errorStr = typeof error === 'string' ? error : String(error);
+      console.error("Everything search error:", errorStr);
+      
+      // 只有在明确的错误（如未安装、服务未运行）时才更新状态
+      // 其他错误（如取消、超时等）不应该影响 isEverythingAvailable
       if (
         errorStr.includes('NOT_INSTALLED') || 
         errorStr.includes('SERVICE_NOT_RUNNING') ||
@@ -1799,6 +1950,7 @@ export function LauncherWindow() {
       ) {
         try {
           const status = await tauriApi.getEverythingStatus();
+          console.log("Re-checking Everything status after error:", status);
           setIsEverythingAvailable(status.available);
           setEverythingError(status.error || null);
           
@@ -1807,13 +1959,28 @@ export function LauncherWindow() {
           }
         } catch (statusError) {
           console.error("Failed to re-check Everything status:", statusError);
+          // 只有在确认服务不可用时才设置为 false
           setIsEverythingAvailable(false);
           setEverythingError("搜索失败后无法重新检查状态");
         }
+      } else if (errorStr.includes('搜索已取消') || errorStr.includes('搜索正在进行中') || errorStr.includes('跳过重复调用')) {
+        // 搜索被取消或重复调用是正常情况，不应该影响状态
+        console.log("Search was cancelled or duplicate, this is normal:", errorStr);
+        // 如果是重复调用，确保清理状态
+        if (errorStr.includes('跳过重复调用')) {
+          setIsSearchingEverything(false);
+        }
+      } else {
+        // 其他错误（如超时等），不更新 isEverythingAvailable
+        console.warn("Everything search failed with unknown error, keeping current status:", errorStr);
       }
     } finally {
       // 只有当前仍是本次搜索时才结束 loading 状态
+      // 如果搜索被取消或 superseded，也要清理状态
       if (currentSearchRef.current?.query === searchQuery && !currentSearchRef.current?.cancelled) {
+        setIsSearchingEverything(false);
+      } else if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
+        // 搜索被取消或 superseded，清理状态
         setIsSearchingEverything(false);
       }
     }
@@ -2654,7 +2821,7 @@ export function LauncherWindow() {
           ) : results.length > 0 ? (
             <div
               ref={listRef}
-              className="flex-1 overflow-y-auto min-h-0"
+              className="flex-1 overflow-y-auto min-h-0 results-list-scroll"
               style={{ maxHeight: '500px' }}
             >
               {results.map((result, index) => (

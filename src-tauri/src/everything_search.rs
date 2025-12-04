@@ -1111,7 +1111,8 @@ pub mod windows {
     }
 
     /// 处理消息循环，等待回复
-    fn pump_messages(timeout: Duration) -> bool {
+    /// 如果提供了 cancel_flag，会在每次循环中检查是否已取消
+    fn pump_messages(timeout: Duration, cancel_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
         let start = Instant::now();
         let mut message_count = 0;
         let mut wm_copydata_count = 0;
@@ -1127,6 +1128,14 @@ pub mod windows {
             };
 
             while start.elapsed() < timeout {
+                // 检查是否被取消（在每次循环开始时检查，提高响应性）
+                if let Some(flag) = cancel_flag {
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        log_debug!("[DEBUG] pump_messages: Search cancelled, exiting message loop");
+                        return false;
+                    }
+                }
+
                 // 非阻塞检查消息 - 获取所有窗口的所有消息
                 let has_message = PeekMessageW(
                     &mut msg, 0, // HWND_NULL - 获取所有窗口的消息
@@ -1150,9 +1159,13 @@ pub mod windows {
                     //         msg.message, msg.message, msg.hwnd);
                     // }
 
+                    // WM_QUIT 是正常的退出消息，不应该导致搜索被取消
+                    // 我们应该忽略它，继续处理其他消息
+                    // 只有在 cancel_flag 为 true 时才应该返回 false
                     if msg.message == WM_QUIT {
-                        eprintln!("[DEBUG] pump_messages: Received WM_QUIT, exiting");
-                        return false;
+                        log_debug!("[DEBUG] pump_messages: Received WM_QUIT (ignoring, this is normal)");
+                        // 不返回 false，继续处理消息
+                        // WM_QUIT 可能是来自其他窗口或线程的，不应该影响当前搜索
                     }
 
                     // 只在处理 WM_COPYDATA 时输出详细日志
@@ -1171,8 +1184,8 @@ pub mod windows {
                         );
                     }
                 } else {
-                    // 没有消息，短暂休眠
-                    std::thread::sleep(Duration::from_millis(10));
+                    // 没有消息，短暂休眠（减少休眠时间以提高响应性）
+                    std::thread::sleep(Duration::from_millis(5));
                 }
             }
         }
@@ -1232,12 +1245,19 @@ pub mod windows {
             max_results
         );
 
-        // 检查是否被取消
+        // 检查是否被取消（在搜索开始前检查）
+        // 这是第一个检查点，如果标志已经是 true，说明搜索在开始前就被取消了
         if let Some(cancel_flag) = cancelled {
-            if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-                log_debug!("[DEBUG] Search cancelled by user");
+            let is_cancelled = cancel_flag.load(std::sync::atomic::Ordering::Relaxed);
+            if is_cancelled {
+                log_debug!("[DEBUG] Search cancelled by user before starting (cancel_flag was true at first check)");
+                log_debug!("[DEBUG] This means the search was cancelled before it even started!");
                 return Err(EverythingError::Other("搜索已取消".to_string()));
+            } else {
+                log_debug!("[DEBUG] Search starting, cancel_flag is false (OK) at first check");
             }
+        } else {
+            log_debug!("[DEBUG] Search starting, no cancel_flag provided");
         }
 
         // 发送查询（offset=0，请求 max_results 条）
@@ -1262,7 +1282,7 @@ pub mod windows {
             None;
 
         loop {
-            // 检查是否被取消
+            // 检查是否被取消（在循环开始时立即检查）
             if let Some(cancel_flag) = cancelled {
                 if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
                     log_debug!("[DEBUG] Search cancelled while waiting for reply");
@@ -1271,15 +1291,20 @@ pub mod windows {
             }
             
             iteration += 1;
-            if iteration % 10 == 0 {
+            if iteration % 20 == 0 {
                 log_debug!(
                     "[DEBUG] Still waiting for reply, elapsed: {:?}",
                     start.elapsed()
                 );
             }
 
-            // 处理消息
-            pump_messages(Duration::from_millis(100));
+            // 处理消息（使用更短的时间间隔，并传递取消标志以提高响应性）
+            // 将单次调用时间从 100ms 减少到 50ms，这样可以更频繁地检查取消标志
+            if !pump_messages(Duration::from_millis(50), cancelled) {
+                // pump_messages 返回 false 表示被取消
+                log_debug!("[DEBUG] Search cancelled in pump_messages");
+                return Err(EverythingError::Other("搜索已取消".to_string()));
+            }
 
             // 检查是否有结果
             match ipc_handle.result_receiver.try_recv() {
@@ -1296,9 +1321,8 @@ pub mod windows {
                         );
                         return Err(EverythingError::Timeout);
                     }
-                    // 添加短暂延迟，避免过于频繁的轮询导致 CPU 消耗
-                    // pump_messages 内部已经有延迟，这里再添加一个小延迟可以进一步减少 CPU 使用
-                    std::thread::sleep(Duration::from_millis(5));
+                    // 不再添加额外延迟，因为 pump_messages 内部已经有延迟
+                    // 这样可以更快地响应取消请求
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     log_debug!("[DEBUG] ERROR: Result channel disconnected");
