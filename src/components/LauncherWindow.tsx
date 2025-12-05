@@ -1371,15 +1371,15 @@ export function LauncherWindow() {
       // 先分离特殊类型（这些总是排在最前面，不需要排序）
       const specialTypes = ["ai", "history", "settings"];
       const specialResults: SearchResult[] = [];
-      const fileToolboxResults: SearchResult[] = [];
+      const pluginResults: SearchResult[] = [];
       const regularResults: SearchResult[] = [];
       
       for (const result of otherResults) {
         if (specialTypes.includes(result.type)) {
           specialResults.push(result);
-        } else if (result.type === "plugin" && result.plugin?.id === "file_toolbox") {
-          // 文件工具箱插件单独提取，优先显示
-          fileToolboxResults.push(result);
+        } else if (result.type === "plugin") {
+          // 所有插件单独提取，优先显示
+          pluginResults.push(result);
         } else {
           regularResults.push(result);
         }
@@ -1441,8 +1441,8 @@ export function LauncherWindow() {
         return bLastUsed - aLastUsed;
       });
       
-      // 重新组合：特殊类型 + 文件工具箱插件 + 排序后的前部分 + 未排序的后部分
-      otherResults = [...specialResults, ...fileToolboxResults, ...toSort, ...rest];
+      // 重新组合：特殊类型 + 所有插件 + 排序后的前部分 + 未排序的后部分
+      otherResults = [...specialResults, ...pluginResults, ...toSort, ...rest];
     } else {
       // 结果数量较少时，直接排序所有结果
       otherResults.sort((a, b) => {
@@ -1451,9 +1451,9 @@ export function LauncherWindow() {
         const aIsSpecial = specialTypes.includes(a.type);
         const bIsSpecial = specialTypes.includes(b.type);
         
-        // 文件工具箱插件优先级仅次于特殊类型
-        const aIsFileToolbox = a.type === "plugin" && a.plugin?.id === "file_toolbox";
-        const bIsFileToolbox = b.type === "plugin" && b.plugin?.id === "file_toolbox";
+        // 所有插件优先级仅次于特殊类型
+        const aIsPlugin = a.type === "plugin";
+        const bIsPlugin = b.type === "plugin";
         
         if (aIsSpecial && !bIsSpecial) return -1;
         if (!aIsSpecial && bIsSpecial) return 1;
@@ -1462,9 +1462,9 @@ export function LauncherWindow() {
           return 0;
         }
         
-        // 文件工具箱插件优先级处理
-        if (aIsFileToolbox && !bIsFileToolbox && !bIsSpecial) return -1;
-        if (!aIsFileToolbox && bIsFileToolbox && !aIsSpecial) return 1;
+        // 所有插件优先级处理
+        if (aIsPlugin && !bIsPlugin && !bIsSpecial) return -1;
+        if (!aIsPlugin && bIsPlugin && !aIsSpecial) return 1;
 
         // 获取使用频率和最近使用时间
         const aUseCount = a.file?.use_count;
@@ -1518,22 +1518,22 @@ export function LauncherWindow() {
       });
     }
     
-    // 提取文件工具箱插件，放在最前面
-    const fileToolboxPlugin = otherResults.filter(
-      (result) => result.type === "plugin" && result.plugin?.id === "file_toolbox"
+    // 提取所有插件，放在最前面
+    const pluginResults = otherResults.filter(
+      (result) => result.type === "plugin"
     );
-    const otherResultsWithoutFileToolbox = otherResults.filter(
-      (result) => !(result.type === "plugin" && result.plugin?.id === "file_toolbox")
+    const otherResultsWithoutPlugins = otherResults.filter(
+      (result) => result.type !== "plugin"
     );
     
     // 如果 JSON 中包含链接，优先显示 JSON 格式化选项，否则按原来的顺序（URLs -> JSON formatter -> other results）
-    // 但文件工具箱插件始终在最前面
+    // 但所有插件始终在最前面
     if (jsonContainsLinks && jsonFormatterResult.length > 0) {
-      return [...fileToolboxPlugin, ...jsonFormatterResult, ...urlResults, ...otherResultsWithoutFileToolbox];
+      return [...pluginResults, ...jsonFormatterResult, ...urlResults, ...otherResultsWithoutPlugins];
     } else {
       // URLs always come first, then JSON formatter, then other results sorted by open history
-      // 但文件工具箱插件始终在最前面
-      return [...fileToolboxPlugin, ...urlResults, ...jsonFormatterResult, ...otherResultsWithoutFileToolbox];
+      // 但所有插件始终在最前面
+      return [...pluginResults, ...urlResults, ...jsonFormatterResult, ...otherResultsWithoutPlugins];
     }
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, systemFolders, everythingResults, detectedUrls, detectedJson, openHistory, query, aiAnswer]);
 
@@ -3282,18 +3282,12 @@ export function LauncherWindow() {
                       ) : result.type === "plugin" ? (
                         <svg
                           className={`w-5 h-5 ${
-                            index === selectedIndex ? "text-white" : "text-green-500"
+                            index === selectedIndex ? "text-white" : "text-purple-500"
                           }`}
-                          fill="none"
-                          stroke="currentColor"
+                          fill="currentColor"
                           viewBox="0 0 24 24"
                         >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"
-                          />
+                          <path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z"/>
                         </svg>
                       ) : result.type === "history" ? (
                         <svg
