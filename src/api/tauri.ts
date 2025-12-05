@@ -230,6 +230,76 @@ export const tauriApi = {
     return invoke("show_json_formatter_window");
   },
 
+  async showFileToolboxWindow(): Promise<void> {
+    return invoke("show_file_toolbox_window");
+  },
+
+  async previewFileReplace(params: {
+    folderPath: string;
+    searchText: string;
+    replaceText: string;
+    fileExtensions: string[];
+    useRegex: boolean;
+    caseSensitive: boolean;
+    backupFolder: boolean;
+    replaceFileName: boolean;
+  }): Promise<{
+    results: Array<{
+      filePath: string;
+      matches: number;
+      success: boolean;
+      error?: string;
+    }>;
+    totalMatches: number;
+    totalFiles: number;
+  }> {
+    return invoke("preview_file_replace", {
+      folderPath: params.folderPath,
+      searchText: params.searchText,
+      replaceText: params.replaceText,
+      fileExtensions: params.fileExtensions,
+      useRegex: params.useRegex,
+      caseSensitive: params.caseSensitive,
+      backupFolder: params.backupFolder,
+      replaceFileName: params.replaceFileName,
+    });
+  },
+
+  async executeFileReplace(params: {
+    folderPath: string;
+    searchText: string;
+    replaceText: string;
+    fileExtensions: string[];
+    useRegex: boolean;
+    caseSensitive: boolean;
+    backupFolder: boolean;
+    replaceFileName: boolean;
+  }): Promise<{
+    results: Array<{
+      filePath: string;
+      matches: number;
+      success: boolean;
+      error?: string;
+    }>;
+    totalMatches: number;
+    totalFiles: number;
+  }> {
+    return invoke("execute_file_replace", {
+      folderPath: params.folderPath,
+      searchText: params.searchText,
+      replaceText: params.replaceText,
+      fileExtensions: params.fileExtensions,
+      useRegex: params.useRegex,
+      caseSensitive: params.caseSensitive,
+      backupFolder: params.backupFolder,
+      replaceFileName: params.replaceFileName,
+    });
+  },
+
+  async selectFolder(): Promise<string | null> {
+    return invoke("select_folder");
+  },
+
   // Plugin APIs
   async getPluginDirectory(): Promise<string> {
     return invoke("get_plugin_directory");

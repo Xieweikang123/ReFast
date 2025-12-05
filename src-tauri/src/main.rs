@@ -224,6 +224,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Create system tray menu
             let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
@@ -561,6 +562,10 @@ fn main() {
             show_memo_window,
             show_plugin_list_window,
             show_json_formatter_window,
+            show_file_toolbox_window,
+            preview_file_replace,
+            execute_file_replace,
+            select_folder,
             get_plugin_directory,
             scan_plugin_directory,
             read_plugin_manifest,

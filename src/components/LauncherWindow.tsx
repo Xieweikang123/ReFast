@@ -517,39 +517,16 @@ export function LauncherWindow() {
   const extractUrls = (text: string): string[] => {
     if (!text || text.trim().length === 0) return [];
     
-    // URL regex pattern - matches http://, https://, and common URL patterns
-    // This pattern matches:
-    // - http:// or https:// URLs
-    // - www. URLs
-    // - Domain-like patterns (e.g., example.com, github.com/user/repo)
-    const urlPattern = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}[^\s<>"']*)/gi;
+    // 只匹配以 http:// 或 https:// 开头的 URL
+    const urlPattern = /https?:\/\/[^\s<>"']+/gi;
     const matches = text.match(urlPattern);
     if (!matches) return [];
     
-    // Normalize URLs (add https:// if missing)
-    return matches.map(url => {
-      url = url.trim();
-      // Remove trailing punctuation that might not be part of the URL
-      // But keep /, ?, #, &, = which are valid URL characters
-      url = url.replace(/[.,;:!?]+(?![\/?#&=])$/, '');
-      
-      // Validate and normalize URL
-      if (!url.match(/^https?:\/\//i)) {
-        if (url.startsWith('www.')) {
-          return 'https://' + url;
-        }
-        // For domain-like patterns, add https://
-        // Match patterns like: domain.com, subdomain.domain.com, domain.com/path
-        if (url.match(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}/)) {
-          return 'https://' + url;
-        }
-        // If it doesn't match domain pattern, skip it
-        return null;
-      }
-      return url;
-    })
-    .filter((url): url is string => url !== null && url.length > 0) // Remove nulls and empty strings
-    .filter((url, index, self) => self.indexOf(url) === index); // Remove duplicates
+    // 清理并返回 URL
+    return matches
+      .map(url => url.trim())
+      .filter((url): url is string => url.length > 0)
+      .filter((url, index, self) => self.indexOf(url) === index); // Remove duplicates
   };
 
   // 确认打开剪切板 URL
@@ -1214,12 +1191,24 @@ export function LauncherWindow() {
         displayName: memo.title || memo.content.slice(0, 50),
         path: memo.id,
       })),
-      ...filteredPlugins.map((plugin) => ({
-        type: "plugin" as const,
-        plugin,
-        displayName: plugin.name,
-        path: plugin.id,
-      })),
+      // 将文件工具箱插件单独提取，优先显示
+      ...filteredPlugins
+        .filter((plugin) => plugin.id === "file_toolbox")
+        .map((plugin) => ({
+          type: "plugin" as const,
+          plugin,
+          displayName: plugin.name,
+          path: plugin.id,
+        })),
+      // 其他插件
+      ...filteredPlugins
+        .filter((plugin) => plugin.id !== "file_toolbox")
+        .map((plugin) => ({
+          type: "plugin" as const,
+          plugin,
+          displayName: plugin.name,
+          path: plugin.id,
+        })),
       // 显示系统文件夹结果
       ...systemFolders.map((folder) => ({
         type: "system_folder" as const,
@@ -1291,11 +1280,15 @@ export function LauncherWindow() {
       // 先分离特殊类型（这些总是排在最前面，不需要排序）
       const specialTypes = ["ai", "history", "settings"];
       const specialResults: SearchResult[] = [];
+      const fileToolboxResults: SearchResult[] = [];
       const regularResults: SearchResult[] = [];
       
       for (const result of otherResults) {
         if (specialTypes.includes(result.type)) {
           specialResults.push(result);
+        } else if (result.type === "plugin" && result.plugin?.id === "file_toolbox") {
+          // 文件工具箱插件单独提取，优先显示
+          fileToolboxResults.push(result);
         } else {
           regularResults.push(result);
         }
@@ -1339,8 +1332,8 @@ export function LauncherWindow() {
         return bLastUsed - aLastUsed;
       });
       
-      // 重新组合：特殊类型 + 排序后的前部分 + 未排序的后部分
-      otherResults = [...specialResults, ...toSort, ...rest];
+      // 重新组合：特殊类型 + 文件工具箱插件 + 排序后的前部分 + 未排序的后部分
+      otherResults = [...specialResults, ...fileToolboxResults, ...toSort, ...rest];
     } else {
       // 结果数量较少时，直接排序所有结果
       otherResults.sort((a, b) => {
@@ -1349,12 +1342,20 @@ export function LauncherWindow() {
         const aIsSpecial = specialTypes.includes(a.type);
         const bIsSpecial = specialTypes.includes(b.type);
         
+        // 文件工具箱插件优先级仅次于特殊类型
+        const aIsFileToolbox = a.type === "plugin" && a.plugin?.id === "file_toolbox";
+        const bIsFileToolbox = b.type === "plugin" && b.plugin?.id === "file_toolbox";
+        
         if (aIsSpecial && !bIsSpecial) return -1;
         if (!aIsSpecial && bIsSpecial) return 1;
         if (aIsSpecial && bIsSpecial) {
           // 特殊类型之间保持原有顺序
           return 0;
         }
+        
+        // 文件工具箱插件优先级处理
+        if (aIsFileToolbox && !bIsFileToolbox && !bIsSpecial) return -1;
+        if (!aIsFileToolbox && bIsFileToolbox && !aIsSpecial) return 1;
 
         // 获取使用频率和最近使用时间
         const aUseCount = a.file?.use_count;
@@ -1390,12 +1391,22 @@ export function LauncherWindow() {
       });
     }
     
+    // 提取文件工具箱插件，放在最前面
+    const fileToolboxPlugin = otherResults.filter(
+      (result) => result.type === "plugin" && result.plugin?.id === "file_toolbox"
+    );
+    const otherResultsWithoutFileToolbox = otherResults.filter(
+      (result) => !(result.type === "plugin" && result.plugin?.id === "file_toolbox")
+    );
+    
     // 如果 JSON 中包含链接，优先显示 JSON 格式化选项，否则按原来的顺序（URLs -> JSON formatter -> other results）
+    // 但文件工具箱插件始终在最前面
     if (jsonContainsLinks && jsonFormatterResult.length > 0) {
-      return [...jsonFormatterResult, ...urlResults, ...otherResults];
+      return [...fileToolboxPlugin, ...jsonFormatterResult, ...urlResults, ...otherResultsWithoutFileToolbox];
     } else {
       // URLs always come first, then JSON formatter, then other results sorted by open history
-      return [...urlResults, ...jsonFormatterResult, ...otherResults];
+      // 但文件工具箱插件始终在最前面
+      return [...fileToolboxPlugin, ...urlResults, ...jsonFormatterResult, ...otherResultsWithoutFileToolbox];
     }
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, systemFolders, everythingResults, detectedUrls, detectedJson, openHistory, query, aiAnswer]);
 

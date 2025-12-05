@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use regex::Regex;
 use tauri::{Emitter, Manager};
 
 static RECORDING_STATE: LazyLock<Arc<Mutex<RecordingState>>> =
@@ -1528,63 +1529,84 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
     let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
     let path_buf = PathBuf::from(trimmed);
 
-    if !path_buf.exists() {
-        return Err(format!("Path not found: {}", trimmed));
-    }
+    // Get the absolute path (even if file doesn't exist, we can still open parent folder)
+    let absolute_path = if path_buf.is_absolute() {
+        path_buf.clone()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("Failed to get current directory: {}", e))?
+            .join(&path_buf)
+    };
 
     #[cfg(target_os = "windows")]
     {
-        // On Windows, use explorer with /select flag to open folder and select file
-        // Get the absolute canonical path to handle special characters properly
-        let canonical_path = path_buf
-            .canonicalize()
-            .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
+        // Get parent directory from the path string itself (more reliable)
+        // This works even if the file doesn't exist
+        let parent_dir = if absolute_path.exists() {
+            // If path exists, get canonical parent
+            let canonical_path = absolute_path
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
+            canonical_path
+                .parent()
+                .ok_or_else(|| "File has no parent directory".to_string())?
+                .to_path_buf()
+        } else {
+            // If path doesn't exist, construct parent from path components
+            absolute_path
+                .parent()
+                .ok_or_else(|| "File has no parent directory".to_string())?
+                .to_path_buf()
+        };
 
-        // Remove the \\?\ prefix if present (Windows long path prefix)
-        // explorer /select doesn't work well with this prefix
-        let mut path_str = canonical_path.to_string_lossy().to_string();
-        println!("[reveal_in_folder] Original canonical path: {}", path_str);
+        // Try to canonicalize parent directory to ensure it exists
+        let parent_dir = if parent_dir.exists() {
+            parent_dir
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize parent directory: {}", e))?
+        } else {
+            // If parent doesn't exist, return error
+            return Err(format!("Parent directory does not exist: {}", parent_dir.display()));
+        };
 
-        // Remove the \\?\ prefix if present
-        if path_str.starts_with("\\\\?\\") {
-            path_str = path_str[4..].to_string();
-            println!("[reveal_in_folder] Removed \\\\?\\ prefix");
-        }
-        path_str = path_str.replace("/", "\\");
-
-        println!("[reveal_in_folder] File path (cleaned): {}", path_str);
-
-        // Get parent directory - this is the folder we want to open
-        let parent_dir = canonical_path
-            .parent()
-            .ok_or_else(|| "File has no parent directory".to_string())?;
-
-        // Remove the \\?\ prefix from parent directory too
+        // Convert parent directory to string and normalize
         let mut parent_str = parent_dir.to_string_lossy().to_string();
         if parent_str.starts_with("\\\\?\\") {
             parent_str = parent_str[4..].to_string();
         }
         parent_str = parent_str.replace("/", "\\");
-        println!("[reveal_in_folder] Parent directory: {}", parent_str);
 
-        // Use explorer /select command with proper escaping
-        // For paths with special characters, we'll use a simpler approach
-        let escaped_path = path_str.replace("\"", "\"\"");
-        let explorer_arg = format!("/select,\"{}\"", escaped_path);
-
-        println!(
-            "[reveal_in_folder] Explorer command: explorer {}",
-            explorer_arg
-        );
-        println!("[reveal_in_folder] Will open parent folder: {}", parent_str);
-
-        // Try using cmd /C to execute explorer command - this handles paths better
-        Command::new("cmd")
-            .args(&["/C", "explorer", &explorer_arg])
-            .spawn()
-            .map_err(|e| format!("Failed to execute explorer command: {}", e))?;
-
-        println!("[reveal_in_folder] Explorer command spawned successfully");
+        // If file exists and is a file, use explorer /select to open folder and select file
+        // Otherwise, just open the parent folder
+        if absolute_path.exists() && absolute_path.is_file() {
+            let mut file_path = if let Ok(canonical) = absolute_path.canonicalize() {
+                canonical
+            } else {
+                absolute_path
+            };
+            
+            let mut path_str = file_path.to_string_lossy().to_string();
+            if path_str.starts_with("\\\\?\\") {
+                path_str = path_str[4..].to_string();
+            }
+            path_str = path_str.replace("/", "\\");
+            
+            // Escape quotes in path
+            let escaped_path = path_str.replace("\"", "\"\"");
+            let explorer_arg = format!("/select,\"{}\"", escaped_path);
+            
+            // Use explorer /select to open folder and select file
+            Command::new("explorer")
+                .arg(&explorer_arg)
+                .spawn()
+                .map_err(|e| format!("Failed to execute explorer command: {}", e))?;
+        } else {
+            // File doesn't exist or is a directory, just open the parent folder
+            Command::new("explorer")
+                .arg(&parent_str)
+                .spawn()
+                .map_err(|e| format!("Failed to open folder: {}", e))?;
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1790,6 +1812,509 @@ pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn show_file_toolbox_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    // 尝试获取现有窗口
+    if let Some(window) = app.get_webview_window("file-toolbox-window") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        // 动态创建窗口
+        let window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "file-toolbox-window",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("文件工具箱")
+        .inner_size(900.0, 800.0)
+        .resizable(true)
+        .min_inner_size(700.0, 600.0)
+        .center()
+        .build()
+        .map_err(|e| format!("创建文件工具箱窗口失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReplaceParams {
+    folder_path: String,
+    search_text: String,
+    replace_text: String,
+    file_extensions: Vec<String>,
+    use_regex: bool,
+    case_sensitive: bool,
+    backup_folder: bool,
+    replace_file_name: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReplaceResult {
+    file_path: String,
+    matches: usize,
+    success: bool,
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileReplaceResponse {
+    results: Vec<FileReplaceResult>,
+    total_matches: usize,
+    total_files: usize,
+}
+
+fn process_file_replace(
+    params: &FileReplaceParams,
+    execute: bool,
+) -> Result<FileReplaceResponse, String> {
+    use std::path::Path;
+    use regex::Regex;
+
+    let folder_path = Path::new(&params.folder_path);
+    if !folder_path.exists() || !folder_path.is_dir() {
+        return Err("文件夹不存在或不是有效目录".to_string());
+    }
+
+    // 如果需要执行替换且需要备份，先备份文件夹
+    if execute && params.backup_folder {
+        backup_folder(folder_path)?;
+    }
+
+    let mut results = Vec::new();
+    let mut total_matches = 0;
+    let mut total_files = 0;
+
+    // 构建正则表达式或普通字符串匹配
+    let pattern = if params.use_regex {
+        let flags = if params.case_sensitive { "" } else { "(?i)" };
+        Regex::new(&format!("{}{}", flags, params.search_text))
+            .map_err(|e| format!("正则表达式错误: {}", e))?
+    } else {
+        // 对于普通字符串，转义特殊字符
+        let escaped = regex::escape(&params.search_text);
+        let flags = if params.case_sensitive { "" } else { "(?i)" };
+        Regex::new(&format!("{}{}", flags, escaped))
+            .map_err(|e| format!("构建匹配模式失败: {}", e))?
+    };
+
+    // 处理目标文件夹本身的名字（如果启用替换文件名）
+    let mut actual_folder_path = folder_path.to_path_buf();
+    if params.replace_file_name {
+        if let Some(folder_name) = folder_path.file_name().and_then(|n| n.to_str()) {
+            if pattern.is_match(folder_name) {
+                let new_folder_name = pattern.replace_all(folder_name, &params.replace_text).to_string();
+                let parent = folder_path.parent().ok_or_else(|| "无法获取文件夹父目录".to_string())?;
+                let new_folder_path = parent.join(&new_folder_name);
+                
+                if execute {
+                    // 执行模式：如果新文件夹名与旧文件夹名不同，执行重命名
+                    if new_folder_path != folder_path {
+                        std::fs::rename(folder_path, &new_folder_path)
+                            .map_err(|e| format!("重命名目标文件夹失败: {}", e))?;
+                        actual_folder_path = new_folder_path.clone();
+                        total_matches += 1;
+                        results.push(FileReplaceResult {
+                            file_path: new_folder_path.to_string_lossy().to_string(),
+                            matches: 1,
+                            success: true,
+                            error: None,
+                        });
+                    }
+                } else {
+                    // 预览模式：记录文件夹名匹配
+                    total_matches += 1;
+                    results.push(FileReplaceResult {
+                        file_path: new_folder_path.to_string_lossy().to_string(),
+                        matches: 1,
+                        success: true,
+                        error: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // 递归遍历文件夹
+    fn walk_dir(
+        dir: &Path,
+        pattern: &Regex,
+        replace_text: &str,
+        file_extensions: &[String],
+        execute: bool,
+        replace_file_name: bool,
+        results: &mut Vec<FileReplaceResult>,
+        total_matches: &mut usize,
+        total_files: &mut usize,
+    ) -> Result<(), String> {
+        use std::fs;
+
+        for entry in fs::read_dir(dir).map_err(|e| format!("读取目录失败: {}", e))? {
+            let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                // 处理文件夹名替换
+                let mut final_dir_path = path.clone();
+                let mut dir_name_matches = 0;
+                let mut content_dir_path = path.clone(); // 用于递归遍历的路径
+                
+                if replace_file_name {
+                    if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if pattern.is_match(dir_name) {
+                            dir_name_matches = 1;
+                            let new_dir_name = pattern.replace_all(dir_name, replace_text).to_string();
+                            let parent = path.parent().ok_or_else(|| "无法获取文件夹父目录".to_string())?;
+                            final_dir_path = parent.join(&new_dir_name);
+                            
+                            if execute {
+                                // 执行模式：如果新文件夹名与旧文件夹名不同，执行重命名
+                                if final_dir_path != path {
+                                    fs::rename(&path, &final_dir_path)
+                                        .map_err(|e| format!("重命名文件夹失败: {}", e))?;
+                                    content_dir_path = final_dir_path.clone(); // 重命名后使用新路径
+                                    *total_matches += dir_name_matches;
+                                    results.push(FileReplaceResult {
+                                        file_path: final_dir_path.to_string_lossy().to_string(),
+                                        matches: dir_name_matches,
+                                        success: true,
+                                        error: None,
+                                    });
+                                }
+                            } else {
+                                // 预览模式：记录文件夹名匹配
+                                *total_matches += dir_name_matches;
+                                results.push(FileReplaceResult {
+                                    file_path: final_dir_path.to_string_lossy().to_string(),
+                                    matches: dir_name_matches,
+                                    success: true,
+                                    error: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                // 递归处理子目录（使用实际存在的路径）
+                walk_dir(
+                    &content_dir_path,
+                    pattern,
+                    replace_text,
+                    file_extensions,
+                    execute,
+                    replace_file_name,
+                    results,
+                    total_matches,
+                    total_files,
+                )?;
+            } else if path.is_file() {
+                // 检查文件扩展名
+                let should_process = if file_extensions.is_empty() {
+                    true
+                } else {
+                    path.extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| {
+                            file_extensions
+                                .iter()
+                                .any(|allowed| ext.eq_ignore_ascii_case(allowed.trim()))
+                        })
+                        .unwrap_or(false)
+                };
+
+                if should_process {
+                    *total_files += 1;
+                    
+                    // 处理文件名替换
+                    let mut final_path = path.clone();
+                    let mut file_name_matches = 0;
+                    let mut content_path = path.clone(); // 用于读取文件内容的路径
+                    
+                    if replace_file_name {
+                        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                            if pattern.is_match(file_name) {
+                                file_name_matches = 1;
+                                let new_file_name = pattern.replace_all(file_name, replace_text).to_string();
+                                let parent = path.parent().ok_or_else(|| "无法获取文件父目录".to_string())?;
+                                final_path = parent.join(&new_file_name);
+                                
+                                if execute {
+                                    // 执行模式：如果新文件名与旧文件名不同，执行重命名
+                                    if final_path != path {
+                                        fs::rename(&path, &final_path)
+                                            .map_err(|e| format!("重命名文件失败: {}", e))?;
+                                        content_path = final_path.clone(); // 重命名后使用新路径
+                                    }
+                                }
+                                // 预览模式：final_path 是新路径（用于显示），但 content_path 仍然是原路径（用于读取）
+                            }
+                        }
+                    }
+                    
+                    // 处理文件内容替换（使用实际存在的文件路径）
+                    match process_single_file(&content_path, pattern, replace_text, execute) {
+                        Ok(content_matches) => {
+                            let total_file_matches = content_matches + file_name_matches;
+                            if total_file_matches > 0 {
+                                *total_matches += total_file_matches;
+                                results.push(FileReplaceResult {
+                                    file_path: final_path.to_string_lossy().to_string(),
+                                    matches: total_file_matches,
+                                    success: true,
+                                    error: None,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            // 如果文件名被替换了，即使内容无法处理（如二进制文件），也显示为成功
+                            // 因为文件名替换已经成功了
+                            if file_name_matches > 0 {
+                                *total_matches += file_name_matches;
+                                results.push(FileReplaceResult {
+                                    file_path: final_path.to_string_lossy().to_string(),
+                                    matches: file_name_matches,
+                                    success: true,
+                                    error: None,
+                                });
+                            } else {
+                                // 如果文件名没有被替换，且内容无法处理，静默跳过（不显示错误）
+                                // 这是二进制文件或非文本文件，属于正常情况
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    walk_dir(
+        &actual_folder_path,
+        &pattern,
+        &params.replace_text,
+        &params.file_extensions,
+        execute,
+        params.replace_file_name,
+        &mut results,
+        &mut total_matches,
+        &mut total_files,
+    )?;
+
+    Ok(FileReplaceResponse {
+        results,
+        total_matches,
+        total_files,
+    })
+}
+
+/// 备份文件夹到父目录，备份文件夹名称包含时间戳
+fn backup_folder(folder_path: &Path) -> Result<std::path::PathBuf, String> {
+    use std::fs;
+    use std::path::PathBuf;
+    use chrono::Local;
+
+    let parent_dir = folder_path
+        .parent()
+        .ok_or_else(|| "无法获取文件夹的父目录".to_string())?;
+
+    let folder_name = folder_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "无法获取文件夹名称".to_string())?;
+
+    // 生成备份文件夹名称，格式：原文件夹名_backup_YYYYMMDD_HHMMSS
+    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+    let backup_name = format!("{}_backup_{}", folder_name, timestamp);
+    let backup_path = parent_dir.join(&backup_name);
+
+    // 如果备份文件夹已存在，添加序号
+    let mut final_backup_path = backup_path.clone();
+    let mut counter = 1;
+    while final_backup_path.exists() {
+        let new_backup_name = format!("{}_backup_{}_{}", folder_name, timestamp, counter);
+        final_backup_path = parent_dir.join(&new_backup_name);
+        counter += 1;
+    }
+
+    // 复制整个文件夹
+    copy_dir_all(folder_path, &final_backup_path)
+        .map_err(|e| format!("备份文件夹失败: {}", e))?;
+
+    Ok(final_backup_path)
+}
+
+/// 递归复制目录及其所有内容
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    use std::fs;
+
+    // 创建目标目录
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("创建备份目录失败: {}", e))?;
+
+    // 遍历源目录
+    for entry in fs::read_dir(src)
+        .map_err(|e| format!("读取源目录失败: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+        let file_name = entry
+            .file_name()
+            .to_str()
+            .ok_or_else(|| "文件名包含无效字符".to_string())?
+            .to_string();
+
+        let dst_path = dst.join(&file_name);
+
+        if path.is_dir() {
+            // 递归复制子目录
+            copy_dir_all(&path, &dst_path)?;
+        } else {
+            // 复制文件
+            fs::copy(&path, &dst_path)
+                .map_err(|e| format!("复制文件 {} 失败: {}", file_name, e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn process_single_file(
+    file_path: &Path,
+    pattern: &Regex,
+    replace_text: &str,
+    execute: bool,
+) -> Result<usize, String> {
+    use std::fs;
+    use std::io::Write;
+
+    // 读取文件内容（只处理 UTF-8 文本文件）
+    let content = match fs::read_to_string(file_path) {
+        Ok(content) => content,
+        Err(e) => {
+            // 如果文件不是有效的 UTF-8 文本，跳过该文件
+            return Err(format!("文件不是有效的文本文件（UTF-8）: {}", e));
+        }
+    };
+
+    // 查找匹配
+    let matches: Vec<_> = pattern.find_iter(&content).collect();
+    let match_count = matches.len();
+
+    if match_count > 0 && execute {
+        // 执行替换
+        let new_content = pattern.replace_all(&content, replace_text).to_string();
+
+        // 写回文件
+        let mut file = fs::File::create(file_path)
+            .map_err(|e| format!("打开文件写入失败: {}", e))?;
+        file.write_all(new_content.as_bytes())
+            .map_err(|e| format!("写入文件失败: {}", e))?;
+    }
+
+    Ok(match_count)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn preview_file_replace(
+    folder_path: String,
+    search_text: String,
+    replace_text: String,
+    file_extensions: Vec<String>,
+    use_regex: bool,
+    case_sensitive: bool,
+    backup_folder: bool,
+    replace_file_name: bool,
+) -> Result<FileReplaceResponse, String> {
+    let params = FileReplaceParams {
+        folder_path,
+        search_text,
+        replace_text,
+        file_extensions,
+        use_regex,
+        case_sensitive,
+        backup_folder,
+        replace_file_name,
+    };
+    process_file_replace(&params, false)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub fn execute_file_replace(
+    folder_path: String,
+    search_text: String,
+    replace_text: String,
+    file_extensions: Vec<String>,
+    use_regex: bool,
+    case_sensitive: bool,
+    backup_folder: bool,
+    replace_file_name: bool,
+) -> Result<FileReplaceResponse, String> {
+    let params = FileReplaceParams {
+        folder_path,
+        search_text,
+        replace_text,
+        file_extensions,
+        use_regex,
+        case_sensitive,
+        backup_folder,
+        replace_file_name,
+    };
+    process_file_replace(&params, true)
+}
+
+#[tauri::command]
+pub fn select_folder() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        // 使用 COM 对象 Shell.Application 来选择文件夹（更可靠，不需要 Add-Type）
+        let script = r#"
+            $shell = New-Object -ComObject Shell.Application
+            $folder = $shell.BrowseForFolder(0, "选择要处理的文件夹", 0, 0)
+            if ($folder) {
+                $path = $folder.Self.Path
+                if ($path) {
+                    Write-Output $path
+                }
+            }
+        "#;
+        
+        let output = Command::new("powershell")
+            .args(&["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()
+            .map_err(|e| format!("执行 PowerShell 失败: {}", e))?;
+        
+        // 检查 stderr 是否有错误（但忽略一些警告信息）
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        if !stderr_str.is_empty() && !stderr_str.contains("警告") && !stderr_str.contains("Warning") {
+            return Err(format!("PowerShell 错误: {}", stderr_str));
+        }
+        
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if path.is_empty() {
+                Ok(None) // 用户取消了选择
+            } else {
+                Ok(Some(path))
+            }
+        } else {
+            Ok(None) // 用户取消了选择或没有选择
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 其他平台暂时返回 None，表示不支持
+        Ok(None)
+    }
 }
 
 #[tauri::command]

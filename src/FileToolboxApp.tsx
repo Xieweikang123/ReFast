@@ -1,21 +1,22 @@
-import { MemoWindow } from "./components/MemoWindow";
+import { FileToolboxWindow } from "./components/FileToolboxWindow";
 import "./styles.css";
 
-function MemoApp() {
+function FileToolboxApp() {
   return (
     <div
       className="h-screen w-screen"
       style={{
-        backgroundColor: "#f9fafb",
+        backgroundColor: "#1e1e1e",
         margin: 0,
         padding: 0,
         height: "100vh",
         width: "100vw",
       }}
     >
-      <MemoWindow />
+      <FileToolboxWindow />
     </div>
   );
 }
 
-export default MemoApp;
+export default FileToolboxApp;
+

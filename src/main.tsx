@@ -8,6 +8,7 @@ import MemoApp from "./MemoApp";
 import PluginListApp from "./PluginListApp";
 import SettingsApp from "./SettingsApp";
 import JsonFormatterApp from "./JsonFormatterApp";
+import FileToolboxApp from "./FileToolboxApp";
 import { initializePlugins } from "./plugins";
 import "./styles.css";
 
@@ -91,6 +92,13 @@ async function initApp() {
         </StrictMode>
       );
       console.log("[初始化] JsonFormatterApp 已渲染");
+    } else if (label === "file-toolbox-window") {
+      ReactDOM.createRoot(root).render(
+        <StrictMode>
+          <FileToolboxApp />
+        </StrictMode>
+      );
+      console.log("[初始化] FileToolboxApp 已渲染");
     } else {
       ReactDOM.createRoot(root).render(
         <StrictMode>

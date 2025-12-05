@@ -118,6 +118,41 @@ export function createBuiltinPlugins(): Plugin[] {
         }
       },
     },
+    {
+      id: "file_toolbox",
+      name: "文件工具箱",
+      description: "文件处理工具集，支持批量查找替换、文件操作等功能",
+      keywords: [
+        "文件工具箱",
+        "文件处理",
+        "文件替换",
+        "批量替换",
+        "字符串替换",
+        "wenjiangongjuxiang",
+        "wjgjx",
+        "wenjianchuli",
+        "wjcl",
+        "wenjiantihuan",
+        "wjth",
+        "piliangtihuan",
+        "plth",
+        "zifuchuantihuan",
+        "zfcth",
+        "toolbox",
+        "file",
+        "batch",
+        "search",
+        "replace",
+      ],
+      execute: async (context) => {
+        // 打开独立的文件工具箱窗口
+        if (context.tauriApi) {
+          await context.tauriApi.showFileToolboxWindow();
+          // 关闭启动器
+          await context.hideLauncher();
+        }
+      },
+    },
   ];
 }
 
