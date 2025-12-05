@@ -19,10 +19,23 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
   const recordingRef = useRef(false);
   const lastModifierRef = useRef<string | null>(null);
   const lastModifierTimeRef = useRef<number>(0);
+  const isCompletingRef = useRef(false); // 标记是否正在完成录制，防止重复处理
+  const finalKeysRef = useRef<string[] | null>(null); // 存储最终应该显示的按键，一旦设置就不再更新
 
   useEffect(() => {
     loadHotkey();
   }, []);
+
+  // 打印当前快捷键（用于调试）
+  useEffect(() => {
+    const mods = hotkey.modifiers.join(" + ");
+    const formatted = `${mods} + ${hotkey.key}`;
+    console.log("当前快捷键:", formatted);
+    console.log("快捷键配置对象:", hotkey);
+    console.log("修饰键数组:", hotkey.modifiers);
+    console.log("按键:", hotkey.key);
+    console.log("修饰键数量:", hotkey.modifiers.length);
+  }, [hotkey]);
 
   const loadHotkey = async () => {
     try {
@@ -37,6 +50,15 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
 
   const formatHotkey = (config: HotkeyConfig): string => {
     const mods = config.modifiers.join(" + ");
+    
+    // 【修复显示问题】对于重复修饰键（如 Ctrl+Ctrl），key 本身就是修饰键，不需要再拼接
+    // 检查是否是重复修饰键：modifiers 长度为 2 且两个元素相同，且 key 也相同
+    if (config.modifiers.length === 2 && 
+        config.modifiers[0] === config.modifiers[1] && 
+        config.modifiers[0] === config.key) {
+      return mods; // 只返回 modifiers，不拼接 key
+    }
+    
     return `${mods} + ${config.key}`;
   };
 
@@ -44,6 +66,7 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
     setIsRecording(true);
     recordingRef.current = true;
     setCurrentKeys([]);
+    finalKeysRef.current = null; // 重置最终按键
   };
 
   const stopRecording = () => {
@@ -52,16 +75,29 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
     setCurrentKeys([]);
     lastModifierRef.current = null;
     lastModifierTimeRef.current = 0;
+    isCompletingRef.current = false;
+    finalKeysRef.current = null; // 重置最终按键
   };
 
   useEffect(() => {
     if (!isRecording) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (!recordingRef.current) return;
-
-      e.preventDefault();
-      e.stopPropagation();
+      // 【顶层防御】如果已经停止录制、正在完成录制、或是重复触发，直接拦截
+      if (!recordingRef.current || isCompletingRef.current || e.repeat) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation(); // 增强拦截能力
+        return;
+      }
+      
+      // 【关键修复】如果 finalKeysRef 已设置，说明已经完成双击，立即拦截所有后续事件
+      if (finalKeysRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        return;
+      }
 
       // 排除修饰键本身
       const keyMap: Record<string, string> = {
@@ -75,46 +111,90 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
       
       // 如果是修饰键，检测是否重复按下
       if (keyMap[key]) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation(); // 增强拦截能力
+        
         const mappedKey = keyMap[key];
         const now = Date.now();
-        const timeSinceLastPress = now - lastModifierTimeRef.current;
         
-        // 检测重复修饰键：同一个修饰键在 500ms 内被按两次
-        if (lastModifierRef.current === mappedKey && timeSinceLastPress < 500) {
-          // 检测到重复修饰键，完成录制
-          const modifiers: string[] = [mappedKey, mappedKey]; // 例如 ["Ctrl", "Ctrl"]
+        // 【关键修复】双击检测逻辑前置！在更新任何状态之前先判断
+        const isSameModifier = lastModifierRef.current === mappedKey;
+        const hasPreviousPress = lastModifierTimeRef.current > 0;
+        const timeSinceLastPress = hasPreviousPress ? now - lastModifierTimeRef.current : Infinity;
+        const isDoubleTapTime = timeSinceLastPress < 500; // 缩短到 500ms，避免误触
+        
+        // 检测到双击：立即锁定并强制覆写状态
+        if (isSameModifier && hasPreviousPress && isDoubleTapTime) {
+          console.log(`✅ 检测到重复修饰键: ${mappedKey}, 时间差: ${timeSinceLastPress}ms`);
+          
+          // 立即锁定，防止后续事件处理（必须在最前面）
+          isCompletingRef.current = true;
+          recordingRef.current = false;
+          
+          // 【核心修复】使用 ref 锁定最终显示的按键，防止后续事件覆盖
+          const finalModifiers: string[] = [mappedKey, mappedKey]; // 直接定死为两个
+          finalKeysRef.current = finalModifiers; // 立即锁定，后续事件无法覆盖
           
           const newHotkey: HotkeyConfig = {
-            modifiers: modifiers,
-            key: mappedKey, // 使用修饰键本身作为键
+            modifiers: finalModifiers,
+            key: mappedKey,
           };
           
-          setHotkey(newHotkey);
-          setCurrentKeys([...modifiers]);
-          setIsRecording(false);
-          recordingRef.current = false;
+          // 立即重置时间戳，防止后续事件被误判（在状态更新之前）
           lastModifierRef.current = null;
           lastModifierTimeRef.current = 0;
+          
+          // 强制覆写显示和状态
+          setCurrentKeys(finalModifiers); // 直接设置，不使用 [...prev, key]
+          setHotkey(newHotkey);
+          setIsRecording(false);
+          
+          // 立即移除事件监听器，防止后续事件进入
+          window.removeEventListener("keydown", handleKeyDown, true);
+          window.removeEventListener("keyup", handleKeyUp, true);
+          
+          // 延迟解锁（防止后续余震）
+          setTimeout(() => {
+            isCompletingRef.current = false;
+          }, 300);
+          
+          return; // 立即返回，不再执行后续任何逻辑
+        }
+        
+        // 普通按键处理：第一次按下、不同修饰键、或超过时间窗口
+        // 【关键】如果 finalKeysRef 已设置，说明已经完成双击，不再更新
+        if (finalKeysRef.current) {
+          const lockedKeys: string[] = finalKeysRef.current;
+          console.log(`⚠️ 已锁定最终按键，忽略后续事件: ${lockedKeys.join(" + ")}`);
           return;
         }
         
-        // 记录当前修饰键和时间
-        lastModifierRef.current = mappedKey;
-        lastModifierTimeRef.current = now;
+        if (!hasPreviousPress || !isSameModifier || timeSinceLastPress >= 500) {
+          // 第一次按下、不同的修饰键、或超过时间窗口，重置为新的按下
+          if (!hasPreviousPress) {
+            console.log(`记录修饰键: ${mappedKey} (第一次按下)`);
+          } else if (!isSameModifier) {
+            console.log(`记录修饰键: ${mappedKey} (之前: ${lastModifierRef.current})`);
+          } else {
+            console.log(`记录修饰键: ${mappedKey} (时间差: ${timeSinceLastPress}ms，超过窗口)`);
+          }
+          
+          lastModifierRef.current = mappedKey;
+          lastModifierTimeRef.current = now;
+          // 更新显示为单个修饰键
+          setCurrentKeys([mappedKey]);
+        }
         
-        const modifiers: string[] = [];
-        if (e.ctrlKey) modifiers.push("Ctrl");
-        if (e.altKey) modifiers.push("Alt");
-        if (e.shiftKey) modifiers.push("Shift");
-        if (e.metaKey) modifiers.push("Meta");
-        
-        setCurrentKeys(modifiers);
         return;
       }
       
       // 如果不是修饰键，重置重复检测
       lastModifierRef.current = null;
       lastModifierTimeRef.current = 0;
+      
+      e.preventDefault();
+      e.stopPropagation();
 
       // 收集修饰键（排除当前按下的键本身）
       const modifiers: string[] = [];

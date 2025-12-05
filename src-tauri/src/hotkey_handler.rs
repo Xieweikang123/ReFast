@@ -3,16 +3,152 @@ pub mod windows {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::PathBuf;
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, TranslateMessage, MSG},
     };
+    
+    // 日志文件状态
+    struct LogFileState {
+        file: Option<std::fs::File>,
+        file_path: PathBuf,
+        date: String,
+    }
+    
+    static LOG_FILE_STATE: std::sync::OnceLock<Arc<Mutex<LogFileState>>> = std::sync::OnceLock::new();
+    
+    fn get_log_dir() -> PathBuf {
+        // 使用与 everything_search 相同的日志目录
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                PathBuf::from(appdata).join("re-fast").join("logs")
+            } else {
+                std::env::temp_dir().join("re-fast-logs")
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::temp_dir().join("re-fast-logs")
+        }
+    }
+    
+    fn get_log_file_state() -> Arc<Mutex<LogFileState>> {
+        LOG_FILE_STATE
+            .get_or_init(|| {
+                let today = chrono::Local::now().format("%Y%m%d").to_string();
+                let log_dir = get_log_dir();
+                
+                if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                    eprintln!("[Hotkey] Failed to create log directory: {}", e);
+                }
+                
+                // 使用与 everything_search 相同的日志文件名
+                let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .ok();
+                
+                Arc::new(Mutex::new(LogFileState {
+                    file,
+                    file_path: log_path,
+                    date: today,
+                }))
+            })
+            .clone()
+    }
+    
+    fn ensure_current_log_file() {
+        let state = get_log_file_state();
+        let today = chrono::Local::now().format("%Y%m%d").to_string();
+        
+        let mut state_guard = match state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        
+        if state_guard.date != today {
+            if let Some(mut old_file) = state_guard.file.take() {
+                let _ = old_file.flush();
+            }
+            
+            let log_dir = get_log_dir();
+            if let Err(e) = std::fs::create_dir_all(&log_dir) {
+                eprintln!("[Hotkey] Failed to create log directory: {}", e);
+            }
+            
+            // 使用与 everything_search 相同的日志文件名
+            let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .ok();
+            
+            state_guard.file = file;
+            state_guard.file_path = log_path;
+            state_guard.date = today;
+        }
+    }
+    
+    fn write_log_to_file(msg: &str) {
+        ensure_current_log_file();
+        let state = get_log_file_state();
+        let state_guard_result = state.lock();
+        if let Ok(mut state_guard) = state_guard_result {
+            if let Some(file) = state_guard.file.as_mut() {
+                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
+                let log_msg = format!("[{}] {}\n", timestamp, msg);
+                let _ = file.write_all(log_msg.as_bytes());
+                let _ = file.flush();
+            }
+        }
+    }
+    
+    macro_rules! log_hotkey {
+        ($($arg:tt)*) => {
+            {
+                let msg = format!($($arg)*);
+                eprintln!("{}", msg);
+                write_log_to_file(&msg);
+            }
+        };
+    }
+    
+    /// 初始化日志文件并返回日志文件路径（用于调试）
+    pub fn init_hotkey_log() -> Option<std::path::PathBuf> {
+        let state = get_log_file_state();
+        let state_guard = state.lock().ok()?;
+        let log_path = state_guard.file_path.clone();
+        drop(state_guard);
+        
+        // 输出日志文件路径到控制台
+        eprintln!("[Hotkey] Log file initialized: {}", log_path.display());
+        log_hotkey!("[Hotkey] ===== Hotkey log initialized =====");
+        
+        Some(log_path)
+    }
 
     // These functions are in user32.dll but not exposed in windows-sys
     extern "system" {
         fn RegisterHotKey(hWnd: HWND, id: i32, fsModifiers: u32, vk: u32) -> i32;
         fn UnregisterHotKey(hWnd: HWND, id: i32) -> i32;
+        fn SetWindowsHookExW(idHook: i32, lpfn: unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT, hMod: windows_sys::Win32::Foundation::HINSTANCE, dwThreadId: u32) -> windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
+        fn UnhookWindowsHookEx(hhk: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK) -> i32;
+        fn CallNextHookEx(hhk: windows_sys::Win32::UI::WindowsAndMessaging::HHOOK, nCode: i32, wParam: WPARAM, lParam: LPARAM) -> LRESULT;
     }
+    
+    const WH_KEYBOARD_LL: i32 = 13;
+    const WM_KEYDOWN: u32 = 0x0100;
+    const WM_KEYUP: u32 = 0x0101;
+    const WM_SYSKEYDOWN: u32 = 0x0104;
+    const WM_SYSKEYUP: u32 = 0x0105;
+    const WM_HOTKEY: u32 = 0x0312;
 
     const MOD_ALT: u32 = 0x0001;
     const MOD_CONTROL: u32 = 0x0002;
@@ -30,9 +166,195 @@ pub mod windows {
         modifiers: u32,
         vk: u32,
         is_double_modifier: bool, // 是否是重复修饰键（如 Ctrl+Ctrl）
+        hook: Option<windows_sys::Win32::UI::WindowsAndMessaging::HHOOK>, // 键盘钩子句柄（用于重复修饰键）
+        last_keyup_time: Option<std::time::Instant>, // 上次按键抬起时间（用于检测重复）
+        waiting_for_second: bool, // 是否正在等待第二次按键抬起
+        other_key_pressed: bool, // 是否按下了其他键（需要重置状态）
     }
 
     static HOTKEY_STATE: Mutex<Option<Arc<Mutex<HotkeyState>>>> = Mutex::new(None);
+
+    // 检查虚拟键码是否匹配目标键（包括左右键变体）
+    fn is_target_key(vk_code: u32, target_vk: u32) -> bool {
+        if vk_code == target_vk {
+            return true;
+        }
+        
+        // 对于修饰键，需要检查左右键变体
+        match target_vk {
+            0x12 => {
+                // VK_MENU (Alt) - 检查左 Alt 和右 Alt
+                vk_code == 0xA4 || vk_code == 0xA5 // VK_LMENU, VK_RMENU
+            }
+            0x11 => {
+                // VK_CONTROL (Ctrl) - 检查左 Ctrl 和右 Ctrl
+                vk_code == 0xA2 || vk_code == 0xA3 // VK_LCONTROL, VK_RCONTROL
+            }
+            0x10 => {
+                // VK_SHIFT (Shift) - 检查左 Shift 和右 Shift
+                vk_code == 0xA0 || vk_code == 0xA1 // VK_LSHIFT, VK_RSHIFT
+            }
+            _ => false,
+        }
+    }
+
+    // 键盘钩子回调函数：检测重复修饰键（使用企业微信的实现方式）
+    unsafe extern "system" fn keyboard_hook_proc(nCode: i32, wParam: WPARAM, lParam: LPARAM) -> LRESULT {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, HHOOK, KBDLLHOOKSTRUCT};
+        
+        // 如果 nCode < 0，必须调用 CallNextHookEx
+        if nCode < 0 {
+            return CallNextHookEx(HHOOK::default(), nCode, wParam, lParam);
+        }
+        
+        // 解析 KBDLLHOOKSTRUCT（先解析，用于日志）
+        let hook_struct = &*(lParam as *const KBDLLHOOKSTRUCT);
+        let vk_code = hook_struct.vkCode as u32;
+        let is_keydown = wParam == WM_KEYDOWN as WPARAM || wParam == WM_SYSKEYDOWN as WPARAM;
+        let is_keyup = wParam == WM_KEYUP as WPARAM || wParam == WM_SYSKEYUP as WPARAM;
+        
+        // 获取全局状态
+        let global_state = HOTKEY_STATE.lock().unwrap();
+        if let Some(state) = global_state.as_ref() {
+            let mut state_guard = state.lock().unwrap();
+            
+            // 检查是否是重复修饰键模式
+            if state_guard.is_double_modifier {
+                // 检查是否是目标键（包括左右键变体）
+                let is_target = is_target_key(vk_code, state_guard.vk);
+                
+                // 记录所有键盘事件（用于调试）
+                if is_target {
+                    if is_keydown {
+                        log_hotkey!("[Hotkey] Keyboard hook: Target key DOWN detected, vk_code={} (target={}), waiting_for_second={}", vk_code, state_guard.vk, state_guard.waiting_for_second);
+                    } else if is_keyup {
+                        log_hotkey!("[Hotkey] Keyboard hook: Target key UP detected, vk_code={} (target={}), waiting_for_second={}", vk_code, state_guard.vk, state_guard.waiting_for_second);
+                    }
+                } else if is_keydown || is_keyup {
+                    // 只在等待第二次时记录其他键，避免日志过多
+                    if state_guard.waiting_for_second {
+                        log_hotkey!("[Hotkey] Keyboard hook: Other key event while waiting, vk_code={}, is_keydown={}", vk_code, is_keydown);
+                    }
+                }
+                
+                // 检查是否是目标修饰键（包括左右键变体）
+                if is_target {
+                    let now = std::time::Instant::now();
+                    
+                    // 处理按键按下事件（KeyDown）- 检查超时
+                    if wParam == WM_KEYDOWN as WPARAM || wParam == WM_SYSKEYDOWN as WPARAM {
+                        if state_guard.waiting_for_second {
+                            // 正在等待第二次，检查是否超时
+                            if let Some(last_time) = state_guard.last_keyup_time {
+                                let delta = now.duration_since(last_time).as_millis();
+                                if delta >= 500 {
+                                    // 超时，重置状态并开始新的序列
+                                    log_hotkey!("[Hotkey] Keyboard hook: Timeout detected on keydown ({}ms >= 500ms), resetting and starting new sequence", delta);
+                                    state_guard.waiting_for_second = false;
+                                    state_guard.last_keyup_time = None;
+                                    state_guard.other_key_pressed = false;
+                                } else if state_guard.other_key_pressed {
+                                    // 按了其他键，重置状态
+                                    log_hotkey!("[Hotkey] Keyboard hook: Other key was pressed before this keydown, resetting state");
+                                    state_guard.waiting_for_second = false;
+                                    state_guard.last_keyup_time = None;
+                                    state_guard.other_key_pressed = false;
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 处理按键抬起事件（KeyUp）
+                    if wParam == WM_KEYUP as WPARAM || wParam == WM_SYSKEYUP as WPARAM {
+                        log_hotkey!("[Hotkey] Keyboard hook: Modifier keyup detected, vk_code={}, waiting_for_second={}, other_key_pressed={}", 
+                                 vk_code, state_guard.waiting_for_second, state_guard.other_key_pressed);
+                        
+                        if state_guard.waiting_for_second {
+                            // 正在等待第二次抬起
+                            if !state_guard.other_key_pressed {
+                                // 没有按下其他键，检查时间差
+                                if let Some(last_time) = state_guard.last_keyup_time {
+                                    let delta = now.duration_since(last_time).as_millis();
+                                    log_hotkey!("[Hotkey] Keyboard hook: Checking delta: {}ms (threshold: 500ms)", delta);
+                                    if delta < 500 {
+                                        // 检测到双击！触发热键
+                                        log_hotkey!("[Hotkey] Keyboard hook: ✅ Double modifier detected! Delta: {}ms, triggering hotkey", delta);
+                                        if let Some(hwnd) = state_guard.hwnd {
+                                            PostMessageW(hwnd, WM_HOTKEY, HOTKEY_ID as WPARAM, 0);
+                                        }
+                                        // 重置状态
+                                        state_guard.waiting_for_second = false;
+                                        state_guard.last_keyup_time = None;
+                                        state_guard.other_key_pressed = false;
+                                        drop(state_guard);
+                                        drop(global_state);
+                                        // 放行消息，让其他程序也能响应
+                                        return CallNextHookEx(HHOOK::default(), nCode, wParam, lParam);
+                                    } else {
+                                        log_hotkey!("[Hotkey] Keyboard hook: Delta {}ms >= 500ms, timeout, resetting state", delta);
+                                    }
+                                } else {
+                                    log_hotkey!("[Hotkey] Keyboard hook: ⚠️ waiting_for_second=true but last_keyup_time is None, resetting");
+                                }
+                            } else {
+                                log_hotkey!("[Hotkey] Keyboard hook: Other key was pressed, resetting state");
+                            }
+                            // 超时或按了其他键，重置状态
+                            state_guard.waiting_for_second = false;
+                            state_guard.last_keyup_time = None;
+                            state_guard.other_key_pressed = false;
+                        } else {
+                            // 第一次抬起，记录时间戳
+                            log_hotkey!("[Hotkey] Keyboard hook: First modifier keyup detected, recording timestamp, waiting for second");
+                            state_guard.last_keyup_time = Some(now);
+                            state_guard.waiting_for_second = true;
+                            state_guard.other_key_pressed = false;
+                        }
+                    }
+                } else {
+                    // 按下了其他键
+                    if wParam == WM_KEYDOWN as WPARAM || wParam == WM_SYSKEYDOWN as WPARAM {
+                        // 如果正在等待第二次，检查超时或标记为按了其他键
+                        if state_guard.waiting_for_second {
+                            let now = std::time::Instant::now();
+                            if let Some(last_time) = state_guard.last_keyup_time {
+                                let delta = now.duration_since(last_time).as_millis();
+                                if delta >= 500 {
+                                    // 超时，直接重置状态
+                                    log_hotkey!("[Hotkey] Keyboard hook: Timeout detected on other key ({}ms >= 500ms), resetting state", delta);
+                                    state_guard.waiting_for_second = false;
+                                    state_guard.last_keyup_time = None;
+                                    state_guard.other_key_pressed = false;
+                                } else {
+                                    // 未超时，标记为按了其他键
+                                    log_hotkey!("[Hotkey] Keyboard hook: Other key pressed while waiting ({}ms < 500ms), marking as interference", delta);
+                                    state_guard.other_key_pressed = true;
+                                }
+                            } else {
+                                // 没有时间戳，直接重置
+                                log_hotkey!("[Hotkey] Keyboard hook: Other key pressed, no timestamp, resetting state");
+                                state_guard.waiting_for_second = false;
+                                state_guard.other_key_pressed = false;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 不是重复修饰键模式，但钩子已安装（可能是状态不一致）
+                if is_keydown || is_keyup {
+                    log_hotkey!("[Hotkey] Keyboard hook: Hook installed but is_double_modifier=false, vk_code={}, target_vk={}", vk_code, state_guard.vk);
+                }
+            }
+        } else {
+            // 状态未初始化
+            if is_keydown || is_keyup {
+                log_hotkey!("[Hotkey] Keyboard hook: State not initialized, vk_code={}", vk_code);
+            }
+        }
+        
+        // 调用下一个钩子（关键：必须放行消息）
+        CallNextHookEx(HHOOK::default(), nCode, wParam, lParam)
+    }
 
     // 将字符串格式的修饰符转换为 Windows 修饰符标志
     // 返回 (flags, is_double_modifier)
@@ -159,6 +481,10 @@ pub mod windows {
             modifiers,
             vk,
             is_double_modifier: is_double,
+            hook: None,
+            last_keyup_time: None,
+            waiting_for_second: false,
+            other_key_pressed: false,
         }));
 
         // 保存到全局状态
@@ -237,27 +563,66 @@ pub mod windows {
                     sender_ptr as isize,
                 );
 
-                // Register hotkey
+                // Register hotkey or install keyboard hook
                 let state_clone = state.clone();
-                let (mods, vk_code) = {
+                let (mods, vk_code, is_double) = {
                     let state_guard = state_clone.lock().unwrap();
-                    (state_guard.modifiers, state_guard.vk)
+                    (state_guard.modifiers, state_guard.vk, state_guard.is_double_modifier)
                 };
 
-                let result = RegisterHotKey(hwnd, HOTKEY_ID, mods, vk_code);
-
-                if result == 0 {
-                    eprintln!("Failed to register global hotkey");
-                    // Free the sender pointer before cleanup
-                    let sender_ptr = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
-                        hwnd,
-                        windows_sys::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
-                    ) as *mut mpsc::Sender<()>;
-                    if !sender_ptr.is_null() {
-                        let _ = Box::from_raw(sender_ptr);
+                // 对于重复修饰键（如双击 Alt），使用键盘钩子而不是 RegisterHotKey
+                if is_double {
+                    log_hotkey!("[Hotkey] Initial setup: Double modifier hotkey detected (modifiers={:x}, vk={:x}), using keyboard hook", mods, vk_code);
+                    
+                    // 安装键盘钩子
+                    unsafe {
+                        use windows_sys::Win32::Foundation::HINSTANCE;
+                        let hook = SetWindowsHookExW(
+                            WH_KEYBOARD_LL,
+                            keyboard_hook_proc,
+                            HINSTANCE::default(), // hMod 为 NULL 表示当前进程
+                            0, // dwThreadId 为 0 表示全局钩子
+                        );
+                        
+                        use windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
+                        if hook == HHOOK::default() {
+                            log_hotkey!("[Hotkey] Error: Failed to install keyboard hook during initialization");
+                            // Free the sender pointer before cleanup
+                            let sender_ptr = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+                                hwnd,
+                                windows_sys::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                            ) as *mut mpsc::Sender<()>;
+                            if !sender_ptr.is_null() {
+                                let _ = Box::from_raw(sender_ptr);
+                            }
+                            let _ = UnregisterClassW(class_name.as_ptr(), 0);
+                            return;
+                        }
+                        
+                        // 保存钩子句柄
+                        let mut state_guard = state.lock().unwrap();
+                        state_guard.hook = Some(hook);
+                        log_hotkey!("[Hotkey] Initial setup: Keyboard hook installed successfully, hook={:?}, hwnd={:?}", hook, hwnd);
                     }
-                    let _ = UnregisterClassW(class_name.as_ptr(), 0);
-                    return;
+                } else {
+                    // 对于非重复修饰键，使用 RegisterHotKey
+                    let result = RegisterHotKey(hwnd, HOTKEY_ID, mods, vk_code);
+
+                    if result == 0 {
+                        eprintln!("Failed to register global hotkey");
+                        // Free the sender pointer before cleanup
+                        let sender_ptr = windows_sys::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(
+                            hwnd,
+                            windows_sys::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                        ) as *mut mpsc::Sender<()>;
+                        if !sender_ptr.is_null() {
+                            let _ = Box::from_raw(sender_ptr);
+                        }
+                        let _ = UnregisterClassW(class_name.as_ptr(), 0);
+                        return;
+                    }
+                    
+                    log_hotkey!("[Hotkey] Initial setup: Hotkey registered successfully: modifiers={:x}, vk={:x}", mods, vk_code);
                 }
 
                 // Message loop
@@ -290,6 +655,19 @@ pub mod windows {
                 }
 
                 // Cleanup
+                // 卸载键盘钩子（如果存在）
+                {
+                    let global_state = HOTKEY_STATE.lock().unwrap();
+                    if let Some(state) = global_state.as_ref() {
+                        let mut state_guard = state.lock().unwrap();
+                        if let Some(hook) = state_guard.hook {
+                            UnhookWindowsHookEx(hook);
+                            state_guard.hook = None;
+                        }
+                    }
+                }
+                
+                // 取消注册热键（如果已注册）
                 let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
 
                 // Free the sender pointer
@@ -364,13 +742,15 @@ pub mod windows {
                 drop(global_state);
                 
                 // 使用 PostMessage 发送自定义消息到窗口线程
-                // wParam: modifiers, lParam: vk
+                // wParam: modifiers | (is_double << 16), lParam: vk
                 unsafe {
                     use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
+                    let wparam = modifiers | ((if is_double { 1 } else { 0 }) << 16);
+                    log_hotkey!("[Hotkey] Sending hotkey update message: modifiers={:x}, vk={:x}, is_double={}, wparam={:x}", modifiers, vk, is_double, wparam);
                     let result = PostMessageW(
                         hwnd,
                         WM_UPDATE_HOTKEY,
-                        modifiers as usize,
+                        wparam as usize,
                         vk as isize,
                     );
                     
@@ -384,7 +764,7 @@ pub mod windows {
                     }
                 }
                 
-                eprintln!("Hotkey update message sent successfully: modifiers={:x}, vk={:x}", modifiers, vk);
+                log_hotkey!("[Hotkey] Hotkey update message sent successfully: modifiers={:x}, vk={:x}", modifiers, vk);
                 return Ok(());
             } else {
                 return Err("热键监听器未启动".to_string());
@@ -411,7 +791,7 @@ pub mod windows {
                 let is_double = ((wparam as u32) >> 16) != 0;
                 let vk = lparam as u32;
                 
-                eprintln!("Window thread: Received hotkey update message: modifiers={:x}, vk={:x}", modifiers, vk);
+                log_hotkey!("[Hotkey] Window thread: Received hotkey update message: modifiers={:x}, vk={:x}, is_double={}, wparam={:x}", modifiers, vk, is_double, wparam);
                 
                 // 先取消注册旧热键（忽略错误，可能未注册）
                 let unregister_result = UnregisterHotKey(hwnd, HOTKEY_ID);
@@ -419,7 +799,7 @@ pub mod windows {
                     let error_code = GetLastError();
                     // 1419 = ERROR_HOTKEY_NOT_REGISTERED，这是正常的，可以忽略
                     if error_code != 1419 {
-                        eprintln!("Warning: Failed to unregister old hotkey (error code: {})", error_code);
+                        log_hotkey!("[Hotkey] Warning: Failed to unregister old hotkey (error code: {})", error_code);
                     }
                 }
                 
@@ -434,13 +814,68 @@ pub mod windows {
                     }
                 }
                 
-                // 对于重复修饰键（如 Ctrl+Ctrl），不能使用 RegisterHotKey
-                // 需要使用低级键盘钩子来检测，这里先提示用户
+                // 对于重复修饰键（如 Ctrl+Ctrl），使用键盘钩子而不是 RegisterHotKey
                 if is_double {
-                    eprintln!("Window thread: Double modifier hotkey detected (modifiers={:x}, vk={:x})", modifiers, vk);
-                    eprintln!("Note: Double modifier hotkeys require keyboard hook implementation");
-                    // TODO: 实现键盘钩子来检测重复修饰键
-                    // 目前先尝试注册，虽然可能不会工作
+                    log_hotkey!("[Hotkey] Window thread: Double modifier hotkey detected (modifiers={:x}, vk={:x}), using keyboard hook", modifiers, vk);
+                    
+                    // 先卸载旧的钩子（如果存在）
+                    {
+                        let global_state = HOTKEY_STATE.lock().unwrap();
+                        if let Some(state) = global_state.as_ref() {
+                            let mut state_guard = state.lock().unwrap();
+                            if let Some(old_hook) = state_guard.hook {
+                                UnhookWindowsHookEx(old_hook);
+                                state_guard.hook = None;
+                            }
+                            state_guard.last_keyup_time = None;
+                            state_guard.waiting_for_second = false;
+                            state_guard.other_key_pressed = false;
+                        }
+                    }
+                    
+                    // 安装新的键盘钩子
+                    unsafe {
+                        use windows_sys::Win32::Foundation::HINSTANCE;
+                        let hook = SetWindowsHookExW(
+                            WH_KEYBOARD_LL,
+                            keyboard_hook_proc,
+                            HINSTANCE::default(), // hMod 为 NULL 表示当前进程
+                            0, // dwThreadId 为 0 表示全局钩子
+                        );
+                        
+                        use windows_sys::Win32::UI::WindowsAndMessaging::HHOOK;
+                        if hook == HHOOK::default() {
+                            log_hotkey!("[Hotkey] Error: Failed to install keyboard hook");
+                            return 0;
+                        }
+                        
+                        // 保存钩子句柄和窗口句柄
+                        let global_state = HOTKEY_STATE.lock().unwrap();
+                        if let Some(state) = global_state.as_ref() {
+                            let mut state_guard = state.lock().unwrap();
+                            state_guard.hook = Some(hook);
+                            state_guard.hwnd = Some(hwnd); // 确保 hwnd 已设置
+                            log_hotkey!("[Hotkey] Window thread: Keyboard hook installed successfully, hook={:?}, hwnd={:?}, modifiers={:x}, vk={:x}, is_double_modifier={}", 
+                                      hook, hwnd, state_guard.modifiers, state_guard.vk, state_guard.is_double_modifier);
+                        }
+                    }
+                    
+                    return 0;
+                }
+                
+                // 对于非重复修饰键，先卸载钩子（如果存在）
+                {
+                    let global_state = HOTKEY_STATE.lock().unwrap();
+                    if let Some(state) = global_state.as_ref() {
+                        let mut state_guard = state.lock().unwrap();
+                        if let Some(old_hook) = state_guard.hook {
+                            UnhookWindowsHookEx(old_hook);
+                            state_guard.hook = None;
+                        }
+                         state_guard.last_keyup_time = None;
+                        state_guard.waiting_for_second = false;
+                        state_guard.other_key_pressed = false;
+                    }
                 }
                 
                 // 注册新热键（在窗口线程中执行，符合线程亲和性要求）
@@ -450,15 +885,15 @@ pub mod windows {
                     
                     // ERROR_HOTKEY_ALREADY_REGISTERED = 1409
                     if error_code == 1409 {
-                        eprintln!("Error: Hotkey already registered by another program (error code: 1409)");
+                        log_hotkey!("[Hotkey] Error: Hotkey already registered by another program (error code: 1409)");
                     } else {
-                        eprintln!("Error: Failed to register hotkey (error code: {})", error_code);
+                        log_hotkey!("[Hotkey] Error: Failed to register hotkey (error code: {})", error_code);
                         if is_double {
-                            eprintln!("Note: Double modifier hotkeys may not work with RegisterHotKey API");
+                            log_hotkey!("[Hotkey] Note: Double modifier hotkeys may not work with RegisterHotKey API");
                         }
                     }
                 } else {
-                    eprintln!("Window thread: Hotkey updated successfully: modifiers={:x}, vk={:x}, is_double={}", modifiers, vk, is_double);
+                    log_hotkey!("[Hotkey] Window thread: Hotkey updated successfully: modifiers={:x}, vk={:x}, is_double={}", modifiers, vk, is_double);
                 }
                 
                 0
@@ -479,6 +914,21 @@ pub mod windows {
                 0
             }
             WM_DESTROY => {
+                // 卸载键盘钩子（如果存在）
+                {
+                    let global_state = HOTKEY_STATE.lock().unwrap();
+                    if let Some(state) = global_state.as_ref() {
+                        let mut state_guard = state.lock().unwrap();
+                        if let Some(hook) = state_guard.hook {
+                            UnhookWindowsHookEx(hook);
+                            state_guard.hook = None;
+                        }
+                    }
+                }
+                
+                // 取消注册热键
+                let _ = UnregisterHotKey(hwnd, HOTKEY_ID);
+                
                 PostQuitMessage(0);
                 0
             }

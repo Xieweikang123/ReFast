@@ -1026,6 +1026,11 @@ export function LauncherWindow() {
     }
   };
 
+  // 判断字符串是否包含中文字符
+  const containsChinese = (text: string): boolean => {
+    return /[\u4E00-\u9FFF]/.test(text);
+  };
+
   // 相关性评分函数
   const calculateRelevanceScore = (
     displayName: string,
@@ -1033,7 +1038,10 @@ export function LauncherWindow() {
     query: string,
     useCount?: number,
     lastUsed?: number,
-    isEverything?: boolean
+    isEverything?: boolean,
+    isApp?: boolean,  // 新增：标识是否是应用
+    namePinyin?: string,  // 新增：应用名称的拼音全拼
+    namePinyinInitials?: string  // 新增：应用名称的拼音首字母
   ): number => {
     if (!query || !query.trim()) {
       // 如果查询为空，只根据使用频率和时间排序
@@ -1049,22 +1057,58 @@ export function LauncherWindow() {
           score += Math.max(0, 50 - daysSinceUse * 2); // 30天内：50分递减到0分
         }
       }
+      // 应用类型额外加分
+      if (isApp) {
+        score += 50;
+      }
       return score;
     }
 
     const queryLower = query.toLowerCase().trim();
     const nameLower = displayName.toLowerCase();
     const pathLower = path.toLowerCase();
+    const queryLength = queryLower.length;
+    const queryIsPinyin = !containsChinese(queryLower); // 判断查询是否是拼音
 
     let score = 0;
 
     // 文件名匹配（最高优先级）
     if (nameLower === queryLower) {
-      score += 1000; // 完全匹配
+      // 完全匹配：短查询（2-4字符）给予更高权重
+      if (queryLength >= 2 && queryLength <= 4) {
+        score += 1500; // 短查询完全匹配给予更高分数
+      } else {
+        score += 1000; // 完全匹配
+      }
     } else if (nameLower.startsWith(queryLower)) {
       score += 500; // 开头匹配
     } else if (nameLower.includes(queryLower)) {
       score += 100; // 包含匹配
+    }
+
+    // 拼音匹配（如果查询是拼音且是应用类型）
+    if (queryIsPinyin && isApp && (namePinyin || namePinyinInitials)) {
+      // 拼音全拼匹配
+      if (namePinyin) {
+        if (namePinyin === queryLower) {
+          score += 800; // 拼音完全匹配给予高分
+        } else if (namePinyin.startsWith(queryLower)) {
+          score += 400; // 拼音开头匹配
+        } else if (namePinyin.includes(queryLower)) {
+          score += 150; // 拼音包含匹配
+        }
+      }
+
+      // 拼音首字母匹配
+      if (namePinyinInitials) {
+        if (namePinyinInitials === queryLower) {
+          score += 600; // 拼音首字母完全匹配给予高分
+        } else if (namePinyinInitials.startsWith(queryLower)) {
+          score += 300; // 拼音首字母开头匹配
+        } else if (namePinyinInitials.includes(queryLower)) {
+          score += 120; // 拼音首字母包含匹配
+        }
+      }
     }
 
     // 路径匹配（权重较低）
@@ -1074,6 +1118,24 @@ export function LauncherWindow() {
         score += 10; // 只有路径匹配时给10分
       } else {
         score += 5; // 文件名已匹配时只给5分
+      }
+    }
+
+    // 应用类型额外加分（优先显示应用）
+    if (isApp) {
+      // 如果应用名称匹配，给予更高的额外加分
+      if (nameLower === queryLower || nameLower.startsWith(queryLower) || nameLower.includes(queryLower)) {
+        score += 300; // 应用匹配时额外加300分
+      } else if (queryIsPinyin && (namePinyin || namePinyinInitials)) {
+        // 如果是拼音匹配，也给予额外加分
+        if ((namePinyin && (namePinyin === queryLower || namePinyin.startsWith(queryLower) || namePinyin.includes(queryLower))) ||
+            (namePinyinInitials && (namePinyinInitials === queryLower || namePinyinInitials.startsWith(queryLower) || namePinyinInitials.includes(queryLower)))) {
+          score += 300; // 拼音匹配时也额外加300分
+        } else {
+          score += 100; // 即使不匹配也给予基础加分
+        }
+      } else {
+        score += 100; // 即使不匹配也给予基础加分
       }
     }
 
@@ -1312,7 +1374,10 @@ export function LauncherWindow() {
           query,
           aUseCount,
           aLastUsed,
-          a.type === "everything"
+          a.type === "everything",
+          a.type === "app",  // 新增：标识是否是应用
+          a.app?.name_pinyin,  // 新增：应用拼音全拼
+          a.app?.name_pinyin_initials  // 新增：应用拼音首字母
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -1320,7 +1385,10 @@ export function LauncherWindow() {
           query,
           bUseCount,
           bLastUsed,
-          b.type === "everything"
+          b.type === "everything",
+          b.type === "app",  // 新增：标识是否是应用
+          b.app?.name_pinyin,  // 新增：应用拼音全拼
+          b.app?.name_pinyin_initials  // 新增：应用拼音首字母
         );
 
         // 按评分降序排序（分数高的在前）
@@ -1328,7 +1396,9 @@ export function LauncherWindow() {
           return bScore - aScore;
         }
 
-        // 如果评分相同，按最近使用时间排序
+        // 如果评分相同，应用优先于文件，然后按最近使用时间排序
+        if (a.type === "app" && b.type !== "app") return -1;
+        if (a.type !== "app" && b.type === "app") return 1;
         return bLastUsed - aLastUsed;
       });
       
@@ -1370,7 +1440,10 @@ export function LauncherWindow() {
           query,
           aUseCount,
           aLastUsed,
-          a.type === "everything"
+          a.type === "everything",
+          a.type === "app",  // 新增：标识是否是应用
+          a.app?.name_pinyin,  // 新增：应用拼音全拼
+          a.app?.name_pinyin_initials  // 新增：应用拼音首字母
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -1378,7 +1451,10 @@ export function LauncherWindow() {
           query,
           bUseCount,
           bLastUsed,
-          b.type === "everything"
+          b.type === "everything",
+          b.type === "app",  // 新增：标识是否是应用
+          b.app?.name_pinyin,  // 新增：应用拼音全拼
+          b.app?.name_pinyin_initials  // 新增：应用拼音首字母
         );
 
         // 按评分降序排序（分数高的在前）
@@ -1386,7 +1462,9 @@ export function LauncherWindow() {
           return bScore - aScore;
         }
 
-        // 如果评分相同，按最近使用时间排序
+        // 如果评分相同，应用优先于文件，然后按最近使用时间排序
+        if (a.type === "app" && b.type !== "app") return -1;
+        if (a.type !== "app" && b.type === "app") return 1;
         return bLastUsed - aLastUsed;
       });
     }

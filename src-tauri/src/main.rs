@@ -9,6 +9,7 @@ mod file_history;
 mod hooks;
 mod hotkey;
 mod hotkey_handler;
+// mod keyboard_hook; // 已不再需要，hotkey_handler 已支持双击修饰键
 mod memos;
 mod open_history;
 mod recording;
@@ -375,6 +376,11 @@ fn main() {
                     .ok()
                     .and_then(|s| s.hotkey);
 
+                // Initialize hotkey log file
+                if let Some(log_path) = hotkey_handler::windows::init_hotkey_log() {
+                    eprintln!("[Main] Hotkey log file: {}", log_path.display());
+                }
+                
                 // Start hotkey listener thread in background
                 match hotkey_handler::windows::start_hotkey_listener(tx, hotkey_config) {
                     Ok(_handle) => {
@@ -406,6 +412,9 @@ fn main() {
                         eprintln!("Failed to start hotkey listener: {}", e);
                     }
                 }
+
+                // 注意：keyboard_hook 模块已不再需要，因为 hotkey_handler 已经支持双击修饰键
+                // 如果保留此代码，会导致双击 Ctrl 和 Alt 都会触发，造成冲突
             }
 
             // Load file history on startup
