@@ -29,30 +29,64 @@ pub mod windows {
         hwnd: Option<HWND>,
         modifiers: u32,
         vk: u32,
+        is_double_modifier: bool, // 是否是重复修饰键（如 Ctrl+Ctrl）
     }
 
     static HOTKEY_STATE: Mutex<Option<Arc<Mutex<HotkeyState>>>> = Mutex::new(None);
 
     // 将字符串格式的修饰符转换为 Windows 修饰符标志
-    fn parse_modifiers(modifiers: &[String]) -> Result<u32, String> {
+    // 返回 (flags, is_double_modifier)
+    fn parse_modifiers(modifiers: &[String]) -> Result<(u32, bool), String> {
         let mut flags = 0u32;
-        for mod_str in modifiers {
-            match mod_str.as_str() {
-                "Alt" => flags |= MOD_ALT,
-                "Ctrl" => flags |= MOD_CONTROL,
-                "Shift" => flags |= MOD_SHIFT,
-                "Meta" => flags |= MOD_WIN,
-                _ => return Err(format!("Unknown modifier: {}", mod_str)),
+        let mut is_double = false;
+        
+        // 检查是否是重复修饰键（如 ["Ctrl", "Ctrl"]）
+        if modifiers.len() == 2 && modifiers[0] == modifiers[1] {
+            is_double = true;
+            // 对于重复修饰键，只设置一次标志
+            match modifiers[0].as_str() {
+                "Alt" => flags = MOD_ALT,
+                "Ctrl" => flags = MOD_CONTROL,
+                "Shift" => flags = MOD_SHIFT,
+                "Meta" => flags = MOD_WIN,
+                _ => return Err(format!("Unknown modifier: {}", modifiers[0])),
+            }
+        } else {
+            // 普通组合键
+            for mod_str in modifiers {
+                match mod_str.as_str() {
+                    "Alt" => flags |= MOD_ALT,
+                    "Ctrl" => flags |= MOD_CONTROL,
+                    "Shift" => flags |= MOD_SHIFT,
+                    "Meta" => flags |= MOD_WIN,
+                    _ => return Err(format!("Unknown modifier: {}", mod_str)),
+                }
             }
         }
+        
         if flags == 0 {
             return Err("At least one modifier is required".to_string());
         }
-        Ok(flags)
+        Ok((flags, is_double))
     }
 
     // 将字符串格式的键转换为 Windows 虚拟键码
+    // 对于重复修饰键，key 可能是修饰键名称（如 "Ctrl"）
     fn parse_virtual_key(key: &str) -> Result<u32, String> {
+        // 处理修饰键作为键的情况（用于重复修饰键）
+        if key == "Ctrl" {
+            return Ok(0x11); // VK_CONTROL
+        }
+        if key == "Alt" {
+            return Ok(0x12); // VK_MENU (Alt key)
+        }
+        if key == "Shift" {
+            return Ok(0x10); // VK_SHIFT
+        }
+        if key == "Meta" {
+            return Ok(0x5B); // VK_LWIN (Left Windows key)
+        }
+        
         // 处理特殊键
         match key {
             "Space" => Ok(0x20), // VK_SPACE
@@ -111,12 +145,12 @@ pub mod windows {
         hotkey_config: Option<crate::settings::HotkeyConfig>,
     ) -> Result<thread::JoinHandle<()>, String> {
         // 解析快捷键配置，默认使用 Alt+Space
-        let (modifiers, vk) = if let Some(config) = hotkey_config {
-            let mods = parse_modifiers(&config.modifiers)?;
+        let (modifiers, vk, is_double) = if let Some(config) = hotkey_config {
+            let (mods, is_double_mod) = parse_modifiers(&config.modifiers)?;
             let vk_code = parse_virtual_key(&config.key)?;
-            (mods, vk_code)
+            (mods, vk_code, is_double_mod)
         } else {
-            (MOD_ALT, 0x20) // 默认 Alt+Space
+            (MOD_ALT, 0x20, false) // 默认 Alt+Space
         };
 
         // 创建共享状态
@@ -124,6 +158,7 @@ pub mod windows {
             hwnd: None,
             modifiers,
             vk,
+            is_double_modifier: is_double,
         }));
 
         // 保存到全局状态
@@ -282,7 +317,7 @@ pub mod windows {
     // 更新快捷键配置
     // 使用 PostMessage 发送消息到窗口线程，让窗口线程自己执行注册操作
     pub fn update_hotkey(config: crate::settings::HotkeyConfig) -> Result<(), String> {
-        let modifiers = parse_modifiers(&config.modifiers)?;
+        let (modifiers, is_double) = parse_modifiers(&config.modifiers)?;
         let vk = parse_virtual_key(&config.key)?;
 
         // 等待 hwnd 初始化（最多等待 2 秒）
@@ -324,6 +359,7 @@ pub mod windows {
                     let mut state_guard = state.lock().unwrap();
                     state_guard.modifiers = modifiers;
                     state_guard.vk = vk;
+                    state_guard.is_double_modifier = is_double;
                 }
                 drop(global_state);
                 
@@ -370,8 +406,9 @@ pub mod windows {
         match msg {
             WM_UPDATE_HOTKEY => {
                 // 在窗口线程中执行热键更新操作
-                // wParam: modifiers, lParam: vk
-                let modifiers = wparam as u32;
+                // wParam: modifiers | (is_double << 16), lParam: vk
+                let modifiers = (wparam as u32) & 0xFFFF;
+                let is_double = ((wparam as u32) >> 16) != 0;
                 let vk = lparam as u32;
                 
                 eprintln!("Window thread: Received hotkey update message: modifiers={:x}, vk={:x}", modifiers, vk);
@@ -393,7 +430,17 @@ pub mod windows {
                         let mut state_guard = state.lock().unwrap();
                         state_guard.modifiers = modifiers;
                         state_guard.vk = vk;
+                        state_guard.is_double_modifier = is_double;
                     }
+                }
+                
+                // 对于重复修饰键（如 Ctrl+Ctrl），不能使用 RegisterHotKey
+                // 需要使用低级键盘钩子来检测，这里先提示用户
+                if is_double {
+                    eprintln!("Window thread: Double modifier hotkey detected (modifiers={:x}, vk={:x})", modifiers, vk);
+                    eprintln!("Note: Double modifier hotkeys require keyboard hook implementation");
+                    // TODO: 实现键盘钩子来检测重复修饰键
+                    // 目前先尝试注册，虽然可能不会工作
                 }
                 
                 // 注册新热键（在窗口线程中执行，符合线程亲和性要求）
@@ -406,9 +453,12 @@ pub mod windows {
                         eprintln!("Error: Hotkey already registered by another program (error code: 1409)");
                     } else {
                         eprintln!("Error: Failed to register hotkey (error code: {})", error_code);
+                        if is_double {
+                            eprintln!("Note: Double modifier hotkeys may not work with RegisterHotKey API");
+                        }
                     }
                 } else {
-                    eprintln!("Window thread: Hotkey updated successfully: modifiers={:x}, vk={:x}", modifiers, vk);
+                    eprintln!("Window thread: Hotkey updated successfully: modifiers={:x}, vk={:x}, is_double={}", modifiers, vk, is_double);
                 }
                 
                 0

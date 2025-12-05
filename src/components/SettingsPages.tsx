@@ -1,4 +1,5 @@
 import { tauriApi } from "../api/tauri";
+import { useEffect, useState } from "react";
 
 const handleCheckUpdate = async () => {
   try {
@@ -186,6 +187,97 @@ export function SystemSettingsPage({
               >
                 检查更新
               </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface AboutSettingsProps {}
+
+export function AboutSettingsPage({}: AboutSettingsProps) {
+  const [version, setVersion] = useState<string>("");
+
+  useEffect(() => {
+    const loadVersion = async () => {
+      try {
+        const v = await tauriApi.getAppVersion();
+        setVersion(v);
+      } catch (error) {
+        console.error("Failed to load version:", error);
+        setVersion("未知");
+      }
+    };
+    loadVersion();
+  }, []);
+
+  const handleOpenGitHub = async () => {
+    try {
+      await tauriApi.openUrl("https://github.com/Xieweikang123/ReFast");
+    } catch (error) {
+      console.error("Failed to open GitHub:", error);
+      alert("打开 GitHub 页面失败");
+    }
+  };
+
+  const handleOpenReleases = async () => {
+    try {
+      await tauriApi.openUrl("https://github.com/Xieweikang123/ReFast/releases");
+    } catch (error) {
+      console.error("Failed to open releases page:", error);
+      alert("打开更新页面失败");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-gray-800 mb-2">关于 ReFast</h2>
+        <p className="text-sm text-gray-500">应用信息和版本</p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="space-y-6">
+          <div className="text-center">
+            <div className="text-4xl font-bold text-blue-600 mb-2">ReFast</div>
+            <p className="text-gray-600 mb-4">一个快速启动器和输入宏录制工具</p>
+            <div className="text-sm text-gray-500">
+              版本: <span className="font-semibold text-gray-700">{version}</span>
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 pt-6">
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-sm font-medium text-gray-700 mb-2">项目信息</h3>
+                <p className="text-sm text-gray-600 mb-4">
+                  ReFast 是一个基于 Tauri 2 开发的 Windows 快速启动器，提供快速应用启动、文件搜索、宏录制等功能。
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={handleOpenGitHub}
+                  className="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors text-sm"
+                >
+                  GitHub 主页
+                </button>
+                <button
+                  onClick={handleOpenReleases}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+                >
+                  检查更新
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 pt-6">
+            <div className="text-xs text-gray-500 text-center">
+              <p>© 2024 ReFast</p>
+              <p className="mt-1">MIT License</p>
             </div>
           </div>
         </div>

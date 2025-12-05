@@ -2721,3 +2721,9 @@ pub fn sync_startup_setting(startup_enabled: bool) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 获取应用版本号
+#[tauri::command]
+pub fn get_app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}

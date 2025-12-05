@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, emit } from "@tauri-apps/api/event";
 import { tauriApi } from "./api/tauri";
-import { OllamaSettingsPage, SystemSettingsPage } from "./components/SettingsPages";
+import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./components/SettingsPages";
 import "./styles.css";
 
 interface Settings {
@@ -13,7 +13,7 @@ interface Settings {
   startup_enabled?: boolean;
 }
 
-type SettingsPage = "ollama" | "system";
+type SettingsPage = "ollama" | "system" | "about";
 
 function SettingsApp() {
   const [activePage, setActivePage] = useState<SettingsPage>("system");
@@ -180,6 +180,7 @@ function SettingsApp() {
   const menuItems = [
     { id: "system" as SettingsPage, label: "系统设置", icon: "⚙️" },
     { id: "ollama" as SettingsPage, label: "Ollama 配置", icon: "🤖" },
+    { id: "about" as SettingsPage, label: "关于", icon: "ℹ️" },
   ];
 
   return (
@@ -250,6 +251,9 @@ function SettingsApp() {
                 onSettingsChange={setSettings}
                 onOpenHotkeySettings={handleOpenHotkeySettings}
               />
+            )}
+            {activePage === "about" && (
+              <AboutSettingsPage />
             )}
           </div>
         </div>

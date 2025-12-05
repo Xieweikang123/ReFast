@@ -17,6 +17,8 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [currentKeys, setCurrentKeys] = useState<string[]>([]);
   const recordingRef = useRef(false);
+  const lastModifierRef = useRef<string | null>(null);
+  const lastModifierTimeRef = useRef<number>(0);
 
   useEffect(() => {
     loadHotkey();
@@ -48,6 +50,8 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
     setIsRecording(false);
     recordingRef.current = false;
     setCurrentKeys([]);
+    lastModifierRef.current = null;
+    lastModifierTimeRef.current = 0;
   };
 
   useEffect(() => {
@@ -69,18 +73,48 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
 
       let key = e.key;
       
-      // 如果是修饰键，只更新显示状态，不完成录制
+      // 如果是修饰键，检测是否重复按下
       if (keyMap[key]) {
+        const mappedKey = keyMap[key];
+        const now = Date.now();
+        const timeSinceLastPress = now - lastModifierTimeRef.current;
+        
+        // 检测重复修饰键：同一个修饰键在 500ms 内被按两次
+        if (lastModifierRef.current === mappedKey && timeSinceLastPress < 500) {
+          // 检测到重复修饰键，完成录制
+          const modifiers: string[] = [mappedKey, mappedKey]; // 例如 ["Ctrl", "Ctrl"]
+          
+          const newHotkey: HotkeyConfig = {
+            modifiers: modifiers,
+            key: mappedKey, // 使用修饰键本身作为键
+          };
+          
+          setHotkey(newHotkey);
+          setCurrentKeys([...modifiers]);
+          setIsRecording(false);
+          recordingRef.current = false;
+          lastModifierRef.current = null;
+          lastModifierTimeRef.current = 0;
+          return;
+        }
+        
+        // 记录当前修饰键和时间
+        lastModifierRef.current = mappedKey;
+        lastModifierTimeRef.current = now;
+        
         const modifiers: string[] = [];
         if (e.ctrlKey) modifiers.push("Ctrl");
         if (e.altKey) modifiers.push("Alt");
         if (e.shiftKey) modifiers.push("Shift");
         if (e.metaKey) modifiers.push("Meta");
         
-        // 只显示当前按下的修饰键，不重复添加
         setCurrentKeys(modifiers);
         return;
       }
+      
+      // 如果不是修饰键，重置重复检测
+      lastModifierRef.current = null;
+      lastModifierTimeRef.current = 0;
 
       // 收集修饰键（排除当前按下的键本身）
       const modifiers: string[] = [];

@@ -355,5 +355,10 @@ export const tauriApi = {
   async restartApp(): Promise<void> {
     return invoke("restart_app");
   },
+
+  // App version API
+  async getAppVersion(): Promise<string> {
+    return invoke("get_app_version");
+  },
 };
 

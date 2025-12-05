@@ -229,11 +229,10 @@ fn main() {
             // Create system tray menu
             let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
             let open_logs = MenuItem::with_id(app, "open_logs", "打开日志文件夹", true, None::<&str>)?;
-            let about = MenuItem::with_id(app, "about", "关于", true, None::<&str>)?;
             let restart = MenuItem::with_id(app, "restart", "重启程序", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&settings, &open_logs, &restart, &about, &quit])?;
+            let menu = Menu::with_items(app, &[&settings, &open_logs, &restart, &quit])?;
 
             // Create tray icon - use default window icon (which loads from tauri.conf.json)
             // 禁用左键点击显示菜单，左键只用于切换启动器窗口
@@ -340,51 +339,6 @@ fn main() {
                                         .spawn();
                                 }
                             }
-                        }
-                    }
-                    "about" => {
-                        // 使用 Cargo 包版本，确保与应用实际版本保持一致
-                        let version = env!("CARGO_PKG_VERSION");
-
-                        #[cfg(target_os = "windows")]
-                        {
-                            use std::ffi::OsStr;
-                            use std::os::windows::ffi::OsStrExt;
-                            use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                MessageBoxW, MB_ICONINFORMATION, MB_OK,
-                            };
-
-                            // 将字符串转换为宽字符
-                            fn to_wide_string(s: &str) -> Vec<u16> {
-                                OsStr::new(s)
-                                    .encode_wide()
-                                    .chain(std::iter::once(0))
-                                    .collect()
-                            }
-
-                            let title = to_wide_string("关于 ReFast");
-                            let message_str = format!(
-                                "ReFast\n\n一个快速启动器和输入宏录制工具\n\n版本: {}",
-                                version
-                            );
-                            let message = to_wide_string(&message_str);
-
-                            unsafe {
-                                MessageBoxW(
-                                    0,
-                                    message.as_ptr(),
-                                    title.as_ptr(),
-                                    MB_OK | MB_ICONINFORMATION,
-                                );
-                            }
-                        }
-                        #[cfg(not(target_os = "windows"))]
-                        {
-                            // 其他平台可以使用其他方式显示关于对话框
-                            eprintln!(
-                                "ReFast - 一个快速启动器和输入宏录制工具\n版本: {}",
-                                version
-                            );
                         }
                     }
                     "restart" => {
@@ -584,6 +538,7 @@ fn main() {
             save_hotkey_config,
             show_hotkey_settings,
             restart_app,
+            get_app_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
