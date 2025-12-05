@@ -1041,13 +1041,19 @@ export function LauncherWindow() {
     isEverything?: boolean,
     isApp?: boolean,  // 新增：标识是否是应用
     namePinyin?: string,  // 新增：应用名称的拼音全拼
-    namePinyinInitials?: string  // 新增：应用名称的拼音首字母
+    namePinyinInitials?: string,  // 新增：应用名称的拼音首字母
+    isFileHistory?: boolean  // 新增：标识是否是历史文件
   ): number => {
     if (!query || !query.trim()) {
       // 如果查询为空，只根据使用频率和时间排序
       let score = 0;
       if (useCount !== undefined) {
-        score += Math.min(useCount, 100); // 最多100分
+        if (isFileHistory) {
+          // 历史文件的使用次数加分更高（最多200分），使用次数越多分数越高
+          score += Math.min(useCount * 2, 200);
+        } else {
+          score += Math.min(useCount, 100); // 最多100分
+        }
       }
       if (lastUsed !== undefined) {
         // 最近使用时间：距离现在越近分数越高
@@ -1056,6 +1062,10 @@ export function LauncherWindow() {
         if (daysSinceUse <= 30) {
           score += Math.max(0, 50 - daysSinceUse * 2); // 30天内：50分递减到0分
         }
+      }
+      // 历史文件基础加分
+      if (isFileHistory) {
+        score += 300; // 历史文件基础加分（提高到300分）
       }
       // 应用类型额外加分
       if (isApp) {
@@ -1073,17 +1083,25 @@ export function LauncherWindow() {
     let score = 0;
 
     // 文件名匹配（最高优先级）
+    let nameMatchScore = 0;
     if (nameLower === queryLower) {
       // 完全匹配：短查询（2-4字符）给予更高权重
       if (queryLength >= 2 && queryLength <= 4) {
-        score += 1500; // 短查询完全匹配给予更高分数
+        nameMatchScore = 1500; // 短查询完全匹配给予更高分数
       } else {
-        score += 1000; // 完全匹配
+        nameMatchScore = 1000; // 完全匹配
       }
     } else if (nameLower.startsWith(queryLower)) {
-      score += 500; // 开头匹配
+      nameMatchScore = 500; // 开头匹配
     } else if (nameLower.includes(queryLower)) {
-      score += 100; // 包含匹配
+      nameMatchScore = 100; // 包含匹配
+    }
+    
+    score += nameMatchScore;
+    
+    // 历史文件在文件名匹配时额外加权（匹配分数的30%），确保优先显示
+    if (isFileHistory && nameMatchScore > 0) {
+      score += Math.floor(nameMatchScore * 0.3); // 额外加30%的匹配分数
     }
 
     // 拼音匹配（如果查询是拼音且是应用类型）
@@ -1146,9 +1164,20 @@ export function LauncherWindow() {
       score += Math.max(0, 50 - pathDepth * 2);
     }
 
-    // 使用频率加分（最多100分）
+    // 历史文件结果：给予基础加分，体现使用历史优势
+    if (isFileHistory) {
+      score += 300; // 历史文件基础加分（提高到300分），确保优先于 Everything 结果
+    }
+
+    // 使用频率加分
     if (useCount !== undefined) {
-      score += Math.min(useCount, 100);
+      if (isFileHistory) {
+        // 历史文件的使用次数加分更高（最多200分），使用次数越多分数越高
+        score += Math.min(useCount * 2, 200);
+      } else {
+        // 其他类型最多100分
+        score += Math.min(useCount, 100);
+      }
     }
 
     // 最近使用时间加分
@@ -1377,7 +1406,8 @@ export function LauncherWindow() {
           a.type === "everything",
           a.type === "app",  // 新增：标识是否是应用
           a.app?.name_pinyin,  // 新增：应用拼音全拼
-          a.app?.name_pinyin_initials  // 新增：应用拼音首字母
+          a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
+          a.type === "file"  // 新增：标识是否是历史文件
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -1388,17 +1418,26 @@ export function LauncherWindow() {
           b.type === "everything",
           b.type === "app",  // 新增：标识是否是应用
           b.app?.name_pinyin,  // 新增：应用拼音全拼
-          b.app?.name_pinyin_initials  // 新增：应用拼音首字母
+          b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
+          b.type === "file"  // 新增：标识是否是历史文件
         );
 
         // 按评分降序排序（分数高的在前）
         if (bScore !== aScore) {
+          // 如果评分差距在200分以内，且一个是历史文件，另一个是 Everything 结果，优先历史文件
+          const scoreDiff = Math.abs(bScore - aScore);
+          if (scoreDiff <= 200) {
+            if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先
+            if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先
+          }
           return bScore - aScore;
         }
 
-        // 如果评分相同，应用优先于文件，然后按最近使用时间排序
+        // 如果评分相同，优先顺序：应用 > 历史文件 > Everything > 其他，然后按最近使用时间排序
         if (a.type === "app" && b.type !== "app") return -1;
         if (a.type !== "app" && b.type === "app") return 1;
+        if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先于 Everything
+        if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先于 Everything
         return bLastUsed - aLastUsed;
       });
       
@@ -1443,7 +1482,8 @@ export function LauncherWindow() {
           a.type === "everything",
           a.type === "app",  // 新增：标识是否是应用
           a.app?.name_pinyin,  // 新增：应用拼音全拼
-          a.app?.name_pinyin_initials  // 新增：应用拼音首字母
+          a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
+          a.type === "file"  // 新增：标识是否是历史文件
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -1454,17 +1494,26 @@ export function LauncherWindow() {
           b.type === "everything",
           b.type === "app",  // 新增：标识是否是应用
           b.app?.name_pinyin,  // 新增：应用拼音全拼
-          b.app?.name_pinyin_initials  // 新增：应用拼音首字母
+          b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
+          b.type === "file"  // 新增：标识是否是历史文件
         );
 
         // 按评分降序排序（分数高的在前）
         if (bScore !== aScore) {
+          // 如果评分差距在200分以内，且一个是历史文件，另一个是 Everything 结果，优先历史文件
+          const scoreDiff = Math.abs(bScore - aScore);
+          if (scoreDiff <= 200) {
+            if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先
+            if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先
+          }
           return bScore - aScore;
         }
 
-        // 如果评分相同，应用优先于文件，然后按最近使用时间排序
+        // 如果评分相同，优先顺序：应用 > 历史文件 > Everything > 其他，然后按最近使用时间排序
         if (a.type === "app" && b.type !== "app") return -1;
         if (a.type !== "app" && b.type === "app") return 1;
+        if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先于 Everything
+        if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先于 Everything
         return bLastUsed - aLastUsed;
       });
     }
