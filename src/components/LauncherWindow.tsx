@@ -3568,7 +3568,7 @@ export function LauncherWindow() {
               style={{ maxHeight: '500px' }}
             >
               {(() => {
-                // 分离可执行文件（app类型且路径是.exe或.lnk）
+                // 分离可执行文件（app类型且路径是.exe或.lnk）和插件
                 const executableResults = results.filter(result => {
                   if (result.type === "app") {
                     const pathLower = result.path.toLowerCase();
@@ -3577,19 +3577,30 @@ export function LauncherWindow() {
                   return false;
                 });
                 
-                // 其他结果
+                // 分离插件
+                const pluginResults = results.filter(result => {
+                  return result.type === "plugin";
+                });
+                
+                // 合并可执行文件和插件到横向列表
+                const horizontalResults = [...executableResults, ...pluginResults];
+                
+                // 其他结果（排除可执行文件和插件）
                 const otherResults = results.filter(result => {
                   if (result.type === "app") {
                     const pathLower = result.path.toLowerCase();
                     return !pathLower.endsWith('.exe') && !pathLower.endsWith('.lnk');
+                  }
+                  if (result.type === "plugin") {
+                    return false;
                   }
                   return true;
                 });
                 
                 return (
                   <>
-                    {/* 可执行文件横向排列在第一行 */}
-                    {executableResults.length > 0 && (
+                    {/* 可执行文件和插件横向排列在第一行 */}
+                    {horizontalResults.length > 0 && (
                       <div className="px-4 py-3 mb-2 border-b border-gray-200">
                         <div 
                           className="flex gap-3 overflow-x-auto pb-2 executable-scroll-container"
@@ -3598,7 +3609,7 @@ export function LauncherWindow() {
                             msOverflowStyle: 'none', // IE/Edge
                           }}
                         >
-                          {executableResults.map((result, execIndex) => {
+                          {horizontalResults.map((result, execIndex) => {
                             const globalIndex = results.indexOf(result);
                             return (
                               <div
@@ -3614,7 +3625,7 @@ export function LauncherWindow() {
                                   e.stopPropagation();
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, result)}
-                                className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-lg cursor-pointer transition-all min-w-[70px] ${
+                                className={`flex flex-col items-center gap-1.5 p-2 rounded-lg cursor-pointer transition-all min-w-[70px] ${
                                   globalIndex === selectedIndex 
                                     ? theme.card(true) 
                                     : 'hover:bg-gray-100 bg-gray-50'
@@ -3626,7 +3637,7 @@ export function LauncherWindow() {
                                 {globalIndex === selectedIndex && (
                                   <div className={theme.indicator(true)} style={{ position: 'absolute', top: '4px', left: '4px', width: '3px', height: '3px', borderRadius: '50%' }} />
                                 )}
-                                <div className="flex-shrink-0">
+                                <div className="flex-shrink-0 flex items-center justify-center" style={{ width: '70px' }}>
                                   {result.type === "app" ? (() => {
                                     let iconToUse = result.app?.icon;
                                     if (!iconToUse && result.path) {
@@ -3686,9 +3697,31 @@ export function LauncherWindow() {
                                         </svg>
                                       );
                                     }
-                                  })() : null}
+                                  })() : result.type === "plugin" ? (
+                                    <svg
+                                      className={`w-6 h-6 ${globalIndex === selectedIndex ? 'text-white' : 'text-purple-500'}`}
+                                      fill="currentColor"
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path d="M20.5 11H19V7c0-1.1-.9-2-2-2h-4V3.5C13 2.12 11.88 1 10.5 1S8 2.12 8 3.5V5H4c-1.1 0-1.99.9-1.99 2v3.8H3.5c1.49 0 2.7 1.21 2.7 2.7s-1.21 2.7-2.7 2.7H2V20c0 1.1.9 2 2 2h3.8v-1.5c0-1.49 1.21-2.7 2.7-2.7 1.49 0 2.7 1.21 2.7 2.7V22H17c1.1 0 2-.9 2-2v-4h1.5c1.38 0 2.5-1.12 2.5-2.5S21.88 11 20.5 11z"/>
+                                    </svg>
+                                  ) : null}
                                 </div>
-                                <div className="text-xs text-center truncate w-full max-w-[70px]" 
+                                <div 
+                                  className="text-xs text-center leading-tight" 
+                                  style={{ 
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 2,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                    wordBreak: 'break-word',
+                                    textOverflow: 'ellipsis',
+                                    lineHeight: '1.3',
+                                    maxHeight: '2.6em',
+                                    minHeight: '2.6em',
+                                    width: '70px',
+                                    textAlign: 'center'
+                                  }}
                                   dangerouslySetInnerHTML={{ __html: highlightText(result.displayName, query) }}
                                 />
                               </div>
