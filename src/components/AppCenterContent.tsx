@@ -1,12 +1,13 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { plugins, executePlugin } from "../plugins";
 import type { PluginContext, IndexStatus, FileHistoryItem, AppInfo, DatabaseBackupInfo } from "../types";
 import { tauriApi } from "../api/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
 import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./SettingsPages";
+import { fetchUsersCount } from "../api/events";
 
 // 菜单分类类型
-type MenuCategory = "plugins" | "settings" | "about" | "index";
+type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
 
 // 设置子页面类型
 type SettingsPage = "system" | "ollama";
@@ -44,6 +45,15 @@ const menuItems: MenuItem[] = [
     icon: (
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h18M3 12h18M3 19h18" />
+      </svg>
+    ),
+  },
+  {
+    id: "statistics",
+    name: "统计",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16h3V9H4v7zM10.5 16h3V5h-3v11zM17 16h3v-5h-3v5z" />
       </svg>
     ),
   },
@@ -123,6 +133,10 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   // 标记当前是否正在应用后端加载的设置，避免立即触发自动保存
   const isApplyingSettingsRef = useRef(false);
   const saveTimerRef = useRef<number | null>(null);
+  const [usersCount, setUsersCount] = useState<number | null>(null);
+  const [isLoadingUsersCount, setIsLoadingUsersCount] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const ALL_TIME_FROM = "1970-01-01"; // 用于覆盖后端默认 7 天范围，统计全部时间
 
   const formatTimestamp = (timestamp?: number | null) => {
     if (!timestamp) return "暂无";
@@ -154,6 +168,73 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       end: toTs(end, true),
     };
   };
+
+  const loadUsersCount = useCallback(
+    async (fromOverride?: string, toOverride?: string) => {
+      setIsLoadingUsersCount(true);
+      setStatsError(null);
+      const normalizedFrom = fromOverride?.trim() || ALL_TIME_FROM;
+      const normalizedTo = toOverride?.trim() || undefined;
+
+      try {
+        const count = await fetchUsersCount(normalizedFrom, normalizedTo);
+        setUsersCount(count);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "获取失败";
+        setStatsError(message);
+      } finally {
+        setIsLoadingUsersCount(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (activeCategory === "statistics" && usersCount === null && !isLoadingUsersCount) {
+      void loadUsersCount(ALL_TIME_FROM, "");
+    }
+  }, [ALL_TIME_FROM, activeCategory, isLoadingUsersCount, loadUsersCount, usersCount]);
+
+  const indexSummaryCards = useMemo(
+    () => {
+      const everythingAvailable = indexStatus?.everything?.available;
+      return [
+        {
+          title: "Everything",
+          value: everythingAvailable ? "可用" : "未就绪",
+          helper: everythingAvailable
+            ? `版本 ${indexStatus?.everything?.version || "未知"}`
+            : indexStatus?.everything?.path
+              ? "已找到路径，待启动"
+              : "未安装/未找到",
+          tone: everythingAvailable ? "success" : "warning",
+        },
+        {
+          title: "应用索引",
+          value: `${indexStatus?.applications?.total ?? 0}`,
+          helper: indexStatus?.applications?.cache_mtime
+            ? `更新于 ${formatTimestamp(indexStatus.applications.cache_mtime)}`
+            : "等待生成缓存",
+          tone: "info",
+        },
+        {
+          title: "文件历史",
+          value: `${indexStatus?.file_history?.total ?? 0}`,
+          helper: indexStatus?.file_history?.mtime
+            ? `更新于 ${formatTimestamp(indexStatus.file_history.mtime)}`
+            : "暂无数据",
+          tone: "neutral",
+        },
+        {
+          title: "数据库备份",
+          value: `${backupList.length} 份`,
+          helper: backupDir ? "已设置存储目录" : "暂未备份",
+          tone: backupList.length > 0 ? "success" : "neutral",
+        },
+      ];
+    },
+    [backupDir, backupList.length, indexStatus]
+  );
 
   // 处理插件点击
   const handlePluginClick = async (pluginId: string) => {
@@ -879,25 +960,35 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
             </div>
           </div>
         );
-      case "index":
+      case "index": {
+        const toneClassMap: Record<string, string> = {
+          success: "bg-gradient-to-br from-green-50 to-green-100/70 border-green-200",
+          warning: "bg-gradient-to-br from-amber-50 to-amber-100/70 border-amber-200",
+          info: "bg-gradient-to-br from-blue-50 to-blue-100/70 border-blue-200",
+          neutral: "bg-gradient-to-br from-slate-50 to-slate-100/70 border-slate-200",
+        };
+        const skeuoSurface =
+          "rounded-xl border border-[#dfe3ea] bg-[linear-gradient(145deg,#fdfdff,#eef1f6)] shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_12px_28px_rgba(0,0,0,0.08)]";
+        const skeuoPanel =
+          "rounded-2xl border border-[#dfe3ea] bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.75),transparent_42%),radial-gradient(circle_at_80%_0%,rgba(255,255,255,0.55),transparent_38%),#f4f6f9] shadow-[0_18px_40px_rgba(0,0,0,0.12)]";
         return (
-              <div className="space-y-4">
+              <div className={`${skeuoPanel} space-y-4 p-5`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <div className="text-lg font-semibold text-gray-900">索引概况</div>
-                    <div className="text-sm text-gray-500">查看 Everything、应用缓存与文件历史的索引状态</div>
+                    <div className="text-lg font-semibold text-gray-900 drop-shadow-sm">索引概况</div>
+                    <div className="text-sm text-gray-600">查看 Everything、应用缓存与文件历史的索引状态</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleRefreshIndex}
-                      className="px-3 py-2 text-sm rounded-lg bg-white border border-gray-200 hover:border-gray-300 hover:shadow-sm transition"
+                      className="px-3.5 py-2 text-sm rounded-xl bg-gradient-to-br from-white to-[#f5f7fb] border border-[#e1e5ed] text-gray-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_8px_16px_rgba(0,0,0,0.06)] hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_12px_22px_rgba(0,0,0,0.10)] hover:-translate-y-[1px] active:translate-y-0 active:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_6px_14px_rgba(0,0,0,0.08)] transition"
                       disabled={isLoadingIndex}
                     >
                       {isLoadingIndex ? "刷新中..." : "刷新"}
                     </button>
                     <button
                       onClick={handleRescanApplications}
-                      className="px-3 py-2 text-sm rounded-lg bg-green-50 text-green-700 border border-green-200 hover:border-green-300 hover:shadow-sm transition"
+                      className="px-4 py-2 text-sm rounded-xl text-green-900 bg-gradient-to-br from-emerald-50 via-emerald-50 to-emerald-100/80 border border-emerald-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_8px_14px_rgba(0,0,0,0.08)] hover:border-emerald-300 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.95),0_12px_18px_rgba(0,0,0,0.12)] hover:-translate-y-[1px] active:translate-y-0 active:shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_7px_14px_rgba(0,0,0,0.08)] transition"
                       disabled={isLoadingIndex}
                     >
                       重新扫描应用
@@ -906,13 +997,33 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                 </div>
 
                 {indexError && (
-                  <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
+                  <div className="p-3 rounded-lg bg-gradient-to-r from-red-50 to-red-100/70 border border-red-200 text-sm text-red-700 shadow-[inset_0_1px_0_rgba(255,255,255,0.9),0_8px_20px_rgba(239,68,68,0.15)]">
                     {indexError}
                   </div>
                 )}
 
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                  {indexSummaryCards.map((card) => {
+                    const toneClass = toneClassMap[card.tone] || toneClassMap.neutral;
+                    return (
+                      <div
+                        key={card.title}
+                        className={`p-4 ${skeuoSurface} ${toneClass} shadow-[inset_0_1px_0_rgba(255,255,255,0.92),0_14px_28px_rgba(0,0,0,0.12)]`}
+                      >
+                        <div className="text-xs font-medium uppercase tracking-wide text-gray-600">
+                          {card.title}
+                        </div>
+                        <div className="mt-2 flex items-baseline gap-2">
+                          <div className="text-2xl font-semibold text-gray-900">{card.value}</div>
+                          <div className="text-xs text-gray-600 truncate">{card.helper}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <div className={`p-4 ${skeuoSurface}`}>
                     <div className="flex items-center justify-between mb-3">
                       <div className="font-semibold text-gray-900">Everything 索引</div>
                       <span className={`text-xs px-2 py-1 rounded-full ${indexStatus?.everything?.available ? "bg-green-50 text-green-700 border border-green-200" : "bg-yellow-50 text-yellow-700 border border-yellow-200"}`}>
@@ -945,7 +1056,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                     </div>
                   </div>
 
-                  <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <div className={`p-4 ${skeuoSurface}`}>
                     <div className="flex items-center justify-between mb-3">
                       <div className="font-semibold text-gray-900">应用索引</div>
                       <span className="text-xs px-2 py-1 rounded-full bg-gray-50 text-gray-700 border border-gray-200">
@@ -968,7 +1079,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                     </button>
                   </div>
 
-                  <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm md:col-span-2">
+                  <div className={`p-4 ${skeuoSurface} md:col-span-2`}>
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-2">
                         <div className="font-semibold text-gray-900">数据库备份</div>
@@ -1070,7 +1181,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                     </div>
                   </div>
 
-                  <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm md:col-span-2">
+                  <div className={`p-4 ${skeuoSurface} md:col-span-2`}>
                     <div className="flex items-center justify-between mb-3">
                       <div className="font-semibold text-gray-900">文件历史</div>
                       <span className="text-xs px-2 py-1 rounded-full bg-gray-50 text-gray-700 border border-gray-200">
@@ -1155,6 +1266,76 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                 </div>
               </div>
         );
+      }
+      case "statistics": {
+        const summaryCards = [
+          {
+            title: "用户总数",
+            value: isLoadingUsersCount ? "加载中..." : usersCount !== null ? usersCount.toLocaleString() : "—",
+            desc: statsError ? `获取失败：${statsError}` : "按时间范围统计去重用户数",
+          },
+          { title: "活跃趋势", value: "开发中", desc: "计划支持日/周/月活跃与留存" },
+          { title: "功能热度", value: "规划中", desc: "用于了解功能点击、使用占比" },
+        ];
+
+        const roadmap = [
+          "用户增长与活跃趋势图表",
+          "核心功能/插件的使用统计",
+          "渠道来源及版本分布",
+          "导出报表与自定义时间范围",
+        ];
+
+        return (
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">统计概览</div>
+                <div className="text-sm text-gray-500">统计用户数、活跃度等数据</div>
+              </div>
+              <span className="px-2 py-1 text-xs rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+                早期版本
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {summaryCards.map((card) => (
+                <div key={card.title} className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <div className="text-sm text-gray-500">{card.title}</div>
+                  <div className="mt-2 text-2xl font-semibold text-gray-900">{card.value}</div>
+                  <div className="mt-1 text-xs text-gray-500">{card.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 rounded-xl border border-dashed border-gray-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-semibold text-gray-900">功能规划</div>
+                  <div className="text-sm text-gray-500">正在设计统计能力，后续版本陆续上线</div>
+                </div>
+                <button
+                  type="button"
+                  disabled
+                  className="px-3 py-2 text-xs rounded-lg bg-gray-100 text-gray-500 border border-gray-200 cursor-not-allowed"
+                >
+                  敬请期待
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2">
+                {roadmap.map((item, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-start gap-2 p-3 rounded-lg bg-gray-50 text-sm text-gray-700 border border-gray-100"
+                  >
+                    <span className="mt-1 w-2 h-2 rounded-full bg-green-500" />
+                    <span>{item}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
       case "settings":
         if (isLoadingSettings) {
           return (
