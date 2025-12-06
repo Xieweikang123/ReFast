@@ -228,12 +228,12 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Create system tray menu
-            let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+            let app_center = MenuItem::with_id(app, "app_center", "应用中心", true, None::<&str>)?;
             let open_logs = MenuItem::with_id(app, "open_logs", "打开日志文件夹", true, None::<&str>)?;
             let restart = MenuItem::with_id(app, "restart", "重启程序", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&settings, &open_logs, &restart, &quit])?;
+            let menu = Menu::with_items(app, &[&app_center, &open_logs, &restart, &quit])?;
 
             // Create tray icon - use default window icon (which loads from tauri.conf.json)
             // 禁用左键点击显示菜单，左键只用于切换启动器窗口
@@ -288,12 +288,12 @@ fn main() {
                     }
                 })
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "settings" => {
-                        // 调用设置窗口命令
+                    "app_center" => {
+                        // 调用应用中心窗口命令
                         let app_handle = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            if let Err(e) = show_settings_window(app_handle).await {
-                                eprintln!("Failed to show settings: {}", e);
+                            if let Err(e) = show_plugin_list_window(app_handle).await {
+                                eprintln!("Failed to show app center: {}", e);
                             }
                         });
                     }
@@ -532,6 +532,7 @@ fn main() {
             show_json_formatter_window,
             show_file_toolbox_window,
             show_calculator_pad_window,
+            show_everything_search_window,
             preview_file_replace,
             execute_file_replace,
             select_folder,
