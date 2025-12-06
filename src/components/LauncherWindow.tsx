@@ -3095,6 +3095,10 @@ export function LauncherWindow() {
       onMouseDown={async (e) => {
         // Allow dragging from empty areas (not on white container)
         const target = e.target as HTMLElement;
+        // 避免在结果列表滚动条上触发窗口拖动
+        if (target.closest('.results-list-scroll')) {
+          return;
+        }
         if (target === e.currentTarget || !target.closest('.bg-white')) {
           await startWindowDragging();
         }
@@ -4156,7 +4160,12 @@ export function LauncherWindow() {
                       >
                         <div
                           className="cursor-pointer"
-                          onClick={() => {
+                          onClick={(e) => {
+                            // 如果点击的是按钮或其子元素，不执行操作
+                            const target = e.target as HTMLElement;
+                            if (target.closest('button')) {
+                              return;
+                            }
                             // 点击列表项进入单条查看模式
                             setIsMemoListMode(false);
                             setSelectedMemo(memo);
@@ -4213,13 +4222,33 @@ export function LauncherWindow() {
                             复制并关闭
                           </button>
                           <button
-                            onClick={async (e) => {
+                            onMouseDown={async (e) => {
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4221',message:'onMouseDown entry',data:{memoId:memo.id,eventType:'mousedown'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                              // #endregion
+                              e.preventDefault();
                               e.stopPropagation();
-                              if (!confirm("确定要删除这条备忘录吗？")) {
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4224',message:'before confirm',data:{memoId:memo.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                              // #endregion
+                              const confirmed = confirm("确定要删除这条备忘录吗？");
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4225',message:'after confirm',data:{memoId:memo.id,confirmed:confirmed},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                              // #endregion
+                              if (!confirmed) {
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4226',message:'user cancelled',data:{memoId:memo.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                                // #endregion
                                 return;
                               }
+                              // #region agent log
+                              fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4227',message:'before deleteMemo call',data:{memoId:memo.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                              // #endregion
                               try {
                                 await tauriApi.deleteMemo(memo.id);
+                                // #region agent log
+                                fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'LauncherWindow.tsx:4228',message:'after deleteMemo call',data:{memoId:memo.id},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+                                // #endregion
                                 const list = await tauriApi.getAllMemos();
                                 setMemos(list);
                                 // 如果删除的是当前显示的备忘录，关闭弹窗
@@ -4231,6 +4260,10 @@ export function LauncherWindow() {
                                 console.error("Failed to delete memo:", error);
                                 alert(`删除备忘录失败: ${error}`);
                               }
+                            }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
                             }}
                             className="px-2 py-1 text-xs text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 hover:border-red-400 transition-colors"
                             title="删除备忘录"
@@ -4370,7 +4403,9 @@ export function LauncherWindow() {
                 </button>
                 {selectedMemo && (
                   <button
-                    onClick={async () => {
+                    onMouseDown={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
                       const memoToDelete = selectedMemo;
                       if (!memoToDelete) return;
                       if (!confirm("确定要删除这条备忘录吗？")) return;
@@ -4386,6 +4421,10 @@ export function LauncherWindow() {
                         console.error("Failed to delete memo:", error);
                         alert(`删除备忘录失败: ${error}`);
                       }
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
                     }}
                     className="px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded transition-colors"
                   >
