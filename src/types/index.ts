@@ -61,6 +61,14 @@ export interface EverythingSearchResponse {
   total_count: number;
 }
 
+export interface EverythingSearchOptions {
+  extensions?: string[];
+  excludeExtensions?: string[];
+  onlyFiles?: boolean;
+  onlyFolders?: boolean;
+  maxResults?: number;
+}
+
 export interface IndexEverythingStatus {
   available: boolean;
   error?: string | null;

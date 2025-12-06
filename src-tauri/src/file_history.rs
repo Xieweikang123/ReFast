@@ -351,6 +351,60 @@ pub fn delete_file_history(path: String, app_data_dir: &Path) -> Result<(), Stri
     Ok(())
 }
 
+/// 按时间范围删除历史记录（闭区间），返回删除条数
+pub fn delete_file_history_by_range(
+    start_ts: Option<u64>,
+    end_ts: Option<u64>,
+    app_data_dir: &Path,
+) -> Result<usize, String> {
+    // start_ts/end_ts 为 Unix 秒时间戳，若为空则不限制该侧
+    let mut state = lock_history()?;
+    load_history_into(&mut state, app_data_dir)?;
+
+    let before = state.len();
+    state.retain(|_, item| {
+        let ts = item.last_used;
+        if let Some(s) = start_ts {
+            if ts < s {
+                return true; // 保留，未到范围
+            }
+        }
+        if let Some(e) = end_ts {
+            if ts > e {
+                return true; // 保留，超出范围
+            }
+        }
+        // 在范围内则删除
+        false
+    });
+    let removed = before.saturating_sub(state.len());
+
+    save_history_internal(&state, app_data_dir)?;
+    Ok(removed)
+}
+
+/// 清理早于指定天数的历史记录，返回删除条数
+pub fn purge_history_older_than(days: u64, app_data_dir: &Path) -> Result<usize, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut state = lock_history()?;
+    // 确保内存数据最新
+    load_history_into(&mut state, app_data_dir)?;
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("Failed to get timestamp: {}", e))?
+        .as_secs();
+    let cutoff = now.saturating_sub(days.saturating_mul(86_400));
+
+    let before = state.len();
+    state.retain(|_, item| item.last_used >= cutoff);
+    let removed = before.saturating_sub(state.len());
+
+    save_history_internal(&state, app_data_dir)?;
+    Ok(removed)
+}
+
 pub fn update_file_history_name(
     path: String,
     new_name: String,

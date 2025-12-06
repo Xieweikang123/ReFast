@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { plugins, executePlugin } from "../plugins";
-import type { PluginContext, IndexStatus } from "../types";
+import type { PluginContext, IndexStatus, FileHistoryItem, AppInfo } from "../types";
 import { tauriApi } from "../api/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
 import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./SettingsPages";
@@ -39,6 +39,15 @@ const menuItems: MenuItem[] = [
     ),
   },
   {
+    id: "index",
+    name: "索引",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h18M3 12h18M3 19h18" />
+      </svg>
+    ),
+  },
+  {
     id: "settings",
     name: "设置",
     icon: (
@@ -56,15 +65,6 @@ const menuItems: MenuItem[] = [
       </svg>
     ),
   },
-  {
-    id: "index",
-    name: "索引",
-    icon: (
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h18M3 12h18M3 19h18" />
-      </svg>
-    ),
-  },
 ];
 
 interface AppCenterContentProps {
@@ -78,6 +78,19 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
   const [isLoadingIndex, setIsLoadingIndex] = useState(false);
   const [indexError, setIndexError] = useState<string | null>(null);
+  const [isAppIndexModalOpen, setIsAppIndexModalOpen] = useState(false);
+  const [appIndexLoading, setAppIndexLoading] = useState(false);
+  const [appIndexError, setAppIndexError] = useState<string | null>(null);
+  const [appIndexList, setAppIndexList] = useState<AppInfo[]>([]);
+  const [appIndexSearch, setAppIndexSearch] = useState("");
+  const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyStartDate, setHistoryStartDate] = useState<string>("");
+  const [historyEndDate, setHistoryEndDate] = useState<string>("");
+  const [isDeletingHistory, setIsDeletingHistory] = useState(false);
+  const [historyMessage, setHistoryMessage] = useState<string | null>(null);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [pendingDeleteCount, setPendingDeleteCount] = useState(0);
   
   // 设置相关状态
   const [activeSettingsPage, setActiveSettingsPage] = useState<SettingsPage>("system");
@@ -101,6 +114,24 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const formatTimestamp = (timestamp?: number | null) => {
     if (!timestamp) return "暂无";
     return new Date(timestamp * 1000).toLocaleString();
+  };
+
+  const parseDateRangeToTs = (start: string, end: string): { start?: number; end?: number } => {
+    const toTs = (dateStr: string, endOfDay = false) => {
+      if (!dateStr) return undefined;
+      const d = new Date(dateStr);
+      if (Number.isNaN(d.getTime())) return undefined;
+      if (endOfDay) {
+        d.setHours(23, 59, 59, 999);
+      } else {
+        d.setHours(0, 0, 0, 0);
+      }
+      return Math.floor(d.getTime() / 1000);
+    };
+    return {
+      start: toTs(start, false),
+      end: toTs(end, true),
+    };
   };
 
   // 处理插件点击
@@ -137,8 +168,23 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     }
   };
 
+  const loadFileHistoryList = async () => {
+    try {
+      setIsLoadingHistory(true);
+      const list = await tauriApi.getAllFileHistory();
+      // 后端已按时间排序，但这里再保险按 last_used 降序
+      const sorted = [...list].sort((a, b) => b.last_used - a.last_used);
+      setFileHistoryItems(sorted);
+    } catch (error: any) {
+      console.error("加载文件历史失败:", error);
+      setIndexError(error?.message || "加载文件历史失败");
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
   const handleRefreshIndex = async () => {
-    await fetchIndexStatus();
+    await Promise.all([fetchIndexStatus(), loadFileHistoryList()]);
   };
 
   const handleRescanApplications = async () => {
@@ -166,6 +212,93 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       setIsLoadingIndex(false);
     }
   };
+
+  const handlePurgeHistory = async () => {
+    try {
+      setIsDeletingHistory(true);
+      setHistoryMessage(null);
+      const { start, end } = parseDateRangeToTs(historyStartDate, historyEndDate);
+      const removed = await tauriApi.deleteFileHistoryByRange(start, end);
+      setHistoryMessage(`已删除 ${removed} 条记录`);
+      await Promise.all([loadFileHistoryList(), fetchIndexStatus()]);
+    } catch (error: any) {
+      console.error("删除文件历史失败:", error);
+      setHistoryMessage(error?.message || "删除文件历史失败");
+    } finally {
+      setIsDeletingHistory(false);
+      setTimeout(() => setHistoryMessage(null), 3000);
+    }
+  };
+
+  const handleOpenDeleteConfirm = () => {
+    if (!historyStartDate && !historyEndDate) {
+      setHistoryMessage("请先选择日期范围");
+      setTimeout(() => setHistoryMessage(null), 2000);
+      return;
+    }
+    const count = filteredHistoryItems.length;
+    if (count === 0) {
+      setHistoryMessage("当前筛选无结果");
+      setTimeout(() => setHistoryMessage(null), 2000);
+      return;
+    }
+    setPendingDeleteCount(count);
+    setIsDeleteConfirmOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    setIsDeleteConfirmOpen(false);
+    await handlePurgeHistory();
+  };
+
+  const handleCancelDelete = () => {
+    setIsDeleteConfirmOpen(false);
+  };
+
+  const loadAppIndexList = async (forceRescan = false) => {
+    try {
+      setAppIndexLoading(true);
+      setAppIndexError(null);
+      const data = forceRescan ? await tauriApi.rescanApplications() : await tauriApi.scanApplications();
+      setAppIndexList(data);
+    } catch (error: any) {
+      console.error("获取应用索引列表失败:", error);
+      setAppIndexError(error?.message || "获取应用索引列表失败");
+    } finally {
+      setAppIndexLoading(false);
+    }
+  };
+
+  const handleOpenAppIndexModal = async () => {
+    setIsAppIndexModalOpen(true);
+    if (appIndexList.length === 0 && !appIndexLoading) {
+      await loadAppIndexList();
+    }
+  };
+
+  const handleCloseAppIndexModal = () => {
+    setIsAppIndexModalOpen(false);
+    setAppIndexSearch("");
+  };
+
+  const filteredAppIndexList = useMemo(() => {
+    if (!appIndexSearch.trim()) return appIndexList;
+    const query = appIndexSearch.toLowerCase();
+    return appIndexList.filter(
+      (item) =>
+        item.name.toLowerCase().includes(query) ||
+        item.path.toLowerCase().includes(query)
+    );
+  }, [appIndexList, appIndexSearch]);
+
+  const filteredHistoryItems = useMemo(() => {
+    const { start, end } = parseDateRangeToTs(historyStartDate, historyEndDate);
+    return fileHistoryItems.filter((item) => {
+      if (start && item.last_used < start) return false;
+      if (end && item.last_used > end) return false;
+      return true;
+    });
+  }, [fileHistoryItems, historyStartDate, historyEndDate]);
 
   // 加载设置
   const loadSettings = async () => {
@@ -347,6 +480,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   useEffect(() => {
     if (activeCategory === "index") {
       fetchIndexStatus();
+      loadFileHistoryList();
     }
   }, [activeCategory]);
 
@@ -617,12 +751,14 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                   >
                     启动 Everything
                   </button>
-                  <button
-                    onClick={() => tauriApi.openEverythingDownload()}
-                    className="px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 transition"
-                  >
-                    下载/安装
-                  </button>
+                  {!indexStatus?.everything?.available && (
+                    <button
+                      onClick={() => tauriApi.openEverythingDownload()}
+                      className="px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 transition"
+                    >
+                      下载/安装
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -637,6 +773,16 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                   <div>缓存文件：{indexStatus?.applications?.cache_file || "未生成"}</div>
                   <div>更新时间：{formatTimestamp(indexStatus?.applications?.cache_mtime)}</div>
                 </div>
+                <button
+                  onClick={handleOpenAppIndexModal}
+                  className="mt-3 px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 hover:shadow-sm transition w-full text-left flex items-center justify-between"
+                  disabled={isLoadingIndex || appIndexLoading}
+                >
+                  <span>查看索引列表</span>
+                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
               </div>
 
               <div className="p-4 rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -650,15 +796,76 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                   <div>存储路径：{indexStatus?.file_history?.path || "未生成"}</div>
                   <div>更新时间：{formatTimestamp(indexStatus?.file_history?.mtime)}</div>
                 </div>
-                <div className="mt-3">
+              <div className="mt-3 flex flex-wrap gap-2 items-center">
+                <button
+                  onClick={loadFileHistoryList}
+                  className="px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 transition"
+                  disabled={isLoadingHistory}
+                >
+                  {isLoadingHistory ? "加载中..." : "刷新文件历史"}
+                </button>
+                <input
+                  type="date"
+                  value={historyStartDate}
+                  onChange={(e) => setHistoryStartDate(e.target.value)}
+                  className="px-2 py-1 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-green-400"
+                />
+                <span className="text-xs text-gray-500">至</span>
+                <input
+                  type="date"
+                  value={historyEndDate}
+                  onChange={(e) => setHistoryEndDate(e.target.value)}
+                  className="px-2 py-1 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-green-400"
+                />
+                {(historyStartDate || historyEndDate) && (
                   <button
-                    onClick={handleRefreshIndex}
-                    className="px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 transition"
-                    disabled={isLoadingIndex}
+                    onClick={() => {
+                      setHistoryStartDate("");
+                      setHistoryEndDate("");
+                    }}
+                    className="px-2 py-1 text-xs text-gray-600 hover:text-gray-800"
                   >
-                    刷新文件历史
+                    清除筛选
                   </button>
-                </div>
+                )}
+                <button
+                  onClick={handleOpenDeleteConfirm}
+                  className="px-3 py-2 text-xs rounded-lg bg-red-50 text-red-700 border border-red-200 hover:border-red-300 transition"
+                  disabled={isDeletingHistory}
+                >
+                  {isDeletingHistory ? "删除中..." : "删除当前查询结果"}
+                </button>
+                {historyMessage && (
+                  <div className="text-xs text-gray-500">{historyMessage}</div>
+                )}
+              </div>
+              <div className="mt-3 border-t border-gray-100 pt-3 max-h-64 overflow-auto">
+                {isLoadingHistory && <div className="text-xs text-gray-500">加载中...</div>}
+                {!isLoadingHistory && filteredHistoryItems.length === 0 && (
+                  <div className="text-xs text-gray-500">暂无历史记录</div>
+                )}
+                {!isLoadingHistory && filteredHistoryItems.length > 0 && (
+                  <div className="space-y-2 text-xs text-gray-700">
+                    {filteredHistoryItems.slice(0, 30).map((item) => (
+                      <div
+                        key={item.path}
+                        className="p-2 rounded-md border border-gray-100 hover:border-gray-200"
+                      >
+                        <div className="font-medium text-gray-900 truncate">{item.name}</div>
+                        <div className="text-gray-500 truncate">{item.path}</div>
+                        <div className="text-gray-400">
+                          使用 {item.use_count} 次 · 最近 {formatTimestamp(item.last_used)}
+                        </div>
+                      </div>
+                    ))}
+                    {filteredHistoryItems.length > 30 && (
+                      <div className="text-gray-400 text-[11px]">
+                        已显示前 30 条，共 {filteredHistoryItems.length} 条
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
               </div>
             </div>
           </div>
@@ -755,84 +962,206 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   };
 
   return (
-    <div className="flex-1 flex overflow-hidden">
-      {/* Sidebar */}
-      <div className="w-48 border-r border-gray-200 bg-white flex-shrink-0 flex flex-col">
-        <nav className="flex-1 p-2">
-          {menuItems.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => {
-                setActiveCategory(item.id);
-                setSearchQuery(""); // 切换分类时清空搜索
-              }}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors mb-1 ${
-                activeCategory === item.id
-                  ? "bg-green-50 text-green-700 font-medium"
-                  : "text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              <span className={activeCategory === item.id ? "text-green-600" : "text-gray-500"}>
-                {item.icon}
-              </span>
-              <span>{item.name}</span>
-            </button>
-          ))}
-        </nav>
+    <>
+      <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar */}
+        <div className="w-48 border-r border-gray-200 bg-white flex-shrink-0 flex flex-col">
+          <nav className="flex-1 p-2">
+            {menuItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setActiveCategory(item.id);
+                  setSearchQuery(""); // 切换分类时清空搜索
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors mb-1 ${
+                  activeCategory === item.id
+                    ? "bg-green-50 text-green-700 font-medium"
+                    : "text-gray-700 hover:bg-gray-50"
+                }`}
+              >
+                <span className={activeCategory === item.id ? "text-green-600" : "text-gray-500"}>
+                  {item.icon}
+                </span>
+                <span>{item.name}</span>
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Search Bar - 仅在插件分类显示 */}
+          {activeCategory === "plugins" && (
+            <div className="p-5 border-b border-gray-200 bg-gradient-to-r from-white to-gray-50 flex-shrink-0">
+              <div className="relative max-w-2xl mx-auto">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="搜索插件..."
+                    className="w-full px-5 py-3 pl-12 pr-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-green-400 bg-white shadow-sm hover:shadow-md transition-all duration-200 text-gray-900 placeholder-gray-400"
+                  />
+                  <svg
+                    className="absolute left-4 top-3.5 w-5 h-5 text-gray-400 pointer-events-none"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                    />
+                  </svg>
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery("")}
+                      className="absolute right-3 top-3.5 w-5 h-5 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
+                      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Scrollable Content - 设置和关于页面占据整个区域，其他页面有 padding */}
+          {activeCategory === "settings" || activeCategory === "about" ? (
+            renderContent()
+          ) : (
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="max-w-4xl mx-auto">{renderContent()}</div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Search Bar - 仅在插件分类显示 */}
-        {activeCategory === "plugins" && (
-          <div className="p-5 border-b border-gray-200 bg-gradient-to-r from-white to-gray-50 flex-shrink-0">
-            <div className="relative max-w-2xl mx-auto">
-              <div className="relative">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="搜索插件..."
-                  className="w-full px-5 py-3 pl-12 pr-4 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-green-400 bg-white shadow-sm hover:shadow-md transition-all duration-200 text-gray-900 placeholder-gray-400"
-                />
-                <svg
-                  className="absolute left-4 top-3.5 w-5 h-5 text-gray-400 pointer-events-none"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+      {isDeleteConfirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-200 p-5">
+            <div className="text-lg font-semibold text-gray-900 mb-2">确认删除</div>
+            <div className="text-sm text-gray-700 mb-4">
+              确认删除当前筛选的 {pendingDeleteCount} 条记录？该操作不可恢复。
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={handleCancelDelete}
+                className="px-3 py-2 text-sm rounded-lg bg-white border border-gray-200 hover:border-gray-300 text-gray-700"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="px-3 py-2 text-sm rounded-lg bg-red-50 text-red-700 border border-red-200 hover:border-red-300"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAppIndexModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col border border-gray-200">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <div className="text-lg font-semibold text-gray-900">应用索引列表</div>
+                <div className="text-sm text-gray-500">
+                  共 {appIndexList.length} 条{appIndexSearch ? `，筛选后 ${filteredAppIndexList.length} 条` : ""}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => loadAppIndexList()}
+                  className="px-3 py-2 text-xs rounded-lg bg-white border border-gray-200 hover:border-gray-300 hover:shadow-sm transition"
+                  disabled={appIndexLoading}
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  {appIndexLoading ? "刷新中..." : "刷新缓存"}
+                </button>
+                <button
+                  onClick={() => loadAppIndexList(true)}
+                  className="px-3 py-2 text-xs rounded-lg bg-green-50 text-green-700 border border-green-200 hover:border-green-300 hover:shadow-sm transition"
+                  disabled={appIndexLoading}
+                >
+                  {appIndexLoading ? "扫描中..." : "重新扫描"}
+                </button>
+                <button
+                  onClick={handleCloseAppIndexModal}
+                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 py-3 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="relative flex-1">
+                  <input
+                    value={appIndexSearch}
+                    onChange={(e) => setAppIndexSearch(e.target.value)}
+                    placeholder="按名称或路径过滤..."
+                    className="w-full px-4 py-2.5 pl-10 pr-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-green-400 bg-white text-sm text-gray-900 placeholder-gray-400"
                   />
-                </svg>
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery("")}
-                    className="absolute right-3 top-3.5 w-5 h-5 text-gray-400 hover:text-gray-600 transition-colors"
+                  <svg
+                    className="absolute left-3 top-2.5 w-4 h-4 text-gray-400 pointer-events-none"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
                   >
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+                {appIndexSearch && (
+                  <button
+                    onClick={() => setAppIndexSearch("")}
+                    className="px-3 py-2 text-xs rounded-lg bg-white border border-gray-200 hover:border-gray-300 transition"
+                  >
+                    清空
                   </button>
                 )}
               </div>
+              {appIndexError && (
+                <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                  {appIndexError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+              {appIndexLoading ? (
+                <div className="flex items-center justify-center py-12 text-gray-600 text-sm">加载中...</div>
+              ) : filteredAppIndexList.length === 0 ? (
+                <div className="flex items-center justify-center py-12 text-gray-500 text-sm">暂无索引数据</div>
+              ) : (
+                <div className="divide-y divide-gray-100">
+                  {filteredAppIndexList.map((item, idx) => (
+                    <div key={`${item.path}-${idx}`} className="px-6 py-3 flex items-start gap-3 hover:bg-gray-50">
+                      <div className="w-6 h-6 rounded bg-green-50 text-green-700 flex items-center justify-center text-xs flex-shrink-0">
+                        {idx + 1}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-900">{item.name}</div>
+                        <div className="text-xs text-gray-500 break-all mt-1">{item.path}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
-        )}
-
-        {/* Scrollable Content - 设置和关于页面占据整个区域，其他页面有 padding */}
-        {activeCategory === "settings" || activeCategory === "about" ? (
-          renderContent()
-        ) : (
-          <div className="flex-1 overflow-y-auto p-4">
-            <div className="max-w-4xl mx-auto">{renderContent()}</div>
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      )}
+    </>
   );
 }
 

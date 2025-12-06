@@ -503,6 +503,8 @@ fn main() {
             get_everything_version,
             get_everything_log_file_path,
             get_file_preview,
+            purge_file_history,
+            delete_file_history_by_range,
             get_index_status,
             start_everything,
             open_everything_download,

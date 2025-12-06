@@ -4,11 +4,13 @@ import type {
   AppInfo,
   FileHistoryItem,
   EverythingSearchResponse,
+  EverythingSearchOptions,
   ShortcutItem,
   MemoItem,
   SystemFolderItem,
   IndexStatus,
   FilePreview,
+  FileHistoryItem,
 } from "../types";
 
 export const tauriApi = {
@@ -84,12 +86,20 @@ export const tauriApi = {
     return invoke("get_all_file_history");
   },
 
+  async purgeFileHistory(days?: number): Promise<number> {
+    return invoke("purge_file_history", { days });
+  },
+
   async deleteFileHistory(path: string): Promise<void> {
     return invoke("delete_file_history", { path });
   },
 
   async updateFileHistoryName(path: string, newName: string): Promise<FileHistoryItem> {
     return invoke("update_file_history_name", { path, newName });
+  },
+
+  async deleteFileHistoryByRange(start_ts?: number, end_ts?: number): Promise<number> {
+    return invoke("delete_file_history_by_range", { start_ts, end_ts });
   },
 
   async launchFile(path: string): Promise<void> {
@@ -108,8 +118,11 @@ export const tauriApi = {
     return invoke("get_clipboard_text");
   },
 
-  async searchEverything(query: string): Promise<EverythingSearchResponse> {
-    return invoke("search_everything", { query });
+  async searchEverything(
+    query: string,
+    options?: EverythingSearchOptions
+  ): Promise<EverythingSearchResponse> {
+    return invoke("search_everything", { query, options });
   },
 
   async isEverythingAvailable(): Promise<boolean> {

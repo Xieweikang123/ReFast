@@ -9,18 +9,18 @@ use crate::replay::ReplayState;
 use crate::settings;
 use crate::shortcuts;
 use crate::window_config;
-use std::env;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{DateTime, Utc};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
-use regex::Regex;
 use tauri::{Emitter, Manager};
-use serde::Serialize;
 
 static RECORDING_STATE: LazyLock<Arc<Mutex<RecordingState>>> =
     LazyLock::new(|| Arc::new(Mutex::new(RecordingState::new())));
@@ -35,7 +35,7 @@ pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Vec<app_search::AppInfo>>
 // 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
 struct SearchTaskManager {
     cancel_flag: Option<Arc<AtomicBool>>,
-    current_query: Option<String>, // 当前搜索的 query，用于避免相同 query 的重复搜索
+    current_query: Option<String>, // 当前搜索的 query（含过滤拼装后的最终串），用于避免相同 query 的重复搜索
 }
 
 static SEARCH_TASK_MANAGER: LazyLock<Arc<Mutex<SearchTaskManager>>> = LazyLock::new(|| {
@@ -854,13 +854,89 @@ pub fn search_memos(query: String, app: tauri::AppHandle) -> Result<Vec<memos::M
     memos::search_memos(&query, &app_data_dir)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct EverythingSearchOptions {
+    pub extensions: Option<Vec<String>>,
+    #[serde(rename = "excludeExtensions")]
+    pub exclude_extensions: Option<Vec<String>>,
+    #[serde(rename = "onlyFiles")]
+    pub only_files: Option<bool>,
+    #[serde(rename = "onlyFolders")]
+    pub only_folders: Option<bool>,
+    #[serde(rename = "maxResults")]
+    pub max_results: Option<usize>,
+}
+
+fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>) -> (String, usize) {
+    let mut parts: Vec<String> = Vec::new();
+    if !base.trim().is_empty() {
+        parts.push(base.trim().to_string());
+    }
+
+    let mut max_results = 50usize;
+
+    if let Some(opts) = options {
+        if opts.only_files.unwrap_or(false) {
+            parts.push("file:".to_string());
+        } else if opts.only_folders.unwrap_or(false) {
+            parts.push("folder:".to_string());
+        }
+
+        if let Some(exts) = &opts.extensions {
+            let cleaned: Vec<String> = exts
+                .iter()
+                .filter_map(|e| {
+                    let trimmed = e.trim().trim_start_matches('.').to_lowercase();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect();
+            if !cleaned.is_empty() {
+                parts.push(format!("ext:{}", cleaned.join(";")));
+            }
+        }
+
+        if let Some(ex_exts) = &opts.exclude_extensions {
+            let cleaned: Vec<String> = ex_exts
+                .iter()
+                .filter_map(|e| {
+                    let trimmed = e.trim().trim_start_matches('.').to_lowercase();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed)
+                    }
+                })
+                .collect();
+            if !cleaned.is_empty() {
+                parts.push(format!("!ext:{}", cleaned.join(";")));
+            }
+        }
+
+        if let Some(mr) = opts.max_results {
+            if mr > 0 {
+                max_results = mr;
+            }
+        }
+    }
+
+    let combined_query = parts.join(" ").trim().to_string();
+    (combined_query, max_results)
+}
+
 #[tauri::command]
 pub async fn search_everything(
     query: String,
+    options: Option<EverythingSearchOptions>,
     app: tauri::AppHandle,
 ) -> Result<everything_search::EverythingSearchResponse, String> {
     #[cfg(target_os = "windows")]
     {
+        let (combined_query, max_results) = build_everything_query(&query, &options);
+
         // 为新搜索准备取消标志，同时通知旧搜索退出
         let cancel_flag = {
             let mut manager = SEARCH_TASK_MANAGER
@@ -869,10 +945,10 @@ pub async fn search_everything(
 
             // 检查是否是相同 query 的重复搜索
             if let Some(ref current_query) = manager.current_query {
-                if current_query == &query {
+                if current_query == &combined_query {
                     // query 相同，说明是重复搜索，返回错误
-                    eprintln!("[RUST] Duplicate search detected for query: {}, skipping", query);
-                    return Err(format!("搜索 '{}' 正在进行中，跳过重复调用", query));
+                    eprintln!("[RUST] Duplicate search detected for query: {}, skipping", combined_query);
+                    return Err(format!("搜索 '{}' 正在进行中，跳过重复调用", combined_query));
                 }
             }
 
@@ -880,12 +956,12 @@ pub async fn search_everything(
             // 这样可以避免新搜索被误取消
             if let Some(old_flag) = &manager.cancel_flag {
                 // 只有当 query 不同时才取消
-                if manager.current_query.as_ref() != Some(&query) {
+                if manager.current_query.as_ref() != Some(&combined_query) {
                     eprintln!("[RUST] Cancelling previous search (query: {:?}) for new search (query: {})", 
-                        manager.current_query, query);
+                        manager.current_query, combined_query);
                     old_flag.store(true, Ordering::Relaxed);
                 } else {
-                    eprintln!("[RUST] Same query detected, not cancelling previous search: {}", query);
+                    eprintln!("[RUST] Same query detected, not cancelling previous search: {}", combined_query);
                 }
             }
 
@@ -902,13 +978,13 @@ pub async fn search_everything(
             // 先更新 current_query，再更新 cancel_flag，确保状态一致性
             // 这样可以避免在更新过程中，其他线程看到不一致的状态
             let old_query = manager.current_query.clone();
-            manager.current_query = Some(query.clone());
+            manager.current_query = Some(combined_query.clone());
             manager.cancel_flag = Some(new_flag.clone());
             
             // 再次验证新标志的值，确保在更新过程中没有被修改
             let flag_value_after_update = new_flag.load(Ordering::Relaxed);
             eprintln!("[RUST] Created new search flag for query: {} (old query: {:?}, flag value: {})", 
-                query, old_query, flag_value_after_update);
+                combined_query, old_query, flag_value_after_update);
             
             // 如果标志值不是 false，说明有问题
             if flag_value_after_update {
@@ -924,8 +1000,9 @@ pub async fn search_everything(
             .ok_or_else(|| "无法获取 launcher 窗口".to_string())?;
 
         // 在后台线程执行搜索，避免阻塞
-        let query_clone = query.clone();
+        let query_clone = combined_query.clone();
         let window_clone = window.clone();
+        let max_results_clone = max_results;
 
         // 获取异步运行时句柄，用于在阻塞线程中发送事件
         let rt_handle = tokio::runtime::Handle::current();
@@ -952,10 +1029,9 @@ pub async fn search_everything(
                 });
             };
 
-            // Request maximum 50 results from Everything
             let result = everything_search::windows::search_files(
                 &query_clone,
-                50,
+                max_results_clone,
                 Some(&cancel_flag),
                 Some(on_batch),
             );
@@ -1059,6 +1135,23 @@ pub fn get_everything_log_file_path() -> Result<Option<String>, String> {
     {
         Ok(None)
     }
+}
+
+#[tauri::command]
+pub fn purge_file_history(days: Option<u64>, app: tauri::AppHandle) -> Result<usize, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    let days = days.unwrap_or(30).max(1);
+    file_history::purge_history_older_than(days, &app_data_dir)
+}
+
+#[tauri::command]
+pub fn delete_file_history_by_range(
+    start_ts: Option<u64>,
+    end_ts: Option<u64>,
+    app: tauri::AppHandle,
+) -> Result<usize, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    file_history::delete_file_history_by_range(start_ts, end_ts, &app_data_dir)
 }
 
 #[derive(Serialize)]
