@@ -108,6 +108,7 @@ export function TranslationWindow() {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const loadingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keepFocusRef = useRef(true); // 是否应该保持焦点
 
   // 更新 iframe URL
   const updateIframeUrl = (provider: TranslationProvider, from: string, to: string, text?: string) => {
@@ -216,6 +217,121 @@ export function TranslationWindow() {
     };
   }, []);
 
+  // 持续保持焦点在快速输入框（使用事件监听，无需定时轮询）
+  useEffect(() => {
+    // 智能聚焦函数：只在需要时聚焦
+    const focusInput = () => {
+      if (inputRef.current && keepFocusRef.current) {
+        const activeElement = document.activeElement;
+        // 如果焦点不在输入框上，且不在其他可交互元素上，则聚焦输入框
+        if (activeElement !== inputRef.current && 
+            activeElement !== document.body &&
+            activeElement !== document.documentElement &&
+            !activeElement?.closest('button') &&
+            !activeElement?.closest('select') &&
+            !activeElement?.closest('iframe')) {
+          inputRef.current.focus();
+        }
+      }
+    };
+
+    // 初始聚焦
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 200);
+
+    // 监听全局焦点变化，当焦点被iframe抢走时重新聚焦
+    const handleFocusIn = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      
+      // 如果焦点转移到iframe，立即重新聚焦到输入框
+      if (target.closest('iframe')) {
+        // 使用 requestAnimationFrame 确保在下一帧执行，避免与iframe的聚焦冲突
+        requestAnimationFrame(() => {
+          if (keepFocusRef.current && inputRef.current) {
+            inputRef.current.focus();
+          }
+        });
+      }
+    };
+
+    // 监听焦点离开事件
+    const handleFocusOut = (e: FocusEvent) => {
+      const relatedTarget = e.relatedTarget as HTMLElement;
+      // 如果焦点离开输入框，且没有转移到其他可交互元素，则重新聚焦
+      if (e.target === inputRef.current) {
+        if (!relatedTarget || 
+            relatedTarget === document.body ||
+            (!relatedTarget.closest('button') && 
+             !relatedTarget.closest('select') && 
+             !relatedTarget.closest('iframe'))) {
+          requestAnimationFrame(() => {
+            if (keepFocusRef.current && inputRef.current) {
+              inputRef.current.focus();
+            }
+          });
+        }
+      }
+    };
+
+    // MutationObserver 将在单独的 useEffect 中设置（当 iframe 挂载后）
+
+    // 监听窗口点击事件，当用户点击窗口空白区域时重新聚焦
+    const handleWindowClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // 如果点击的不是按钮、选择框、iframe等交互元素，则聚焦到输入框
+      if (!target.closest('button') && 
+          !target.closest('select') && 
+          !target.closest('iframe') &&
+          !target.closest('input') &&
+          target !== inputRef.current) {
+        requestAnimationFrame(() => {
+          focusInput();
+        });
+      }
+    };
+
+    // 使用 capture 阶段捕获所有焦点事件
+    document.addEventListener('focusin', handleFocusIn, true);
+    document.addEventListener('focusout', handleFocusOut, true);
+    window.addEventListener('click', handleWindowClick, true);
+
+    return () => {
+      document.removeEventListener('focusin', handleFocusIn, true);
+      document.removeEventListener('focusout', handleFocusOut, true);
+      window.removeEventListener('click', handleWindowClick, true);
+    };
+  }, []);
+
+  // 使用 MutationObserver 监听 iframe 的加载状态变化
+  useEffect(() => {
+    if (!iframeRef.current) return;
+
+    const observer = new MutationObserver((mutations) => {
+      // 当 iframe src 属性变化时，检查焦点
+      mutations.forEach((mutation) => {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
+          // iframe src 变化时，延迟重新聚焦（等待iframe加载）
+          setTimeout(() => {
+            if (keepFocusRef.current && inputRef.current) {
+              inputRef.current.focus();
+            }
+          }, 300);
+        }
+      });
+    });
+
+    // 观察 iframe 元素的变化
+    observer.observe(iframeRef.current, {
+      attributes: true,
+      attributeFilter: ['src']
+    });
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [iframeUrl]); // 当 iframeUrl 变化时重新设置观察器
+
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50">
       {/* 标题栏 */}
@@ -313,6 +429,35 @@ export function TranslationWindow() {
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
+            onBlur={(e) => {
+              // 当输入框失去焦点时，检查是否应该重新聚焦
+              const relatedTarget = e.relatedTarget as HTMLElement;
+              // 如果焦点转移到其他可交互元素（按钮、选择框等），则不强制聚焦
+              if (relatedTarget && (
+                relatedTarget.closest('button') ||
+                relatedTarget.closest('select') ||
+                relatedTarget.closest('input') && relatedTarget !== inputRef.current
+              )) {
+                return;
+              }
+              // 延迟重新聚焦，防止iframe或其他元素自动聚焦
+              setTimeout(() => {
+                if (keepFocusRef.current && inputRef.current) {
+                  const activeElement = document.activeElement;
+                  // 如果焦点不在其他可交互元素上，则重新聚焦到输入框
+                  if (activeElement !== inputRef.current &&
+                      !activeElement?.closest('button') &&
+                      !activeElement?.closest('select') &&
+                      !activeElement?.closest('iframe')) {
+                    inputRef.current.focus();
+                  }
+                }
+              }, 50);
+            }}
+            onFocus={() => {
+              // 当输入框获得焦点时，确保保持焦点标志为true
+              keepFocusRef.current = true;
+            }}
             onKeyDown={async (e) => {
               if (e.key === "Enter" && inputText) {
                 updateIframeUrl(currentProvider, sourceLang, targetLang, inputText);
@@ -364,6 +509,11 @@ export function TranslationWindow() {
                 console.log(`[翻译] iframe加载完成: ${currentProvider}`);
                 
                 // 重新聚焦到快速输入框，防止iframe内的网站自动聚焦
+                // 注意：无法通过 postMessage 阻止翻译网站的自动聚焦，因为：
+                // 1. 翻译网站不会监听我们的 postMessage
+                // 2. 自动聚焦代码在页面加载时已执行，无法阻止
+                // 3. 跨域限制使我们无法直接控制 iframe 内的行为
+                // 因此只能通过持续监控和主动重新聚焦来保持焦点
                 setTimeout(() => {
                   inputRef.current?.focus();
                 }, 200);
