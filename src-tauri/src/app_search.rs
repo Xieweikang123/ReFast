@@ -21,9 +21,7 @@ pub mod windows {
     use base64::Engine;
     use pinyin::ToPinyin;
     use std::env;
-    use std::os::windows::process::CommandExt;
-
-    // Cache file name
+    use std::os::windows::process::CommandExt;    // Cache file name
     pub fn get_cache_file_path(app_data_dir: &Path) -> PathBuf {
         app_data_dir.join("app_cache.json")
     }
@@ -532,24 +530,20 @@ try {
             }
         }
 
-        let result = (|| -> Option<String> {
-            // 将路径转换为 UTF-16
-            let lnk_path_wide: Vec<u16> = OsStr::new(lnk_path)
-                .encode_wide()
-                .chain(Some(0))
-                .collect();
-
-            // 方法 1: 尝试解析 .lnk 文件获取 IconLocation
+        let result = (|| -> Option<String> {            // 方法 1: 尝试解析 .lnk 文件获取 IconLocation
             // 使用 PowerShell 快速获取 IconLocation 和 TargetPath（这部分很快，只是读取元数据）
-            let (icon_source_path, icon_index) = get_lnk_icon_location(lnk_path)?;
+            let (icon_source_path, icon_index) = match get_lnk_icon_location(lnk_path) {
+                Some(result) => result,
+                None => {
+                    eprintln!("[图标提取] 无法获取 IconLocation: {:?}", lnk_path);                    return None;
+                }
+            };
 
-            // 使用 ExtractIconExW 从目标文件提取图标
+            eprintln!("[图标提取] 尝试从路径提取图标: {:?}, 索引: {}", icon_source_path, icon_index);            // 使用 ExtractIconExW 从目标文件提取图标
             let icon_source_wide: Vec<u16> = OsStr::new(&icon_source_path)
                 .encode_wide()
                 .chain(Some(0))
-                .collect();
-
-            unsafe {
+                .collect();            unsafe {
                 let mut large_icons: [isize; 1] = [0; 1];
                 let count = ExtractIconExW(
                     icon_source_wide.as_ptr(),
@@ -559,18 +553,21 @@ try {
                     1,
                 );
 
-                if count > 0 && large_icons[0] != 0 {
+                eprintln!("[图标提取] ExtractIconExW 返回: count={}, handle={:?}", count, large_icons[0]);                if count > 0 && large_icons[0] != 0 {
                     if let Some(png_data) = icon_to_png(large_icons[0]) {
                         // 清理图标句柄
                         DestroyIcon(large_icons[0]);
-                        return Some(format!("data:image/png;base64,{}", png_data));
-                    }
+                        eprintln!("[图标提取] 成功提取图标: {:?}", icon_source_path);                        return Some(format!("data:image/png;base64,{}", png_data));
+                    } else {
+                        eprintln!("[图标提取] icon_to_png 失败: {:?}", icon_source_path);                    }
                     // 清理图标句柄
                     DestroyIcon(large_icons[0]);
-                }
+                } else {
+                    eprintln!("[图标提取] ExtractIconExW 失败: count={}, handle={:?}", count, large_icons[0]);                }
 
                 // 如果指定索引失败，尝试索引 0
                 if icon_index != 0 {
+                    eprintln!("[图标提取] 尝试使用索引 0: {:?}", icon_source_path);
                     let mut large_icons: [isize; 1] = [0; 1];
                     let count = ExtractIconExW(
                         icon_source_wide.as_ptr(),
@@ -580,17 +577,22 @@ try {
                         1,
                     );
 
+                    eprintln!("[图标提取] ExtractIconExW (索引 0) 返回: count={}, handle={:?}", count, large_icons[0]);
+
                     if count > 0 && large_icons[0] != 0 {
                         if let Some(png_data) = icon_to_png(large_icons[0]) {
                             DestroyIcon(large_icons[0]);
+                            eprintln!("[图标提取] 成功提取图标 (索引 0): {:?}", icon_source_path);
                             return Some(format!("data:image/png;base64,{}", png_data));
+                        } else {
+                            eprintln!("[图标提取] icon_to_png 失败 (索引 0): {:?}", icon_source_path);
                         }
                         DestroyIcon(large_icons[0]);
                     }
                 }
             }
 
-            None
+            eprintln!("[图标提取] 所有方法都失败: {:?}", icon_source_path);            None
         })();
 
         // 清理 COM
@@ -734,74 +736,376 @@ try {
         }
     }
 
-    // 辅助函数：快速获取 .lnk 文件的 IconLocation 和 TargetPath
-    // 使用 PowerShell 快速读取元数据（这部分很快，只是读取，不提取图标）
-    fn get_lnk_icon_location(lnk_path: &Path) -> Option<(PathBuf, i32)> {
-        use std::os::windows::process::CommandExt;
+    // 辅助函数：展开环境变量路径（使用 Rust 实现，不依赖 PowerShell）
+    fn expand_env_path(path: &str) -> String {
+        use std::env;
         
-        let path_str = lnk_path.to_string_lossy().replace('\'', "''");
-        let ps_command = format!(
-            r#"$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('{}'); $iconPath = $shortcut.IconLocation; $targetPath = $shortcut.TargetPath; if ($iconPath -and $iconPath -ne '') {{ $parts = $iconPath -split ','; Write-Output ($parts[0] + '|' + (if ($parts.Length -gt 1) {{ $parts[1] }} else {{ '0' }})) }} else {{ if ($targetPath) {{ Write-Output ($targetPath + '|0') }} else {{ exit 1 }} }}"#,
-            path_str
-        );
+        // 简单的环境变量展开实现
+        let mut result = path.to_string();
+        
+        // 展开常见环境变量
+        let common_vars = [
+            ("%windir%", env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string())),
+            ("%SystemRoot%", env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string())),
+            ("%ProgramFiles%", env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".to_string())),
+            ("%ProgramFiles(x86)%", env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".to_string())),
+            ("%ProgramData%", env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_string())),
+            ("%USERPROFILE%", env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\User".to_string())),
+            ("%APPDATA%", env::var("APPDATA").unwrap_or_else(|_| "C:\\Users\\User\\AppData\\Roaming".to_string())),
+            ("%LOCALAPPDATA%", env::var("LOCALAPPDATA").unwrap_or_else(|_| "C:\\Users\\User\\AppData\\Local".to_string())),
+        ];
+        
+        for (var, value) in &common_vars {
+            result = result.replace(var, value);
+            result = result.replace(&var.to_lowercase(), value);
+        }
+        
+        // 尝试展开其他环境变量（使用正则表达式匹配 %VAR% 格式）
+        // 这里使用简单的字符串替换，对于复杂情况可能需要更完整的实现
+        result
+    }
 
-        let output = Command::new("powershell")
-            .args(&[
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                &ps_command,
-            ])
-            .creation_flags(0x08000000)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .ok()?;
-
-        if !output.status.success() {
+    // 辅助函数：直接解析 .lnk 文件二进制格式获取 IconLocation 和 TargetPath
+    // 由于 PowerShell 在约束语言模式下无法工作，我们直接解析 .lnk 文件的二进制格式
+    fn get_lnk_icon_location(lnk_path: &Path) -> Option<(PathBuf, i32)> {
+        use std::fs::File;
+        use std::io::{Read, Seek, SeekFrom};        let mut file = match File::open(lnk_path) {
+            Ok(f) => f,
+            Err(e) => {                return None;
+            }
+        };
+        
+        // 读取 Shell Link Header (76 bytes)
+        let mut header = [0u8; 76];
+        if file.read_exact(&mut header).is_err() {
             return None;
         }
-
-        let output_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let parts: Vec<&str> = output_str.split('|').collect();
-        if parts.len() != 2 {
-            return None;
+        
+        // 验证 Shell Link Header Signature (0x0000004C)
+        if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) != 0x0000004C {            return None;
         }
-
-        let icon_path = PathBuf::from(parts[0]);
-        let icon_index = parts[1].parse::<i32>().unwrap_or(0);
-
-        // 验证路径是否存在，如果 IconLocation 不存在，尝试 TargetPath
-        if !icon_path.exists() {
-            let target_ps = format!(
-                r#"$shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut('{}'); $shortcut.TargetPath"#,
-                path_str
-            );
-
-            let target_output = Command::new("powershell")
-                .args(&[
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    &target_ps,
-                ])
-                .creation_flags(0x08000000)
-                .stdout(std::process::Stdio::piped())
-                .output()
-                .ok()?;
-
-            if target_output.status.success() {
-                let target_path = String::from_utf8_lossy(&target_output.stdout).trim().to_string();
-                if !target_path.is_empty() && Path::new(&target_path).exists() {
-                    return Some((PathBuf::from(target_path), 0));
+        
+        // LinkFlags (offset 0x14, 4 bytes)
+        let link_flags = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);        // 读取 LinkTargetIDList (如果存在)
+        let mut offset: u64 = 76;
+        if link_flags & 0x01 != 0 {
+            // IDListSize (2 bytes)
+            let mut idlist_size_buf = [0u8; 2];
+            if file.seek(SeekFrom::Start(offset)).is_err() || file.read_exact(&mut idlist_size_buf).is_err() {
+                return None;
+            }
+            let idlist_size = u16::from_le_bytes(idlist_size_buf) as u64;            offset += 2 + idlist_size;
+        }
+        
+        // 读取并解析 LinkInfo (如果存在)
+        let mut linkinfo_path: Option<String> = None;
+        let linkinfo_start_offset = offset;
+        if link_flags & 0x02 != 0 {
+            if file.seek(SeekFrom::Start(offset)).is_err() {
+                return None;
+            }
+            let mut linkinfo_size_buf = [0u8; 4];
+            if file.read_exact(&mut linkinfo_size_buf).is_err() {
+                return None;
+            }
+            let linkinfo_size = u32::from_le_bytes(linkinfo_size_buf) as u64;            // 解析 LinkInfo 结构
+            // LinkInfo 结构：
+            // - LinkInfoSize (4 bytes) - 已读取
+            // - LinkInfoHeaderSize (4 bytes)
+            // - LinkInfoFlags (4 bytes)
+            // - VolumeIDOffset (4 bytes)
+            // - LocalBasePathOffset (4 bytes)
+            // - CommonNetworkRelativeLinkOffset (4 bytes)
+            // - CommonPathSuffixOffset (4 bytes)
+            // - LocalBasePath (可变长度，UTF-16 字符串)
+            // - CommonPathSuffix (可变长度，UTF-16 字符串)
+            
+            if linkinfo_size >= 28 {
+                let mut linkinfo_header = [0u8; 24]; // 读取头部剩余部分（24 bytes）
+                if file.read_exact(&mut linkinfo_header).is_ok() {
+                    let linkinfo_header_size = u32::from_le_bytes([
+                        linkinfo_header[0], linkinfo_header[1], linkinfo_header[2], linkinfo_header[3]
+                    ]);
+                    let linkinfo_flags = u32::from_le_bytes([
+                        linkinfo_header[4], linkinfo_header[5], linkinfo_header[6], linkinfo_header[7]
+                    ]);
+                    let local_base_path_offset = u32::from_le_bytes([
+                        linkinfo_header[12], linkinfo_header[13], linkinfo_header[14], linkinfo_header[15]
+                    ]);
+                    let common_path_suffix_offset = u32::from_le_bytes([
+                        linkinfo_header[20], linkinfo_header[21], linkinfo_header[22], linkinfo_header[23]
+                    ]);                    // 读取 LocalBasePath（如果存在）
+                    // 注意：偏移量是相对于 LinkInfo 结构开始位置的
+                    if local_base_path_offset > 0 && local_base_path_offset < linkinfo_size as u32 {
+                        let path_offset = linkinfo_start_offset + local_base_path_offset as u64;                        if file.seek(SeekFrom::Start(path_offset)).is_ok() {
+                            // 读取前几个字节用于诊断
+                            let mut peek_buf = [0u8; 32];
+                            let peek_result = file.read_exact(&mut peek_buf);
+                            if peek_result.is_ok() {                            }
+                            
+                            // 重新定位到路径开始位置
+                            // LinkInfo 中的路径是 ANSI 编码，不是 UTF-16
+                            if file.seek(SeekFrom::Start(path_offset)).is_ok() {
+                                if let Some(local_path) = read_null_terminated_string_ansi(&mut file) {
+                                    // 读取 CommonPathSuffix（如果存在）
+                                    let mut full_path = local_path.clone();
+                                    if common_path_suffix_offset > 0 && common_path_suffix_offset < linkinfo_size as u32 {
+                                        let suffix_offset = linkinfo_start_offset + common_path_suffix_offset as u64;                                        if file.seek(SeekFrom::Start(suffix_offset)).is_ok() {
+                                            // CommonPathSuffix 也是 ANSI 编码
+                                            if let Some(suffix) = read_null_terminated_string_ansi(&mut file) {
+                                                full_path = format!("{}{}", full_path, suffix);
+                                            }
+                                        }
+                                    }
+                                    
+                                    linkinfo_path = Some(full_path.clone());                                } else {                                }
+                            }
+                        }
+                    }
                 }
             }
+            
+            offset += linkinfo_size;
+        }
+        
+        // 读取 StringData
+        // StringData 的顺序取决于 LinkFlags，但通常是：
+        // 1. CommandLineArguments (如果 HasArguments 0x20 在 LinkFlags 中，但这是错误的，应该是 0x04)
+        // 实际上，StringData 的顺序是：
+        // - CommandLineArguments (如果 HasArguments 0x04)
+        // - IconLocation (如果 HasIconLocation 0x20)
+        // - WorkingDir (如果 HasWorkingDir 0x10)
+        // - TargetPath (如果 HasLinkInfo 0x02 未设置，或者作为备用)
+        
+        // 先尝试从 LinkInfo 中获取路径（如果存在）
+        // 如果 LinkInfo 存在，它可能包含路径信息
+        
+        // 读取 StringData 部分
+        let mut target_path: Option<String> = None;
+        let mut icon_location: Option<String> = None;
+        let mut icon_index: i32 = 0;
+        
+        // 如果从 LinkInfo 中获取了路径，优先使用它作为 target_path
+        if let Some(ref linkinfo_path) = linkinfo_path {
+            target_path = Some(linkinfo_path.clone());
+        }
+        
+        // 确保在正确的位置读取 StringData
+        let stringdata_start = offset;
+        if file.seek(SeekFrom::Start(offset)).is_err() {
+            return None;
+        }        // 读取 CommandLineArguments (如果存在，HasArguments = 0x04)
+        if link_flags & 0x04 != 0 {
+            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            
+            // 诊断：读取 CommandLineArguments 的前几个字节
+            let mut peek_buf = [0u8; 32];
+            let peek_result = file.read_exact(&mut peek_buf);
+            if peek_result.is_ok() {
+                use std::os::windows::ffi::OsStringExt;
+                
+                // 尝试作为 UTF-16 解析
+                let mut utf16_chars = Vec::new();
+                for i in (0..peek_buf.len()).step_by(2) {
+                    if i + 1 < peek_buf.len() {
+                        let code_unit = u16::from_le_bytes([peek_buf[i], peek_buf[i + 1]]);
+                        if code_unit == 0 {
+                            break;
+                        }
+                        utf16_chars.push(code_unit);
+                    }
+                }
+                let utf16_str = if !utf16_chars.is_empty() {
+                    Some(std::ffi::OsString::from_wide(&utf16_chars).to_string_lossy().to_string())
+                } else {
+                    None
+                };            }
+            
+            // 重新定位到 CommandLineArguments 开始位置
+            if let Some(pos) = current_pos {
+                if file.seek(SeekFrom::Start(pos)).is_ok() {
+                    let _ = read_length_prefixed_string_utf16(&mut file);
+                }
+            }        }
+        
+        // 读取 IconLocation (如果存在，HasIconLocation = 0x20)
+        if link_flags & 0x20 != 0 {
+            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            let icon_location_str = read_length_prefixed_string_utf16(&mut file);            if let Some(mut icon_loc) = icon_location_str {
+                // 清理字符串：移除控制字符和无效字符
+                let original_len = icon_loc.len();
+                icon_loc = icon_loc.chars()
+                    .filter(|c| !c.is_control() || *c == '\n' || *c == '\r')
+                    .collect::<String>()
+                    .trim()
+                    .to_string();                // IconLocation 格式通常是 "path,index"
+                if let Some(comma_pos) = icon_loc.rfind(',') {
+                    let (path_part, index_part) = icon_loc.split_at(comma_pos);
+                    let clean_path = path_part.trim().to_string();
+                    if !clean_path.is_empty() && clean_path.len() < 260 && !clean_path.chars().any(|c| c.is_control()) {
+                        icon_location = Some(clean_path);
+                        icon_index = index_part[1..].trim().parse::<i32>().unwrap_or(0);
+                    }
+                } else {
+                    let clean_path = icon_loc.trim().to_string();
+                    if !clean_path.is_empty() && clean_path.len() < 260 && !clean_path.chars().any(|c| c.is_control()) {
+                        icon_location = Some(clean_path);
+                    }
+                }
+            }
+        }
+        
+        // 读取 WorkingDir (如果存在，HasWorkingDir = 0x10)
+        if link_flags & 0x10 != 0 {
+            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            let _ = read_length_prefixed_string_utf16(&mut file);        }
+        
+        // 读取 TargetPath (如果 LinkInfo 不存在，或者作为备用)
+        // 注意：如果 LinkInfo 存在，TargetPath 通常在 LinkInfo 中，而不是在 StringData 中
+        if link_flags & 0x02 == 0 {
+            // 如果没有 LinkInfo，尝试读取 TargetPath
+            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            
+            // 诊断：读取前几个字节看看内容
+            let mut peek_buf = [0u8; 64];
+            let peek_result = file.read_exact(&mut peek_buf);
+            if peek_result.is_ok() {
+                use std::os::windows::ffi::OsStringExt;
+                
+                // 尝试作为 UTF-16 解析
+                let mut utf16_chars = Vec::new();
+                for i in (0..peek_buf.len()).step_by(2) {
+                    if i + 1 < peek_buf.len() {
+                        let code_unit = u16::from_le_bytes([peek_buf[i], peek_buf[i + 1]]);
+                        if code_unit == 0 {
+                            break;
+                        }
+                        utf16_chars.push(code_unit);
+                    }
+                }
+                let utf16_str = if !utf16_chars.is_empty() {
+                    Some(std::ffi::OsString::from_wide(&utf16_chars).to_string_lossy().to_string())
+                } else {
+                    None
+                };            }
+            
+            // 重新定位到 TargetPath 开始位置
+            if let Some(pos) = current_pos {
+                if file.seek(SeekFrom::Start(pos)).is_ok() {
+                    let target_path_str = read_length_prefixed_string_utf16(&mut file);                    if target_path.is_none() {
+                        target_path = target_path_str;
+                    }
+                }
+            }
+        }        // 优先使用 TargetPath（如果存在且有效），否则使用 IconLocation
+        if let Some(ref target_path_str) = target_path {
+            let expanded_path = expand_env_path(target_path_str);
+            let target_path_buf = PathBuf::from(&expanded_path);            // 如果 TargetPath 存在且是文件，优先使用它
+            if target_path_buf.exists() && target_path_buf.is_file() {
+                return Some((target_path_buf, 0));
+            }
+        }
+        
+        // 如果 TargetPath 不存在或无效，尝试使用 IconLocation
+        if let Some(ref icon_path_str) = icon_location {
+            let expanded_path = expand_env_path(icon_path_str);
+            let icon_path = PathBuf::from(&expanded_path);            return Some((icon_path, icon_index));
+        }
+        
+        // 如果 IconLocation 也不存在，但 TargetPath 存在（即使是目录），也返回它
+        if let Some(ref target_path_str) = target_path {
+            let expanded_path = expand_env_path(target_path_str);
+            let target_path_buf = PathBuf::from(&expanded_path);
+            
+            if target_path_buf.exists() {
+                return Some((target_path_buf, 0));
+            }
+        }        None
+    }
+    
+    // 辅助函数：从文件中读取带长度前缀的 UTF-16 字符串（StringData 格式）
+    // StringData 格式：CountCharacters (2 bytes) + String (CountCharacters * 2 bytes)
+    fn read_length_prefixed_string_utf16(file: &mut std::fs::File) -> Option<String> {
+        use std::io::Read;
+        use std::os::windows::ffi::OsStringExt;
+        
+        // 读取字符数量（2 bytes）
+        let mut count_buf = [0u8; 2];
+        if file.read_exact(&mut count_buf).is_err() {
             return None;
         }
-
-        Some((icon_path, icon_index))
+        
+        let char_count = u16::from_le_bytes(count_buf) as usize;
+        if char_count == 0 {
+            return None;
+        }
+        
+        // 读取字符串（CountCharacters * 2 bytes）
+        let mut buffer = vec![0u16; char_count];
+        for i in 0..char_count {
+            let mut pair = [0u8; 2];
+            if file.read_exact(&mut pair).is_err() {
+                return None;
+            }
+            buffer[i] = u16::from_le_bytes(pair);
+        }
+        
+        Some(std::ffi::OsString::from_wide(&buffer).to_string_lossy().to_string())
+    }
+    
+    // 辅助函数：从文件中读取以 null 结尾的 UTF-16 字符串（旧版本，保留用于兼容）
+    #[allow(dead_code)]
+    fn read_null_terminated_string_utf16(file: &mut std::fs::File) -> Option<String> {
+        use std::io::Read;
+        use std::os::windows::ffi::OsStringExt;
+        
+        let mut buffer = Vec::new();
+        let mut pair = [0u8; 2];
+        
+        loop {
+            if file.read_exact(&mut pair).is_err() {
+                return None;
+            }
+            
+            let code_unit = u16::from_le_bytes(pair);
+            if code_unit == 0 {
+                break;
+            }
+            buffer.push(code_unit);
+        }
+        
+        if buffer.is_empty() {
+            return None;
+        }
+        
+        Some(std::ffi::OsString::from_wide(&buffer).to_string_lossy().to_string())
+    }
+    
+    // 辅助函数：从文件中读取以 null 结尾的 ANSI 字符串（用于 LinkInfo 中的路径）
+    fn read_null_terminated_string_ansi(file: &mut std::fs::File) -> Option<String> {
+        use std::io::Read;
+        
+        let mut buffer = Vec::new();
+        let mut byte = [0u8; 1];
+        
+        loop {
+            if file.read_exact(&mut byte).is_err() {
+                return None;
+            }
+            
+            if byte[0] == 0 {
+                break;
+            }
+            buffer.push(byte[0]);
+        }
+        
+        if buffer.is_empty() {
+            return None;
+        }
+        
+        // 将 ANSI 字节转换为字符串（Windows-1252 或 Latin-1 编码）
+        // 对于 ASCII 范围（0-127），直接转换即可
+        Some(String::from_utf8_lossy(&buffer).to_string())
     }
 
     // Extract icon from .lnk file target
