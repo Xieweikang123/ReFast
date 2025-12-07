@@ -123,6 +123,7 @@ export function LauncherWindow() {
   const lastSearchQueryRef = useRef<string>(""); // 用于去重，避免相同查询重复搜索
   const debounceTimeoutRef = useRef<number | null>(null); // 用于跟踪防抖定时器
   const currentLoadResultsRef = useRef<SearchResult[]>([]); // 跟踪当前正在加载的结果，用于验证是否仍有效
+  const horizontalResultsRef = useRef<SearchResult[]>([]); // 跟踪当前的横向结果，用于防止被覆盖
   const closeOnBlurRef = useRef(true);
   const isHorizontalNavigationRef = useRef(false); // 标记是否是横向导航切换
   const isAutoSelectingFirstHorizontalRef = useRef(false); // 标记是否正在自动选择第一个横向结果（用于防止scrollIntoView）
@@ -1231,7 +1232,6 @@ export function LauncherWindow() {
       
       // 标记当前查询为已搜索
       lastSearchQueryRef.current = trimmedQuery;
-      
       searchApplications(trimmedQuery);
       searchFileHistory(trimmedQuery);
       searchMemos(trimmedQuery);
@@ -1817,6 +1817,21 @@ export function LauncherWindow() {
       setResults([]);
       setHorizontalResults([]);
       setVerticalResults([]);
+      horizontalResultsRef.current = [];
+      setSelectedHorizontalIndex(null);
+      setSelectedVerticalIndex(null);
+      currentLoadResultsRef.current = [];
+      return;
+    }
+
+    // 如果查询不为空但结果为空，可能是搜索还在进行中（防抖导致 combinedResults 尚未更新）
+    // 在这种情况下，清空旧结果，等待新的 combinedResults 更新
+    if (queryRef.current.trim() !== "" && allResults.length === 0) {
+      // 清空结果，避免显示旧查询的结果
+      setResults([]);
+      setHorizontalResults([]);
+      setVerticalResults([]);
+      horizontalResultsRef.current = [];
       setSelectedHorizontalIndex(null);
       setSelectedVerticalIndex(null);
       currentLoadResultsRef.current = [];
@@ -1832,40 +1847,22 @@ export function LauncherWindow() {
     const INITIAL_COUNT = 100; // 初始显示100条
     const INCREMENT = 50; // 每次增加50条
     const DELAY_MS = 16; // 每帧延迟（约60fps）
-
-    // 重置显示数量（如果有结果就显示，即使查询为空）
-    if (allResults.length > 0) {
-      const initialResults = allResults.slice(0, INITIAL_COUNT);
-      setResults(initialResults);
-      // Split the initial results too
-      const { horizontal: initialHorizontal, vertical: initialVertical } = splitResults(initialResults);
-      setHorizontalResults(initialHorizontal);
-      setVerticalResults(initialVertical);
-      // Auto-select first horizontal result if available
-      if (initialHorizontal.length > 0) {
-        setSelectedHorizontalIndex(0);
-        setSelectedVerticalIndex(null);
-      } else if (initialVertical.length > 0) {
-        setSelectedHorizontalIndex(null);
-        setSelectedVerticalIndex(0);
-      }
-    } else {
-      setResults([]);
-      setHorizontalResults([]);
-      setVerticalResults([]);
-      setSelectedHorizontalIndex(null);
-      setSelectedVerticalIndex(null);
-      currentLoadResultsRef.current = [];
-      return;
-    }
-
-    // 如果结果数量少于初始数量，直接返回
+    // 如果结果数量少于或等于初始数量，直接设置所有结果（避免先设置初始结果再覆盖）
     if (allResults.length <= INITIAL_COUNT) {
+      // 如果当前已经有横向结果，且新的结果中没有横向结果，保留当前的横向结果
+      // 这样可以确保应用结果（通常是横向结果）不会被Everything结果覆盖
+      const currentHorizontalRef = horizontalResultsRef.current || [];
+      const hasExistingHorizontal = currentHorizontalRef.length > 0;
+      const finalHorizontal = horizontal.length > 0 
+        ? horizontal 
+        : (hasExistingHorizontal ? currentHorizontalRef : []);
       setResults(allResults);
-      setHorizontalResults(horizontal);
+      setHorizontalResults(finalHorizontal);
       setVerticalResults(vertical);
+      // 更新ref以跟踪当前的横向结果
+      horizontalResultsRef.current = finalHorizontal;
       // Auto-select first horizontal result if available
-      if (horizontal.length > 0) {
+      if (finalHorizontal.length > 0) {
         setSelectedHorizontalIndex(0);
         setSelectedVerticalIndex(null);
       } else if (vertical.length > 0) {
@@ -1874,6 +1871,38 @@ export function LauncherWindow() {
       }
       currentLoadResultsRef.current = [];
       return;
+    }
+
+    // 重置显示数量（如果有结果就显示，即使查询为空）
+    // 只有在结果数量 > INITIAL_COUNT 时才需要增量加载
+    if (allResults.length > 0) {
+      const initialResults = allResults.slice(0, INITIAL_COUNT);
+      const { horizontal: initialHorizontal, vertical: initialVertical } = splitResults(initialResults);
+      // 如果初始结果中没有横向结果，但全部结果中有横向结果，使用全部结果中的横向结果
+      // 这样可以确保应用结果（通常是横向结果）不会被Everything结果覆盖
+      // 同时，如果当前已经有横向结果，且新的初始结果中没有横向结果，保留当前的横向结果
+      const currentHorizontalRef = horizontalResultsRef.current || [];
+      const hasExistingHorizontal = currentHorizontalRef.length > 0;
+      const finalHorizontal = initialHorizontal.length > 0 
+        ? initialHorizontal 
+        : (hasExistingHorizontal && horizontal.length === 0 
+          ? currentHorizontalRef 
+          : horizontal.slice(0, 20)); // 最多显示20个横向结果
+      const finalVertical = initialVertical.length > 0 ? initialVertical : vertical;
+      setResults(initialResults);
+      // Split the initial results too
+      setHorizontalResults(finalHorizontal);
+      setVerticalResults(finalVertical);
+      // 更新ref以跟踪当前的横向结果
+      horizontalResultsRef.current = finalHorizontal;
+      // Auto-select first horizontal result if available
+      if (finalHorizontal.length > 0) {
+        setSelectedHorizontalIndex(0);
+        setSelectedVerticalIndex(null);
+      } else if (finalVertical.length > 0) {
+        setSelectedHorizontalIndex(null);
+        setSelectedVerticalIndex(0);
+      }
     }
 
     // 逐步加载更多结果
@@ -1900,10 +1929,19 @@ export function LauncherWindow() {
         // 再次检查结果是否仍然有效
         if (queryRef.current.trim() !== "" && 
             currentLoadResultsRef.current === allResults) {
-          setResults(allResults.slice(0, currentCount));
+          const currentResults = allResults.slice(0, currentCount);
+          const { horizontal: currentHorizontal, vertical: currentVertical } = splitResults(currentResults);
+          setResults(currentResults);
+          // 同步更新横向和纵向结果
+          setHorizontalResults(currentHorizontal);
+          setVerticalResults(currentVertical);
+          // 更新ref以跟踪当前的横向结果
+          horizontalResultsRef.current = currentHorizontal;
         } else {
           // 结果已过时，停止加载
           setResults([]);
+          setHorizontalResults([]);
+          setVerticalResults([]);
           incrementalLoadRef.current = null;
           incrementalTimeoutRef.current = null;
           currentLoadResultsRef.current = [];
@@ -1945,6 +1983,9 @@ export function LauncherWindow() {
     });
   };
 
+  // 使用 ref 跟踪上一次的查询，用于检测查询变化
+  const lastQueryInEffectRef = useRef<string>("");
+  
   useEffect(() => {
     // 如果查询为空且没有 AI 回答，直接清空结果
     if (query.trim() === "" && !aiAnswer) {
@@ -1963,9 +2004,30 @@ export function LauncherWindow() {
         incrementalTimeoutRef.current = null;
       }
       currentLoadResultsRef.current = [];
+      lastQueryInEffectRef.current = query;
       return;
     }
     
+    // 如果查询变化了，立即清空旧结果，避免显示错误的结果
+    // 这样可以确保在 combinedResults 更新之前，不会显示旧查询的结果
+    if (query.trim() !== lastQueryInEffectRef.current.trim()) {
+      setResults([]);
+      setHorizontalResults([]);
+      setVerticalResults([]);
+      setSelectedHorizontalIndex(null);
+      setSelectedVerticalIndex(null);
+      // 取消所有增量加载任务
+      if (incrementalLoadRef.current !== null) {
+        cancelAnimationFrame(incrementalLoadRef.current);
+        incrementalLoadRef.current = null;
+      }
+      if (incrementalTimeoutRef.current !== null) {
+        clearTimeout(incrementalTimeoutRef.current);
+        incrementalTimeoutRef.current = null;
+      }
+      currentLoadResultsRef.current = [];
+      lastQueryInEffectRef.current = query;
+    }
     // 使用分批加载来更新结果，避免一次性渲染大量DOM导致卡顿
     loadResultsIncrementally(combinedResults);
     
@@ -2614,7 +2676,6 @@ export function LauncherWindow() {
         setFilteredApps([]);
         return;
       }
-      
       // If apps not loaded yet, load them first
       if (apps.length === 0 && !isLoading) {
         await loadApplications();
@@ -2625,7 +2686,6 @@ export function LauncherWindow() {
         setFilteredApps([]);
         return;
       }
-      
       const results = await tauriApi.searchApplications(searchQuery);
       
       // Final check: only update if query hasn't changed

@@ -1127,20 +1127,36 @@ public class IconExtractor {
         
         // Track perfect matches for early exit optimization
         let mut perfect_matches = 0;
-        const MAX_PERFECT_MATCHES: usize = 5; // Early exit if we find 5 perfect matches
-        const MAX_RESULTS_TO_CHECK: usize = 500; // Limit the number of apps to check
+        const MAX_PERFECT_MATCHES: usize = 3; // Early exit if we find 3 perfect matches (reduced from 5 for faster response)
+        
+        // For single character queries, limit the search to avoid slow performance
+        // Single characters match too many apps, so we limit the search scope
+        let MAX_RESULTS_TO_CHECK: usize = if query_lower.len() == 1 {
+            50 // For single character queries, only check first 50 apps for faster response
+        } else {
+            300 // For longer queries, check up to 300 apps
+        };
 
         // Use indices instead of cloning to avoid expensive clones
         for (idx, app) in apps.iter().enumerate().take(MAX_RESULTS_TO_CHECK) {
             let mut score = 0;
 
             // Direct text match (highest priority) - use case-insensitive comparison
+            // Optimize: compute to_lowercase once per app name
             let name_lower = app.name.to_lowercase();
             if name_lower == query_lower {
                 score += 1000;
                 perfect_matches += 1;
-                // Early exit if we have enough perfect matches and already have enough results
-                if perfect_matches >= MAX_PERFECT_MATCHES && results.len() >= 10 {
+                // For short queries (like "qq"), exit immediately on first perfect match
+                // This ensures fast response for specific app searches
+                if query_lower.len() <= 3 && perfect_matches >= 1 {
+                    results.push((idx, score));
+                    break;
+                }
+                // Early exit if we have enough perfect matches (reduced threshold for faster response)
+                if perfect_matches >= MAX_PERFECT_MATCHES {
+                    // If we have perfect matches, prioritize them and return early
+                    results.push((idx, score));
                     break;
                 }
             } else if name_lower.starts_with(&query_lower) {
@@ -1159,7 +1175,9 @@ public class IconExtractor {
                     if name_pinyin.as_str() == query_lower {
                         score += 800; // High score for full pinyin match
                         perfect_matches += 1;
-                        if perfect_matches >= MAX_PERFECT_MATCHES && results.len() >= 10 {
+                        // Early exit if we have enough perfect matches
+                        if perfect_matches >= MAX_PERFECT_MATCHES {
+                            results.push((idx, score));
                             break;
                         }
                     } else if name_pinyin.starts_with(&query_lower) {
@@ -1193,7 +1211,15 @@ public class IconExtractor {
             }
         }
 
-        // Sort by score (descending)
+        // If we have perfect matches and early exited, return them immediately without sorting
+        if perfect_matches >= MAX_PERFECT_MATCHES && results.len() <= MAX_PERFECT_MATCHES {
+            return results
+                .into_iter()
+                .map(|(idx, _)| apps[idx].clone())
+                .collect();
+        }
+
+        // Sort by score (descending) only if we need to
         results.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Limit to top 20 results for performance, clone only the selected apps

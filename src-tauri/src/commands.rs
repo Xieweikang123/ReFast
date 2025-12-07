@@ -627,14 +627,19 @@ pub async fn search_applications(
     // 需要提前克隆 cache，因为闭包会移动它
     let cache_for_search = cache.clone();
     let results = async_runtime::spawn_blocking(move || {
+        // Get reference to apps list while holding lock, then search
+        // Don't clone the entire list - just search directly
         let cache_guard = cache_for_search.lock().map_err(|e| e.to_string())?;
 
         let apps = cache_guard
             .as_ref()
             .ok_or_else(|| "Applications not scanned yet. Call scan_applications first.".to_string())?;
 
+        // Perform search while holding the lock (search is fast, lock is held briefly)
+        // The search function only reads from the apps list, so this is safe
         let results = app_search::windows::search_apps(&query, apps);
         
+        // Lock is released here when cache_guard goes out of scope
         Ok::<Vec<app_search::AppInfo>, String>(results)
     })
     .await
@@ -652,49 +657,53 @@ pub async fn search_applications(
     
     if !results_paths.is_empty() {
         std::thread::spawn(move || {
-            let mut updated_icons: Vec<(String, String)> = Vec::new(); // (path, icon_data)
-            let mut updated = false;
+            // 先提取所有图标（不持有锁），避免阻塞搜索操作
+            let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
+            
+            for path_str in results_paths {
+                let path = std::path::Path::new(&path_str);
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase());
+                let icon = if ext == Some("lnk".to_string()) {
+                    app_search::windows::extract_lnk_icon_base64(path)
+                } else if ext == Some("exe".to_string()) {
+                    app_search::windows::extract_icon_base64(path)
+                } else {
+                    None
+                };
 
-            // Get current cache
-            if let Ok(mut guard) = cache_clone.lock() {
-                if let Some(ref mut apps) = *guard {
-                    // 提取所有缺失的图标
-                    for path_str in results_paths {
-                        let path = std::path::Path::new(&path_str);
-                        let ext = path
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .map(|s| s.to_lowercase());
-                        let icon = if ext == Some("lnk".to_string()) {
-                            app_search::windows::extract_lnk_icon_base64(path)
-                        } else if ext == Some("exe".to_string()) {
-                            app_search::windows::extract_icon_base64(path)
-                        } else {
-                            None
-                        };
-
-                        if let Some(icon_data) = icon {
-                            // Update in cache
-                            if let Some(app) = apps.iter_mut().find(|a| a.path == path_str) {
-                                app.icon = Some(icon_data.clone());
-                                updated_icons.push((path_str.clone(), icon_data));
-                                updated = true;
-                            }
-                        }
-                    }
-
-                    // Save to disk if updated
-                    if updated {
-                        if let Ok(app_data_dir) = get_app_data_dir(&app_handle_for_save) {
-                            let _ = app_search::windows::save_cache(&app_data_dir, apps);
-                        }
-                    }
+                if let Some(icon_data) = icon {
+                    icon_updates.push((path_str.clone(), icon_data));
                 }
             }
 
-            // 发送事件通知前端图标已更新
-            if !updated_icons.is_empty() {
-                if let Err(e) = app_handle_for_emit.emit("app-icons-updated", updated_icons) {
+            // 只有在有图标更新时才获取锁并更新缓存
+            if !icon_updates.is_empty() {
+                let mut updated = false;
+                // Get current cache - 只在更新时持有锁，时间尽可能短
+                if let Ok(mut guard) = cache_clone.lock() {
+                    if let Some(ref mut apps) = *guard {
+                        // 更新缓存中的图标
+                        for (path_str, icon_data) in &icon_updates {
+                            if let Some(app) = apps.iter_mut().find(|a| a.path == *path_str) {
+                                app.icon = Some(icon_data.clone());
+                                updated = true;
+                            }
+                        }
+
+                        // Save to disk if updated
+                        if updated {
+                            if let Ok(app_data_dir) = get_app_data_dir(&app_handle_for_save) {
+                                let _ = app_search::windows::save_cache(&app_data_dir, apps);
+                            }
+                        }
+                    }
+                }
+
+                // 发送事件通知前端图标已更新
+                if let Err(e) = app_handle_for_emit.emit("app-icons-updated", icon_updates) {
                     eprintln!("Failed to emit app-icons-updated event: {}", e);
                 }
             }
