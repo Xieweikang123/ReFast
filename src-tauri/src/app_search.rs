@@ -796,15 +796,25 @@ public class IconExtractor {
 
         // Pre-allocate with capacity estimate to reduce allocations
         let mut results: Vec<(usize, i32)> = Vec::with_capacity(20);
+        
+        // Track perfect matches for early exit optimization
+        let mut perfect_matches = 0;
+        const MAX_PERFECT_MATCHES: usize = 5; // Early exit if we find 5 perfect matches
+        const MAX_RESULTS_TO_CHECK: usize = 500; // Limit the number of apps to check
 
         // Use indices instead of cloning to avoid expensive clones
-        for (idx, app) in apps.iter().enumerate() {
+        for (idx, app) in apps.iter().enumerate().take(MAX_RESULTS_TO_CHECK) {
             let mut score = 0;
 
             // Direct text match (highest priority) - use case-insensitive comparison
             let name_lower = app.name.to_lowercase();
             if name_lower == query_lower {
                 score += 1000;
+                perfect_matches += 1;
+                // Early exit if we have enough perfect matches and already have enough results
+                if perfect_matches >= MAX_PERFECT_MATCHES && results.len() >= 10 {
+                    break;
+                }
             } else if name_lower.starts_with(&query_lower) {
                 score += 500;
             } else if name_lower.contains(&query_lower) {
@@ -820,6 +830,10 @@ public class IconExtractor {
                     // Full pinyin match
                     if name_pinyin.as_str() == query_lower {
                         score += 800; // High score for full pinyin match
+                        perfect_matches += 1;
+                        if perfect_matches >= MAX_PERFECT_MATCHES && results.len() >= 10 {
+                            break;
+                        }
                     } else if name_pinyin.starts_with(&query_lower) {
                         score += 400;
                     } else if name_pinyin.contains(&query_lower) {

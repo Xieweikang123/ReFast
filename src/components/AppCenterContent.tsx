@@ -562,26 +562,33 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       setAppIndexLoading(true);
       setAppIndexError(null);
 
-      // Yield to UI so loading状态能先渲染，避免感觉“卡住”
+      // Yield to UI so loading状态能先渲染，避免感觉"卡住"
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      const data = forceRescan ? await tauriApi.rescanApplications() : await tauriApi.scanApplications();
-      setAppIndexList(data);
+      if (forceRescan) {
+        // 重新扫描：立即返回，通过事件通知结果，避免阻塞 UI
+        await tauriApi.rescanApplications();
+        // 不在这里等待结果，事件监听器会处理
+      } else {
+        // 普通扫描：等待结果
+        const data = await tauriApi.scanApplications();
+        setAppIndexList(data);
+        setAppIndexLoading(false);
 
-      // Best-effort icon population for the loaded apps (run asynchronously to avoid blocking UI)
-      (async () => {
-        try {
-          const iconLimit = forceRescan ? 50 : 80;
-          const withIcons = await tauriApi.populateAppIcons(iconLimit);
-          setAppIndexList(withIcons);
-        } catch (iconError) {
-          console.warn("应用索引图标补全失败:", iconError);
-        }
-      })();
+        // Best-effort icon population for the loaded apps (run asynchronously to avoid blocking UI)
+        (async () => {
+          try {
+            const iconLimit = 80;
+            const withIcons = await tauriApi.populateAppIcons(iconLimit);
+            setAppIndexList(withIcons);
+          } catch (iconError) {
+            console.warn("应用索引图标补全失败:", iconError);
+          }
+        })();
+      }
     } catch (error: any) {
       console.error("获取应用索引列表失败:", error);
       setAppIndexError(error?.message || "获取应用索引列表失败");
-    } finally {
       setAppIndexLoading(false);
     }
   };
@@ -820,6 +827,52 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       loadBackupList();
     }
   }, [activeCategory]);
+
+  // 监听应用重新扫描事件
+  useEffect(() => {
+    let unlistenComplete: (() => void) | null = null;
+    let unlistenError: (() => void) | null = null;
+
+    const setupListeners = async () => {
+      // 监听扫描完成事件
+      unlistenComplete = await listen<{ apps: AppInfo[] }>("app-rescan-complete", (event) => {
+        const { apps } = event.payload;
+        setAppIndexList(apps);
+        setAppIndexLoading(false);
+        setAppIndexError(null);
+
+        // Best-effort icon population for the loaded apps (run asynchronously to avoid blocking UI)
+        (async () => {
+          try {
+            const iconLimit = 50;
+            const withIcons = await tauriApi.populateAppIcons(iconLimit);
+            setAppIndexList(withIcons);
+          } catch (iconError) {
+            console.warn("应用索引图标补全失败:", iconError);
+          }
+        })();
+      });
+
+      // 监听扫描错误事件
+      unlistenError = await listen<{ error: string }>("app-rescan-error", (event) => {
+        const { error } = event.payload;
+        console.error("应用重新扫描失败:", error);
+        setAppIndexError(error);
+        setAppIndexLoading(false);
+      });
+    };
+
+    setupListeners();
+
+    return () => {
+      if (unlistenComplete) {
+        unlistenComplete();
+      }
+      if (unlistenError) {
+        unlistenError();
+      }
+    };
+  }, []);
 
   // 过滤插件
   const filteredPlugins = useMemo(() => {
@@ -1808,13 +1861,6 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => loadAppIndexList()}
-                  className="px-3 py-2 text-xs rounded-lg bg-white border border-gray-200 hover:border-gray-300 hover:shadow-sm transition"
-                  disabled={appIndexLoading}
-                >
-                  {appIndexLoading ? "刷新中..." : "刷新缓存"}
-                </button>
                 <button
                   onClick={() => loadAppIndexList(true)}
                   className="px-3 py-2 text-xs rounded-lg bg-green-50 text-green-700 border border-green-200 hover:border-green-300 hover:shadow-sm transition"
