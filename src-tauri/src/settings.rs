@@ -13,6 +13,12 @@ pub struct Settings {
     pub hotkey: Option<HotkeyConfig>,
     #[serde(default = "default_close_on_blur")]
     pub close_on_blur: bool,
+    #[serde(default = "default_result_style")]
+    pub result_style: String,
+}
+
+fn default_result_style() -> String {
+    "skeuomorphic".to_string()
 }
 
 fn default_close_on_blur() -> bool {
@@ -26,6 +32,7 @@ impl Default for Settings {
             startup_enabled: false,
             hotkey: None,
             close_on_blur: default_close_on_blur(),
+            result_style: default_result_style(),
         }
     }
 }

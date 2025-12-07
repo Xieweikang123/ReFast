@@ -94,6 +94,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const [appIndexList, setAppIndexList] = useState<AppInfo[]>([]);
   const [appIconErrorMap, setAppIconErrorMap] = useState<Record<string, boolean>>({});
   const [appIndexSearch, setAppIndexSearch] = useState("");
+  const [appIndexProgress, setAppIndexProgress] = useState<{ progress: number; message: string } | null>(null);
   const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState<string>("");
@@ -567,6 +568,8 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
 
       if (forceRescan) {
         // 重新扫描：立即返回，通过事件通知结果，避免阻塞 UI
+        // 初始化进度状态
+        setAppIndexProgress({ progress: 0, message: "准备开始扫描..." });
         await tauriApi.rescanApplications();
         // 不在这里等待结果，事件监听器会处理
       } else {
@@ -642,28 +645,33 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     try {
       setIsLoadingSettings(true);
       isApplyingSettingsRef.current = true;
+      hasLoadedSettingsRef.current = false; // 重置标志，避免加载时触发自动保存
       const data = await tauriApi.getSettings();
       // 同步开机启动状态
       const startupEnabled = await tauriApi.isStartupEnabled();
       setSettings({
         ...data,
         startup_enabled: startupEnabled,
-        result_style: data.result_style || (localStorage.getItem("result-style") as Settings["result_style"]) || "skeuomorphic",
+        result_style: (data.result_style as Settings["result_style"]) || (localStorage.getItem("result-style") as Settings["result_style"]) || "skeuomorphic",
         close_on_blur: data.close_on_blur ?? true,
       });
     } catch (error) {
       console.error("Failed to load settings:", error);
     } finally {
-      // 延迟清除标记，确保这轮由加载触发的设置变更不会被自动保存
-      setTimeout(() => {
-        isApplyingSettingsRef.current = false;
-      }, 0);
       setIsLoadingSettings(false);
+      // 延迟清除标记，确保这轮由加载触发的设置变更不会被自动保存
+      // 使用 requestAnimationFrame 确保在下一个渲染周期清除
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          isApplyingSettingsRef.current = false;
+          hasLoadedSettingsRef.current = true;
+        });
+      });
     }
   };
 
   // 保存设置
-  const saveSettings = async () => {
+  const saveSettings = useCallback(async () => {
     try {
       setIsSaving(true);
       setSaveMessage("正在保存...");
@@ -688,7 +696,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     } finally {
       setIsSaving(false);
     }
-  };
+  }, [settings]);
 
   // 设置变更自动保存（防抖处理）
   useEffect(() => {
@@ -713,7 +721,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
         window.clearTimeout(saveTimerRef.current);
       }
     };
-  }, [settings, isLoadingSettings]);
+  }, [settings, isLoadingSettings, saveSettings]);
 
   // 卸载时清理定时器
   useEffect(() => {
@@ -832,14 +840,22 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   useEffect(() => {
     let unlistenComplete: (() => void) | null = null;
     let unlistenError: (() => void) | null = null;
+    let unlistenProgress: (() => void) | null = null;
 
     const setupListeners = async () => {
+      // 监听扫描进度事件
+      unlistenProgress = await listen<{ progress: number; message: string }>("app-rescan-progress", (event) => {
+        const { progress, message } = event.payload;
+        setAppIndexProgress({ progress, message });
+      });
+
       // 监听扫描完成事件
       unlistenComplete = await listen<{ apps: AppInfo[] }>("app-rescan-complete", (event) => {
         const { apps } = event.payload;
         setAppIndexList(apps);
         setAppIndexLoading(false);
         setAppIndexError(null);
+        setAppIndexProgress(null);
 
         // Best-effort icon population for the loaded apps (run asynchronously to avoid blocking UI)
         (async () => {
@@ -859,6 +875,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
         console.error("应用重新扫描失败:", error);
         setAppIndexError(error);
         setAppIndexLoading(false);
+        setAppIndexProgress(null);
       });
     };
 
@@ -870,6 +887,9 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       }
       if (unlistenError) {
         unlistenError();
+      }
+      if (unlistenProgress) {
+        unlistenProgress();
       }
     };
   }, []);
@@ -1906,6 +1926,20 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                   </button>
                 )}
               </div>
+              {appIndexProgress && (
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-gray-600">
+                    <span>{appIndexProgress.message}</span>
+                    <span>{appIndexProgress.progress}%</span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-green-500 h-2 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${appIndexProgress.progress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
               {appIndexError && (
                 <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
                   {appIndexError}
@@ -1914,8 +1948,21 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {appIndexLoading ? (
+              {appIndexLoading && !appIndexProgress ? (
                 <div className="flex items-center justify-center py-12 text-gray-600 text-sm">加载中...</div>
+              ) : appIndexLoading && appIndexProgress ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="text-center space-y-3 w-full px-6">
+                    <div className="text-sm text-gray-600">{appIndexProgress.message}</div>
+                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden max-w-md mx-auto">
+                      <div
+                        className="bg-green-500 h-3 rounded-full transition-all duration-300 ease-out"
+                        style={{ width: `${appIndexProgress.progress}%` }}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-500">{appIndexProgress.progress}%</div>
+                  </div>
+                </div>
               ) : filteredAppIndexList.length === 0 ? (
                 <div className="flex items-center justify-center py-12 text-gray-500 text-sm">暂无索引数据</div>
               ) : (
