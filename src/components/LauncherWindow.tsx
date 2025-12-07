@@ -4132,14 +4132,18 @@ export function LauncherWindow() {
                                   e.stopPropagation();
                                 }}
                                 onContextMenu={(e) => handleContextMenu(e, result)}
-                                className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-lg cursor-pointer transition-all ${
+                                className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl cursor-pointer transition-all duration-200 relative ${
                                   isSelected 
-                                    ? theme.card(true) 
-                                    : ''
+                                    ? resultStyle === "soft"
+                                      ? "bg-blue-50 border-2 border-blue-400 shadow-md shadow-blue-200/50 scale-[1.2]"
+                                      : resultStyle === "skeuomorphic"
+                                      ? "bg-gradient-to-br from-[#f0f5fb] to-[#e5edf9] border-2 border-[#a8c0e0] shadow-[0_4px_12px_rgba(20,32,50,0.12)] scale-[1.2]"
+                                      : "bg-indigo-50 border-2 border-indigo-400 shadow-md shadow-indigo-200/50 scale-[1.2]"
+                                    : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
                                 }`}
                                 style={{
                                   animation: `fadeInUp 0.18s ease-out ${execIndex * 0.02}s both`,
-                                  marginLeft: execIndex === 0 && isSelected ? '8px' : '0px', // Add left margin when first item is selected to prevent cut-off when scaled
+                                  marginLeft: execIndex === 0 && isSelected ? '10px' : '0px', // 第一个item选中时添加左边距，防止放大后被裁剪
                                   width: '86px',
                                   height: '86px',
                                   minWidth: '86px',
@@ -4147,7 +4151,15 @@ export function LauncherWindow() {
                                 }}
                               >
                                 {isSelected && (
-                                  <div className={theme.indicator(true)} style={{ position: 'absolute', top: '4px', left: '4px', width: '3px', height: '3px', borderRadius: '50%' }} />
+                                  <div 
+                                    className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full ${
+                                      resultStyle === "soft"
+                                        ? "bg-blue-500"
+                                        : resultStyle === "skeuomorphic"
+                                        ? "bg-[#6b8fc4]"
+                                        : "bg-indigo-500"
+                                    }`}
+                                  />
                                 )}
                                 <div className="flex-shrink-0 flex items-center justify-center" >
                                   {result.type === "app" ? (() => {
@@ -4163,7 +4175,7 @@ export function LauncherWindow() {
                                         <img 
                                           src={iconToUse} 
                                           alt={result.displayName}
-                                          className="w-8 h-8 object-contain"
+                                          className={`object-contain ${isSelected ? 'w-10 h-10' : 'w-8 h-8'}`}
                                           style={{ imageRendering: 'auto' as const }}
                                           onError={(e) => {
                                             const target = e.target as HTMLImageElement;
@@ -4171,7 +4183,7 @@ export function LauncherWindow() {
                                             const parent = target.parentElement;
                                             if (parent && !parent.querySelector('svg')) {
                                               const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-                                              svg.setAttribute('class', `w-6 h-6 ${isSelected ? 'text-white' : 'text-gray-500'}`);
+                                              svg.setAttribute('class', `${isSelected ? 'w-8 h-8' : 'w-6 h-6'} ${isSelected ? 'text-white' : 'text-gray-500'}`);
                                               svg.setAttribute('fill', 'none');
                                               svg.setAttribute('stroke', 'currentColor');
                                               svg.setAttribute('viewBox', '0 0 24 24');
@@ -4189,7 +4201,7 @@ export function LauncherWindow() {
                                     } else {
                                       return (
                                         <svg
-                                          className={`w-6 h-6 ${isSelected ? 'text-white' : 'text-gray-500'}`}
+                                          className={`${isSelected ? 'w-8 h-8' : 'w-6 h-6'} ${isSelected ? 'text-white' : 'text-gray-500'}`}
                                           fill="none"
                                           stroke="currentColor"
                                           viewBox="0 0 24 24"
@@ -4210,11 +4222,19 @@ export function LauncherWindow() {
                                       );
                                     }
                                   })() : result.type === "plugin" && result.plugin ? (
-                                    getPluginIcon(result.plugin.id, `w-6 h-6 ${isSelected ? 'text-white' : 'text-purple-500'}`)
+                                    getPluginIcon(result.plugin.id, `${isSelected ? 'w-8 h-8' : 'w-6 h-6'} ${isSelected ? (resultStyle === "soft" ? 'text-blue-600' : resultStyle === "skeuomorphic" ? 'text-[#4a6fa5]' : 'text-indigo-600') : 'text-purple-500'}`)
                                   ) : null}
                                 </div>
                                 <div 
-                                  className="text-xs text-center leading-tight" 
+                                  className={`text-xs text-center leading-tight ${
+                                    isSelected 
+                                      ? resultStyle === "soft"
+                                        ? "text-blue-700 font-medium"
+                                        : resultStyle === "skeuomorphic"
+                                        ? "text-[#2a3f5f] font-medium"
+                                        : "text-indigo-700 font-medium"
+                                      : "text-gray-700"
+                                  }`}
                                   style={{ 
                                     display: '-webkit-box',
                                     WebkitLineClamp: 2,
