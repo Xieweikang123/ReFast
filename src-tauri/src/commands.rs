@@ -2073,9 +2073,11 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
 }
 
 #[tauri::command]
-pub fn check_path_exists(path: String) -> Result<Option<file_history::FileHistoryItem>, String> {
+pub fn check_path_exists(path: String, app: tauri::AppHandle) -> Result<Option<file_history::FileHistoryItem>, String> {
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    let app_data_dir = get_app_data_dir(&app)?;
 
     // Normalize path: trim whitespace and remove trailing backslashes/slashes
     let trimmed = path.trim();
@@ -2113,11 +2115,23 @@ pub fn check_path_exists(path: String) -> Result<Option<file_history::FileHistor
         .map_err(|e| format!("Failed to get timestamp: {}", e))?
         .as_secs();
 
+    // Try to get use_count from history
+    let use_count = {
+        let mut state = file_history::lock_history()?;
+        if state.is_empty() {
+            file_history::load_history_into(&mut state, &app_data_dir).ok();
+        }
+        // Get use_count from history if exists, otherwise use 0
+        state.get(&normalized_path_str)
+            .map(|item| item.use_count)
+            .unwrap_or(0)
+    };
+
     Ok(Some(file_history::FileHistoryItem {
         path: normalized_path_str,
         name,
         last_used: timestamp,
-        use_count: 0,
+        use_count,
         is_folder: Some(is_folder),
     }))
 }

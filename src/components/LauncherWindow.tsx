@@ -1521,6 +1521,7 @@ export function LauncherWindow() {
     
     // 过滤掉 Everything 结果中与历史文件结果重复的路径
     const deduplicatedResults: SearchResult[] = [];
+    const addedHistoryPaths = new Set<string>(); // 用于跟踪已添加的历史文件路径，防止历史文件结果之间的重复
     for (const result of otherResults) {
       // 对于特殊类型（AI、历史、设置等）和 URL，不需要去重
       if (result.type === "ai" || result.type === "history" || result.type === "settings" || result.type === "url" || result.type === "json_formatter" || result.type === "plugin") {
@@ -1528,9 +1529,14 @@ export function LauncherWindow() {
         continue;
       }
       
-      // 对于历史文件类型，直接添加（优先保留）
+      // 对于历史文件类型，检查是否已经添加过（防止历史文件结果之间的重复）
       if (result.type === "file") {
-        deduplicatedResults.push(result);
+        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
+        if (!addedHistoryPaths.has(normalizedPath)) {
+          addedHistoryPaths.add(normalizedPath);
+          deduplicatedResults.push(result);
+        }
+        // 如果路径已添加过，跳过（保留第一次出现的，通常使用频率更高）
         continue;
       }
       
