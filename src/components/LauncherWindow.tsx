@@ -3926,26 +3926,16 @@ export function LauncherWindow() {
         >
           {/* Search Box */}
           <div 
-            className={layout.header}
-            onMouseDown={async (e) => {
-              // Only start dragging if clicking on the container or search icon, not on input
-              const target = e.target as HTMLElement;
-              if (target.tagName !== 'INPUT' && !target.closest('input')) {
-                await startWindowDragging();
-              }
-            }}
+            className={`${layout.header} select-none`}
+            data-tauri-drag-region
             style={{ cursor: 'move' }}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 select-none" data-tauri-drag-region>
               {/* 拖拽手柄图标 */}
               <svg
                 className={layout.dragHandleIcon}
                 fill="currentColor"
                 viewBox="0 0 24 24"
-                onMouseDown={async (e) => {
-                  e.stopPropagation();
-                  await startWindowDragging();
-                }}
               >
                 <circle cx="9" cy="5" r="1.5" />
                 <circle cx="15" cy="5" r="1.5" />
@@ -3967,30 +3957,47 @@ export function LauncherWindow() {
                   d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
                 />
               </svg>
-              <input
-                ref={inputRef}
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={handleKeyDown}
-                onPaste={handlePaste}
-                placeholder="输入应用名称或粘贴文件路径..."
-                className={layout.input}
-                style={{ cursor: 'text' }}
-                autoFocus
-                onFocus={(e) => {
-                  // Ensure input is focused, but don't select text if user is typing
-                  e.target.focus();
-                }}
-                onMouseDown={(e) => {
-                  // Prevent dragging when clicking on input
-                  e.stopPropagation();
-                  // Close context menu when clicking on search input
-                  if (contextMenu) {
-                    setContextMenu(null);
-                  }
-                }}
-              />
+              {/* 输入框包裹层 - 负责占位和拖拽，缩小 input 的实际点击区域 */}
+              <div 
+                className="flex-1 flex items-center h-full cursor-move select-none" 
+                data-tauri-drag-region
+                style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+              >
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  placeholder="输入应用名称或粘贴文件路径..."
+                  className={`w-full bg-transparent border-none outline-none p-0 text-lg ${layout.input.split(' ').filter(c => c.includes('placeholder') || c.includes('text-')).join(' ') || 'placeholder-gray-400 text-gray-700'}`}
+                  style={{ 
+                    cursor: 'text',
+                    height: 'auto',
+                    lineHeight: '1.5',
+                    minHeight: '1.5em'
+                  }}
+                  autoFocus
+                  onFocus={(e) => {
+                    // Ensure input is focused, but don't select text if user is typing
+                    e.target.focus();
+                  }}
+                  onMouseDown={() => {
+                    // 只在真正点击输入框内容区域时才处理
+                    // 不阻止事件冒泡，让父级 data-tauri-drag-region 处理拖拽
+                    // Close context menu when clicking on search input
+                    if (contextMenu) {
+                      setContextMenu(null);
+                    }
+                    // 允许事件继续冒泡，这样点击输入框边缘时父级可以处理拖拽
+                  }}
+                  onClick={(e) => {
+                    // 点击输入框时，确保焦点正确，阻止事件冒泡避免触发其他操作
+                    e.stopPropagation();
+                  }}
+                />
+              </div>
               {/* 应用中心按钮 */}
               <div
                 className="relative flex items-center justify-center"
@@ -4002,7 +4009,7 @@ export function LauncherWindow() {
                   await hideLauncherAndResetState();
                 }}
                 onMouseDown={(e) => {
-                  // Prevent dragging when clicking on icon
+                  // 阻止拖拽，让按钮可以正常点击
                   e.stopPropagation();
                 }}
                 style={{ cursor: 'pointer', minWidth: '24px', minHeight: '24px' }}
