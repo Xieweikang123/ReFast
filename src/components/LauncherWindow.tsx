@@ -4463,7 +4463,7 @@ export function LauncherWindow() {
                                 }`}
                                 style={{
                                   animation: isLaunching 
-                                    ? `launchApp 0.2s ease-out forwards` 
+                                    ? `launchApp 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55) forwards` 
                                     : `fadeInUp 0.18s ease-out ${execIndex * 0.02}s both`,
                                   marginLeft: execIndex === 0 && isSelected ? '10px' : '0px', // 第一个item选中时添加左边距，防止放大后被裁剪
                                   width: '80px',
@@ -4552,7 +4552,7 @@ export function LauncherWindow() {
                   className={theme.card(isSelected)}
                   style={{
                     animation: isLaunching 
-                      ? `launchApp 0.2s ease-out forwards` 
+                      ? `launchApp 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55) forwards` 
                       : `fadeInUp 0.18s ease-out ${index * 0.02}s both`,
                   }}
                 >

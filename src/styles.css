@@ -127,19 +127,27 @@ div.results-list-scroll::-webkit-scrollbar-thumb:active {
   }
 }
 
-/* 应用启动动画 - 缩放+淡出效果 */
+/* 应用启动动画 - 跳动效果 */
 @keyframes launchApp {
   0% {
     opacity: 1;
-    transform: scale(1);
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-24px) scale(1.1);
   }
   50% {
-    opacity: 0.8;
-    transform: scale(0.95);
+    opacity: 1;
+    transform: translateY(-8px) scale(1.05);
+  }
+  75% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.02);
   }
   100% {
-    opacity: 0;
-    transform: scale(0.9);
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
