@@ -19,6 +19,9 @@ type CustomFilter = Omit<FilterItem, "isCustom">;
 const SORT_PREFERENCE_KEY = "everything_sort_pref";
 const FILTER_PREFERENCE_KEY = "everything_filter_pref";
 const CUSTOM_FILTER_PREFERENCE_KEY = "everything_custom_filters";
+const MAX_RESULTS_PREFERENCE_KEY = "everything_max_results_pref";
+const MATCH_WHOLE_WORD_PREFERENCE_KEY = "everything_match_whole_word";
+const DEFAULT_MAX_RESULTS = 500;
 
 const QUICK_FILTERS: FilterItem[] = [
   { id: "all", label: "全部", extensions: [] },
@@ -86,6 +89,8 @@ export function EverythingSearchWindow() {
   const [newFilterExts, setNewFilterExts] = useState("");
   const [previewData, setPreviewData] = useState<FilePreview | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [matchWholeWord, setMatchWholeWord] = useState(false);
+  const [maxResults, setMaxResults] = useState<number>(DEFAULT_MAX_RESULTS);
   
   const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
   const debounceTimeoutRef = useRef<number | null>(null);
@@ -116,6 +121,19 @@ export function EverythingSearchWindow() {
       if (savedCustom) {
         const parsed = JSON.parse(savedCustom) as CustomFilter[];
         if (Array.isArray(parsed)) setCustomFilters(parsed);
+      }
+
+      const savedMaxResults = localStorage.getItem(MAX_RESULTS_PREFERENCE_KEY);
+      if (savedMaxResults) {
+        const parsed = parseInt(savedMaxResults, 10);
+        if (!isNaN(parsed) && parsed > 0) {
+          setMaxResults(parsed);
+        }
+      }
+
+      const savedMatchWholeWord = localStorage.getItem(MATCH_WHOLE_WORD_PREFERENCE_KEY);
+      if (savedMatchWholeWord !== null) {
+        setMatchWholeWord(savedMatchWholeWord === "true");
       }
     } catch (error) {
       console.warn("加载 Everything 偏好失败", error);
@@ -149,6 +167,22 @@ export function EverythingSearchWindow() {
       // ignore
     }
   }, [customFilters]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MATCH_WHOLE_WORD_PREFERENCE_KEY, matchWholeWord.toString());
+    } catch {
+      // ignore
+    }
+  }, [matchWholeWord]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MAX_RESULTS_PREFERENCE_KEY, maxResults.toString());
+    } catch {
+      // ignore
+    }
+  }, [maxResults]);
 
   // 检查 Everything 状态
   useEffect(() => {
@@ -252,6 +286,8 @@ export function EverythingSearchWindow() {
     try {
       const response = await tauriApi.searchEverything(searchQuery, {
         extensions: extFilter,
+        maxResults: maxResults,
+        matchWholeWord: matchWholeWord,
       });
       
       if (currentSearchRef.current?.cancelled || 
@@ -294,7 +330,7 @@ export function EverythingSearchWindow() {
         setIsSearching(false);
       }
     }
-  }, [isEverythingAvailable, activeFilter]);
+  }, [isEverythingAvailable, activeFilter, matchWholeWord, maxResults]);
 
   // 防抖搜索
   useEffect(() => {
@@ -516,14 +552,25 @@ export function EverythingSearchWindow() {
 
       {/* Search & Controls */}
       <div className="p-4 border-b border-gray-200 bg-white space-y-3">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索文件或文件夹..."
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          autoFocus
-        />
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索文件或文件夹..."
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            autoFocus
+          />
+          <label className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-50 rounded-lg border border-gray-200 whitespace-nowrap">
+            <input
+              type="checkbox"
+              checked={matchWholeWord}
+              onChange={(e) => setMatchWholeWord(e.target.checked)}
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <span>全字匹配</span>
+          </label>
+        </div>
         <div className="text-sm text-gray-500 flex flex-wrap items-center gap-3">
           {isSearching && <span>搜索中...</span>}
           {totalCount !== null && (
@@ -531,6 +578,25 @@ export function EverythingSearchWindow() {
               找到 {currentCount} / {totalCount} 个结果，当前显示 {filteredAndSortedResults.length} 条
             </span>
           )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <label className="text-sm text-gray-700 whitespace-nowrap">
+            查询条数限制：
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={maxResults}
+            onChange={(e) => {
+              const value = parseInt(e.target.value, 10);
+              if (!isNaN(value) && value > 0) {
+                setMaxResults(value);
+              }
+            }}
+            className="w-24 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-xs text-gray-500">条（最小值：1）</span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
