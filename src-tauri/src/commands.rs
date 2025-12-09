@@ -1,6 +1,7 @@
 use crate::app_search;
 use crate::db;
 use crate::everything_search;
+use crate::everything_filters;
 use crate::file_history;
 use crate::hooks;
 use crate::memos;
@@ -1256,12 +1257,35 @@ fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>)
 
     let mut max_results = 50usize;
 
+    // 检测用户是否已经使用了 Everything 原生语法
+    // Everything 支持的语法前缀：regex:, path:, parent:, file:, folder:, ext:, !ext:, case:
+    // 注意：需要在修改 base_query 之前检测，以保留原始查询中的语法
+    let original_query = base_query.clone();
+    let has_everything_syntax = original_query
+        .split_whitespace()
+        .any(|word| {
+            word.starts_with("regex:")
+                || word.starts_with("path:")
+                || word.starts_with("parent:")
+                || word.starts_with("file:")
+                || word.starts_with("folder:")
+                || word.starts_with("ext:")
+                || word.starts_with("!ext:")
+                || word.starts_with("case:")
+        });
+    
+    // 检测是否包含扩展名过滤（在原始查询中检测）
+    let has_ext_filter = original_query
+        .split_whitespace()
+        .any(|word| word.starts_with("ext:") || word.starts_with("!ext:"));
+
     if let Some(opts) = options {
         // 如果启用"仅匹配文件夹名"，需要特殊处理
+        // 但如果用户已经使用了 Everything 语法，则跳过特殊处理，直接使用用户输入的查询
         let match_folder_name_only = opts.match_folder_name_only.unwrap_or(false);
         let match_whole_word = opts.match_whole_word.unwrap_or(false);
         
-        if match_folder_name_only && !base_query.is_empty() {
+        if match_folder_name_only && !base_query.is_empty() && !has_everything_syntax {
             // 只匹配文件夹名，使用正则表达式
             // 转义特殊字符
             let escaped_query = base_query
@@ -1280,25 +1304,28 @@ fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>)
                 .replace('*', "\\*")
                 .replace('?', "\\?");
             
-            // 构建正则表达式：匹配以该文件夹名结尾的路径
+            // 构建正则表达式：匹配文件夹名
             // Windows 路径使用反斜杠，Unix 路径使用正斜杠
             if match_whole_word {
-                // 全字匹配：使用单词边界
-                // 匹配路径末尾的文件夹名（作为完整单词）
+                // 全字匹配：使用单词边界，匹配路径末尾的文件夹名（作为完整单词）
                 base_query = format!("regex:.*[\\\\/]\\b{}\\b$|^\\b{}\\b$", escaped_query, escaped_query);
             } else {
-                // 普通匹配：匹配路径末尾的文件夹名
-                base_query = format!("regex:.*[\\\\/]{}$|^{}$", escaped_query, escaped_query);
+                // 普通匹配：匹配路径末尾的文件夹名（包含匹配，支持部分匹配）
+                // 例如搜索 "mal" 可以匹配 "mall" 文件夹
+                base_query = format!("regex:.*[\\\\/].*{}.*$|^.*{}.*$", escaped_query, escaped_query);
             }
             use_regex = true;
             // 强制只搜索文件夹
             parts.push("folder:".to_string());
         } else {
             // 正常处理
-            if opts.only_files.unwrap_or(false) {
-                parts.push("file:".to_string());
-            } else if opts.only_folders.unwrap_or(false) {
-                parts.push("folder:".to_string());
+            // 如果用户已经使用了 file: 或 folder:，则不再添加
+            if !has_everything_syntax {
+                if opts.only_files.unwrap_or(false) {
+                    parts.push("file:".to_string());
+                } else if opts.only_folders.unwrap_or(false) {
+                    parts.push("folder:".to_string());
+                }
             }
         }
         
@@ -1306,37 +1333,41 @@ fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>)
             parts.push(base_query);
         }
 
-        if let Some(exts) = &opts.extensions {
-            let cleaned: Vec<String> = exts
-                .iter()
-                .filter_map(|e| {
-                    let trimmed = e.trim().trim_start_matches('.').to_lowercase();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect();
-            if !cleaned.is_empty() {
-                parts.push(format!("ext:{}", cleaned.join(";")));
+        // 如果用户已经使用了 ext: 或 !ext:，则不再添加扩展名过滤
+        // 注意：has_ext_filter 已经在函数开头从原始查询中检测过了
+        if !has_ext_filter {
+            if let Some(exts) = &opts.extensions {
+                let cleaned: Vec<String> = exts
+                    .iter()
+                    .filter_map(|e| {
+                        let trimmed = e.trim().trim_start_matches('.').to_lowercase();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    })
+                    .collect();
+                if !cleaned.is_empty() {
+                    parts.push(format!("ext:{}", cleaned.join(";")));
+                }
             }
-        }
 
-        if let Some(ex_exts) = &opts.exclude_extensions {
-            let cleaned: Vec<String> = ex_exts
-                .iter()
-                .filter_map(|e| {
-                    let trimmed = e.trim().trim_start_matches('.').to_lowercase();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                })
-                .collect();
-            if !cleaned.is_empty() {
-                parts.push(format!("!ext:{}", cleaned.join(";")));
+            if let Some(ex_exts) = &opts.exclude_extensions {
+                let cleaned: Vec<String> = ex_exts
+                    .iter()
+                    .filter_map(|e| {
+                        let trimmed = e.trim().trim_start_matches('.').to_lowercase();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
+                    })
+                    .collect();
+                if !cleaned.is_empty() {
+                    parts.push(format!("!ext:{}", cleaned.join(";")));
+                }
             }
         }
 
@@ -3510,6 +3541,23 @@ pub fn get_settings(app: tauri::AppHandle) -> Result<settings::Settings, String>
 pub fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
     settings::save_settings(&app_data_dir, &settings)
+}
+
+// ===== Everything Filters commands =====
+
+#[tauri::command]
+pub fn get_everything_custom_filters(app: tauri::AppHandle) -> Result<Vec<everything_filters::CustomFilter>, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    everything_filters::load_custom_filters(&app_data_dir)
+}
+
+#[tauri::command]
+pub fn save_everything_custom_filters(
+    app: tauri::AppHandle,
+    filters: Vec<everything_filters::CustomFilter>,
+) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    everything_filters::save_custom_filters(&app_data_dir, &filters)
 }
 
 #[tauri::command]

@@ -93,6 +93,7 @@ export function EverythingSearchWindow() {
   const [matchWholeWord, setMatchWholeWord] = useState(false);
   const [matchFolderNameOnly, setMatchFolderNameOnly] = useState(false);
   const [maxResults, setMaxResults] = useState<number>(DEFAULT_MAX_RESULTS);
+  const [showSyntaxHelp, setShowSyntaxHelp] = useState(false);
   
   const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
   const debounceTimeoutRef = useRef<number | null>(null);
@@ -104,6 +105,11 @@ export function EverythingSearchWindow() {
     const custom = customFilters.find((f) => f.id === activeFilterId);
     if (custom) return { ...custom, isCustom: true };
     return QUICK_FILTERS[0];
+  }, [activeFilterId, customFilters]);
+
+  // 判断当前是否在编辑现有过滤器
+  const isEditingExistingFilter = useMemo(() => {
+    return customFilters.some((f) => f.id === activeFilterId);
   }, [activeFilterId, customFilters]);
 
   // 加载偏好
@@ -493,6 +499,17 @@ export function EverythingSearchWindow() {
 
   const handleSelectFilter = (id: string) => {
     setActiveFilterId(id);
+    
+    // 如果选择的是自定义过滤器，将值回填到输入框以便编辑
+    const customFilter = customFilters.find((f) => f.id === id);
+    if (customFilter) {
+      setNewFilterName(customFilter.label);
+      setNewFilterExts(customFilter.extensions.join(", "));
+    } else {
+      // 选择内置过滤器时，清空输入框
+      setNewFilterName("");
+      setNewFilterExts("");
+    }
   };
 
   const handleAddCustomFilter = () => {
@@ -502,11 +519,31 @@ export function EverythingSearchWindow() {
       .map((e) => e.trim().toLowerCase())
       .filter(Boolean);
     if (!name || extList.length === 0) return;
-    const id = `custom-${Date.now()}`;
-    const filter: CustomFilter = { id, label: name, extensions: extList };
-    const newFilters = [...customFilters, filter];
+    
+    let newFilters: CustomFilter[];
+    let filterId: string;
+    
+    // 如果当前选择的是自定义过滤器，则更新它；否则创建新的
+    const existingFilter = customFilters.find((f) => f.id === activeFilterId);
+    if (existingFilter) {
+      // 更新现有过滤器
+      filterId = existingFilter.id;
+      newFilters = customFilters.map((f) =>
+        f.id === filterId
+          ? { id: filterId, label: name, extensions: extList }
+          : f
+      );
+      console.log("更新自定义过滤器:", filterId);
+    } else {
+      // 创建新过滤器
+      filterId = `custom-${Date.now()}`;
+      const filter: CustomFilter = { id: filterId, label: name, extensions: extList };
+      newFilters = [...customFilters, filter];
+      console.log("创建新自定义过滤器:", filterId);
+    }
+    
     setCustomFilters(newFilters);
-    setActiveFilterId(id);
+    setActiveFilterId(filterId);
     setNewFilterName("");
     setNewFilterExts("");
     
@@ -614,7 +651,7 @@ export function EverythingSearchWindow() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索文件或文件夹..."
+            placeholder="搜索文件或文件夹... (支持 Everything 语法: *, ?, path:, regex: 等)"
             className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
             autoFocus
           />
@@ -646,7 +683,71 @@ export function EverythingSearchWindow() {
               找到 {currentCount} / {totalCount} 个结果，当前显示 {filteredAndSortedResults.length} 条
             </span>
           )}
+          <button
+            onClick={() => setShowSyntaxHelp(!showSyntaxHelp)}
+            className="text-blue-600 hover:text-blue-800 underline text-xs"
+          >
+            {showSyntaxHelp ? "隐藏" : "显示"} Everything 语法帮助
+          </button>
         </div>
+
+        {/* Everything 语法提示 */}
+        {showSyntaxHelp && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm">
+            <div className="font-semibold text-blue-900 mb-3">常用的 Everything 搜索语法：</div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">*</span>
+                  <span className="ml-2 text-gray-700">匹配任意字符（通配符）</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">*.jpg</code> 搜索所有 jpg 文件</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">?</span>
+                  <span className="ml-2 text-gray-700">匹配单个字符</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">test?.txt</code> 匹配 test1.txt, test2.txt 等</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">path:</span>
+                  <span className="ml-2 text-gray-700">限制搜索路径</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">path:C:\Users\*</code> 只搜索 Users 目录</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">parent:</span>
+                  <span className="ml-2 text-gray-700">限制父目录</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">parent:Documents</code> 搜索 Documents 下的文件</div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">file:</span>
+                  <span className="ml-2 text-gray-700">只搜索文件</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">file: test</code> 只搜索文件名包含 test 的文件</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">folder:</span>
+                  <span className="ml-2 text-gray-700">只搜索文件夹</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">folder: project</code> 只搜索文件夹名</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">ext:</span>
+                  <span className="ml-2 text-gray-700">按扩展名过滤</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">ext:jpg;png</code> 只搜索 jpg 和 png</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">regex:</span>
+                  <span className="ml-2 text-gray-700">使用正则表达式</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">regex:^test.*\.txt$</code> 正则匹配</div>
+                </div>
+                <div>
+                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">|</span>
+                  <span className="ml-2 text-gray-700">或运算符（空格表示与）</span>
+                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">jpg | png</code> 搜索包含 jpg 或 png 的文件</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-700 whitespace-nowrap">
@@ -725,7 +826,7 @@ export function EverythingSearchWindow() {
               onClick={handleAddCustomFilter}
               className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
             >
-              保存过滤器
+              {isEditingExistingFilter ? "更新过滤器" : "保存过滤器"}
             </button>
             {activeFilter?.isCustom && (
               <button
