@@ -105,6 +105,7 @@ export function EverythingSearchWindow() {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [softLimitWarning, setSoftLimitWarning] = useState<string | null>(null);
+  const [currentLoadedCount, setCurrentLoadedCount] = useState(0); // 后端批次事件返回的当前已加载数量
 
   const debounceTimeoutRef = useRef<number | null>(null);
   const previewRequestIdRef = useRef(0);
@@ -114,6 +115,8 @@ export function EverythingSearchWindow() {
   const pendingSessionIdRef = useRef<string | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
   const batchAccumRef = useRef<EverythingResult[]>([]);
+  const currentSearchQueryRef = useRef<string>("");
+  const batchUpdateTimerRef = useRef<number | null>(null);
 
   const activeFilter = useMemo<FilterItem | undefined>(() => {
     const builtIn = QUICK_FILTERS.find((f) => f.id === activeFilterId);
@@ -314,6 +317,11 @@ export function EverythingSearchWindow() {
 
   // ---------- 会话 & 分页 ----------
   const resetCaches = useCallback(() => {
+    // 清除批次更新定时器
+    if (batchUpdateTimerRef.current) {
+      clearTimeout(batchUpdateTimerRef.current);
+      batchUpdateTimerRef.current = null;
+    }
     pageCacheRef.current.clear();
     pageOrderRef.current = [];
     inflightPagesRef.current.clear();
@@ -342,6 +350,13 @@ export function EverythingSearchWindow() {
     },
     [sessionId, closeSessionFn]
   );
+
+  // 判断是否应该忽略"搜索已取消"错误
+  // 如果错误是"搜索已取消"，且当前查询已经改变，说明是用户主动切换查询导致的，应该静默忽略
+  const shouldIgnoreCancelError = useCallback((error: unknown, currentQuery: string): boolean => {
+    const errorStr = typeof error === "string" ? error : String(error);
+    return errorStr.includes("搜索已取消") && currentSearchQueryRef.current !== currentQuery;
+  }, []);
 
   const applySoftLimitHint = useCallback(
     (count: number) => {
@@ -381,10 +396,14 @@ export function EverythingSearchWindow() {
         activeFilter && activeFilter.extensions.length > 0 ? activeFilter.extensions : undefined;
       const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
 
+      // 保存当前搜索的 query，用于错误处理时判断是否应该忽略取消错误
+      currentSearchQueryRef.current = trimmed;
+
       // 关闭旧会话
       await closeSessionSafe();
       resetCaches();
       scrollToTop();
+      setCurrentLoadedCount(0); // 重置已加载数量
       setIsSearching(true);
       setSessionMode(!!(startSessionFn && getRangeFn));
       setSessionError(null);
@@ -402,26 +421,71 @@ export function EverythingSearchWindow() {
             matchFolderNameOnly,
           });
           const limited = response.results.slice(0, Math.min(maxResultsToUse, SAFE_DISPLAY_LIMIT));
-          const fallbackTotal = Math.min(response.total_count ?? limited.length, limited.length);
+          // 限制 totalCount 为用户设置的 maxResults，而不是 Everything 的真实总数
+          const fallbackTotal = Math.min(
+            response.total_count ?? limited.length,
+            maxResultsToUse,
+            limited.length,
+            SAFE_DISPLAY_LIMIT
+          );
 
-          // 最终结果回填一次，确保列表完整
-          pageCacheRef.current.clear();
-          pageOrderRef.current = [];
-          const pageCount = Math.ceil(limited.length / PAGE_SIZE);
-          for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-            const start = pageIndex * PAGE_SIZE;
-            const slice = limited.slice(start, start + PAGE_SIZE);
-            pageCacheRef.current.set(pageIndex, slice);
-            pageOrderRef.current.push(pageIndex);
+          // 最终结果回填一次，确保列表完整（使用 requestIdleCallback 避免阻塞 UI）
+          const updateCache = () => {
+            // 分批处理，避免一次性处理太多数据阻塞 UI
+            const processBatch = (startPage: number, endPage: number) => {
+              for (let pageIndex = startPage; pageIndex < endPage; pageIndex += 1) {
+                const start = pageIndex * PAGE_SIZE;
+                const end = Math.min(start + PAGE_SIZE, limited.length);
+                if (start < limited.length) {
+                  const slice = limited.slice(start, end);
+                  pageCacheRef.current.set(pageIndex, slice);
+                  pageOrderRef.current.push(pageIndex);
+                }
+              }
+            };
+
+            pageCacheRef.current.clear();
+            pageOrderRef.current = [];
+            const pageCount = Math.ceil(limited.length / PAGE_SIZE);
+            const BATCH_SIZE = 50; // 每批处理 50 页
+
+            // 分批处理，每批之间让出控制权
+            let currentPage = 0;
+            const processNextBatch = () => {
+              const endPage = Math.min(currentPage + BATCH_SIZE, pageCount);
+              processBatch(currentPage, endPage);
+              currentPage = endPage;
+
+              if (currentPage < pageCount) {
+                // 使用 setTimeout(0) 让出控制权，继续处理下一批
+                setTimeout(processNextBatch, 0);
+              } else {
+                // 全部处理完成，更新版本
+                setCacheVersion((v) => v + 1);
+              }
+            };
+
+            processNextBatch();
+          };
+
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(updateCache, { timeout: 200 });
+          } else {
+            setTimeout(updateCache, 0);
           }
 
           setTotalCount(fallbackTotal);
-          setCacheVersion((v) => v + 1);
+          setCurrentLoadedCount(limited.length); // 设置最终已加载数量
           setSessionMode(false);
           applySoftLimitHint(fallbackTotal);
         } catch (error) {
           console.error("legacy 搜索失败:", error);
-          setSessionError(typeof error === "string" ? error : String(error));
+          if (shouldIgnoreCancelError(error, trimmed)) {
+            console.log("搜索被取消（用户切换查询），忽略错误");
+            return;
+          }
+          const errorStr = typeof error === "string" ? error : String(error);
+          setSessionError(errorStr);
         } finally {
           setIsSearching(false);
         }
@@ -461,7 +525,12 @@ export function EverythingSearchWindow() {
           .catch((error) => {
             if (pendingSessionIdRef.current !== session.sessionId) return;
             console.error("加载首屏页失败:", error);
-            setSessionError(typeof error === "string" ? error : String(error));
+            if (shouldIgnoreCancelError(error, trimmed)) {
+              console.log("搜索被取消（用户切换查询），忽略错误");
+              return;
+            }
+            const errorStr = typeof error === "string" ? error : String(error);
+            setSessionError(errorStr);
           })
           .finally(() => {
             inflightPagesRef.current.delete(pageIndex);
@@ -471,7 +540,12 @@ export function EverythingSearchWindow() {
           });
       } catch (error) {
         console.error("开启会话失败:", error);
-        setSessionError(typeof error === "string" ? error : String(error));
+        if (shouldIgnoreCancelError(error, trimmed)) {
+          console.log("搜索被取消（用户切换查询），忽略错误");
+          return;
+        }
+        const errorStr = typeof error === "string" ? error : String(error);
+        setSessionError(errorStr);
         setSessionMode(false);
         setIsSearching(false);
       }
@@ -486,6 +560,7 @@ export function EverythingSearchWindow() {
       matchWholeWord,
       maxResults,
       resetCaches,
+      shouldIgnoreCancelError,
       sortKey,
       sortOrder,
       startSessionFn,
@@ -520,6 +595,8 @@ export function EverythingSearchWindow() {
       inflightPagesRef.current.add(pageIndex);
       const extFilter =
         activeFilter && activeFilter.extensions.length > 0 ? activeFilter.extensions : undefined;
+      // 使用 ref 获取当前查询，避免闭包问题
+      const currentQuery = currentSearchQueryRef.current;
       try {
         const offset = pageIndex * PAGE_SIZE;
         const res = await getRangeFn(sessionId, offset, PAGE_SIZE, {
@@ -536,7 +613,7 @@ export function EverythingSearchWindow() {
         if (typeof res.totalCount === "number") {
           setTotalCount(Math.min(res.totalCount, SAFE_DISPLAY_LIMIT));
         } else if (res.items.length === 0) {
-          // 后端可能截断或无更多结果，收敛总数避免无限“加载中”
+          // 后端可能截断或无更多结果，收敛总数避免无限"加载中"
           const inferredTotal = Math.max(0, pageIndex * PAGE_SIZE);
           setTotalCount((prev) => {
             if (prev === null) return inferredTotal;
@@ -545,7 +622,12 @@ export function EverythingSearchWindow() {
         }
       } catch (error) {
         console.error("加载分页失败:", error);
-        setSessionError(typeof error === "string" ? error : String(error));
+        if (shouldIgnoreCancelError(error, currentQuery)) {
+          console.log("搜索被取消（用户切换查询），忽略分页错误");
+          return;
+        }
+        const errorStr = typeof error === "string" ? error : String(error);
+        setSessionError(errorStr);
       } finally {
         inflightPagesRef.current.delete(pageIndex);
       }
@@ -561,6 +643,7 @@ export function EverythingSearchWindow() {
       sortKey,
       sortOrder,
       touchPageOrder,
+      shouldIgnoreCancelError,
     ]
   );
 
@@ -778,36 +861,105 @@ export function EverythingSearchWindow() {
         // 会话模式时不处理（session API 不依赖事件）
         if (sessionMode) return;
 
-        const { results, total_count } = event.payload;
+        const { results, total_count, current_count } = event.payload;
         if (!Array.isArray(results) || results.length === 0) return;
 
-        // 追加到累积，再切片进缓存
-        batchAccumRef.current = [
-          ...batchAccumRef.current,
-          ...results.slice(0, Math.min(SAFE_DISPLAY_LIMIT, results.length)),
-        ].slice(0, SAFE_DISPLAY_LIMIT);
+        // 立即更新进度显示（轻量级操作，不阻塞 UI）
+        const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
+        const cappedCurrentCount = Math.min(current_count ?? 0, maxResultsToUse, SAFE_DISPLAY_LIMIT);
+        setCurrentLoadedCount(cappedCurrentCount);
 
-        const limited = batchAccumRef.current;
-        pageCacheRef.current.clear();
-        pageOrderRef.current = [];
-        const pageCount = Math.ceil(limited.length / PAGE_SIZE);
-        for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-          const start = pageIndex * PAGE_SIZE;
-          const slice = limited.slice(start, start + PAGE_SIZE);
-          pageCacheRef.current.set(pageIndex, slice);
-          pageOrderRef.current.push(pageIndex);
+        // 限制 totalCount 为用户设置的 maxResults，而不是 Everything 的真实总数
+        const cappedTotal = Math.min(
+          total_count ?? cappedCurrentCount,
+          maxResultsToUse,
+          SAFE_DISPLAY_LIMIT
+        );
+        setTotalCount(cappedTotal);
+
+        // 追加到累积（使用 push 避免创建新数组，减少内存分配）
+        const currentLength = batchAccumRef.current.length;
+        const remaining = maxResultsToUse - currentLength;
+        if (remaining > 0 && results.length > 0) {
+          const toAdd = Math.min(remaining, results.length);
+          // 使用循环 push 而不是展开运算符，避免参数过多导致性能问题
+          for (let i = 0; i < toAdd; i++) {
+            batchAccumRef.current.push(results[i]);
+          }
+          // 如果超出限制，直接截断（避免 slice 创建新数组）
+          if (batchAccumRef.current.length > maxResultsToUse) {
+            batchAccumRef.current.length = maxResultsToUse;
+          }
         }
 
-        setTotalCount(Math.min(total_count ?? limited.length, SAFE_DISPLAY_LIMIT));
-        setCacheVersion((v) => v + 1);
-        setIsSearching(true);
+        // 检查是否已完成
+        const isComplete = cappedCurrentCount >= maxResultsToUse || cappedCurrentCount >= cappedTotal;
+        if (isComplete) {
+          setIsSearching(false);
+        } else {
+          setIsSearching(true);
+        }
+
+        // 延迟更新缓存（使用防抖 + requestIdleCallback，避免频繁重建和阻塞 UI）
+        if (batchUpdateTimerRef.current) {
+          clearTimeout(batchUpdateTimerRef.current);
+        }
+        batchUpdateTimerRef.current = window.setTimeout(() => {
+          const limited = batchAccumRef.current;
+          const updateCache = () => {
+            // 分批处理，避免一次性处理太多数据阻塞 UI
+            const processBatch = (startPage: number, endPage: number) => {
+              for (let pageIndex = startPage; pageIndex < endPage; pageIndex += 1) {
+                const start = pageIndex * PAGE_SIZE;
+                const end = Math.min(start + PAGE_SIZE, limited.length);
+                if (start < limited.length) {
+                  const slice = limited.slice(start, end);
+                  pageCacheRef.current.set(pageIndex, slice);
+                  pageOrderRef.current.push(pageIndex);
+                }
+              }
+            };
+
+            pageCacheRef.current.clear();
+            pageOrderRef.current = [];
+            const pageCount = Math.ceil(limited.length / PAGE_SIZE);
+            const BATCH_SIZE = 50; // 每批处理 50 页
+
+            // 分批处理，每批之间让出控制权
+            let currentPage = 0;
+            const processNextBatch = () => {
+              const endPage = Math.min(currentPage + BATCH_SIZE, pageCount);
+              processBatch(currentPage, endPage);
+              currentPage = endPage;
+
+              if (currentPage < pageCount) {
+                // 使用 setTimeout(0) 让出控制权，继续处理下一批
+                setTimeout(processNextBatch, 0);
+              } else {
+                // 全部处理完成，更新版本
+                setCacheVersion((v) => v + 1);
+              }
+            };
+
+            processNextBatch();
+          };
+
+          // 使用 requestIdleCallback 在浏览器空闲时更新缓存
+          if ('requestIdleCallback' in window) {
+            requestIdleCallback(updateCache, { timeout: 200 });
+          } else {
+            // 降级到 setTimeout
+            setTimeout(updateCache, 0);
+          }
+          batchUpdateTimerRef.current = null;
+        }, 100) as unknown as number; // 100ms 防抖，减少重建频率
       });
     };
     setup();
     return () => {
       if (unlisten) unlisten();
     };
-  }, [sessionMode]);
+  }, [sessionMode, maxResults]);
 
   const displayCount = useMemo(() => {
     if (!totalCount) return 0;
@@ -835,13 +987,20 @@ export function EverythingSearchWindow() {
   const paddingBottom = Math.max(0, (displayCount - visibleRange.end - 1) * ITEM_HEIGHT);
 
   const currentSelectedItem = getItemByIndex(selectedIndex);
+  // 使用 ref 缓存已加载数量，避免每次遍历所有页面
+  const cachedLoadedCountRef = useRef(0);
   const computedLoadedCount = useMemo(() => {
+    // 只在 cacheVersion 变化时重新计算，减少计算频率
     let count = 0;
-    pageCacheRef.current.forEach((v) => {
-      count += v.length;
-    });
-    return Math.min(count, SAFE_DISPLAY_LIMIT);
-  }, [cacheVersion]);
+    const cache = pageCacheRef.current;
+    // 使用迭代器而不是 forEach，性能稍好
+    for (const page of cache.values()) {
+      count += page.length;
+    }
+    cachedLoadedCountRef.current = count;
+    const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
+    return Math.min(count, maxResultsToUse, SAFE_DISPLAY_LIMIT);
+  }, [cacheVersion, maxResults]);
 
   const isIndeterminateProgress = useMemo(
     () => isSearching && computedLoadedCount === 0,
@@ -939,7 +1098,7 @@ export function EverythingSearchWindow() {
                   {isIndeterminateProgress
                     ? "搜索中... 正在获取首批结果"
                     : totalCount
-                    ? `搜索中... ${computedLoadedCount}/${totalCount}`
+                    ? `搜索中... ${currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount}/${totalCount}`
                     : "搜索中..."}
                 </span>
               </div>
@@ -953,7 +1112,11 @@ export function EverythingSearchWindow() {
                       ? "35%"
                       : `${Math.min(
                           100,
-                          totalCount ? (computedLoadedCount / Math.max(totalCount, 1)) * 100 : 20
+                          totalCount
+                            ? ((currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount) /
+                                Math.max(totalCount, 1)) *
+                              100
+                            : 20
                         )}%`,
                   }}
                 />
@@ -962,7 +1125,7 @@ export function EverythingSearchWindow() {
           )}
           {totalCount !== null && (
             <span>
-              找到 {computedLoadedCount} / {totalCount} 个结果，当前展示上限 {displayCount} 条
+              找到 {currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount} / {totalCount} 个结果，当前展示上限 {displayCount} 条
             </span>
           )}
           {sessionError && (
