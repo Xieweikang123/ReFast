@@ -138,6 +138,47 @@ export const tauriApi = {
     return invoke("search_everything", { query, options });
   },
 
+  async startEverythingSearchSession(
+    searchQuery: string,
+    opts: {
+      extensions?: string[];
+      maxResults?: number;
+      sortKey?: "modified" | "size" | "type" | "name";
+      sortOrder?: "asc" | "desc";
+      matchWholeWord?: boolean;
+      matchFolderNameOnly?: boolean;
+    }
+  ): Promise<{ sessionId: string; totalCount: number; truncated?: boolean }> {
+    return invoke("start_everything_search_session", {
+      searchQuery,
+      options: opts,
+    });
+  },
+
+  async getEverythingSearchRange(
+    sessionId: string,
+    offset: number,
+    limit: number,
+    opts: {
+      sortKey?: "modified" | "size" | "type" | "name";
+      sortOrder?: "asc" | "desc";
+      extensions?: string[];
+      matchWholeWord?: boolean;
+      matchFolderNameOnly?: boolean;
+    }
+  ): Promise<{ offset: number; items: EverythingResult[]; totalCount?: number }> {
+    return invoke("get_everything_search_range", {
+      sessionId,
+      offset,
+      limit,
+      options: opts,
+    });
+  },
+
+  async closeEverythingSearchSession(sessionId: string): Promise<void> {
+    return invoke("close_everything_search_session", { sessionId });
+  },
+
   async cancelEverythingSearch(): Promise<void> {
     return invoke("cancel_everything_search");
   },

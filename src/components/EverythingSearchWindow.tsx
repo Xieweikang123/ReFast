@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
 import type { EverythingResult, FilePreview } from "../types";
 
@@ -114,9 +114,9 @@ export function EverythingSearchWindow() {
   const pageOrderRef = useRef<number[]>([]);
   const pendingSessionIdRef = useRef<string | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
-  const batchAccumRef = useRef<EverythingResult[]>([]);
   const currentSearchQueryRef = useRef<string>("");
-  const batchUpdateTimerRef = useRef<number | null>(null);
+  const startSearchSessionRef = useRef<typeof startSearchSession | null>(null);
+  const creatingSessionQueryRef = useRef<string | null>(null); // 正在创建的会话的查询
 
   const activeFilter = useMemo<FilterItem | undefined>(() => {
     const builtIn = QUICK_FILTERS.find((f) => f.id === activeFilterId);
@@ -131,41 +131,16 @@ export function EverythingSearchWindow() {
     return customFilters.some((f) => f.id === activeFilterId);
   }, [activeFilterId, customFilters]);
 
-  const startSessionFn =
-    (tauriApi as any).startEverythingSearchSession as
-      | ((
-          searchQuery: string,
-          opts: {
-            extensions?: string[];
-            maxResults?: number;
-            sortKey?: SortKey;
-            sortOrder?: SortOrder;
-            matchWholeWord?: boolean;
-            matchFolderNameOnly?: boolean;
-          }
-        ) => Promise<{ sessionId: string; totalCount: number; truncated?: boolean }>)
-      | undefined;
-
-  const getRangeFn =
-    (tauriApi as any).getEverythingSearchRange as
-      | ((
-          sessionId: string,
-          offset: number,
-          limit: number,
-          opts: {
-            sortKey?: SortKey;
-            sortOrder?: SortOrder;
-            extensions?: string[];
-            matchWholeWord?: boolean;
-            matchFolderNameOnly?: boolean;
-          }
-        ) => Promise<{ offset: number; items: EverythingResult[]; totalCount?: number }>)
-      | undefined;
-
-  const closeSessionFn =
-    (tauriApi as any).closeEverythingSearchSession as
-      | ((sessionId: string) => Promise<void>)
-      | undefined;
+  // 会话 API 函数（直接使用 tauriApi）
+  const startSessionFn = tauriApi.startEverythingSearchSession;
+  const getRangeFn = tauriApi.getEverythingSearchRange;
+  const closeSessionFn = tauriApi.closeEverythingSearchSession;
+  
+  // 使用 ref 保存 closeSessionFn，避免在组件卸载清理时依赖变化
+  const closeSessionFnRef = useRef(closeSessionFn);
+  useEffect(() => {
+    closeSessionFnRef.current = closeSessionFn;
+  }, [closeSessionFn]);
 
   // 加载偏好
   useEffect(() => {
@@ -317,15 +292,9 @@ export function EverythingSearchWindow() {
 
   // ---------- 会话 & 分页 ----------
   const resetCaches = useCallback(() => {
-    // 清除批次更新定时器
-    if (batchUpdateTimerRef.current) {
-      clearTimeout(batchUpdateTimerRef.current);
-      batchUpdateTimerRef.current = null;
-    }
     pageCacheRef.current.clear();
     pageOrderRef.current = [];
     inflightPagesRef.current.clear();
-    batchAccumRef.current = [];
     setCacheVersion((v) => v + 1);
     setSessionError(null);
   }, []);
@@ -341,14 +310,14 @@ export function EverythingSearchWindow() {
   const closeSessionSafe = useCallback(
     async (id?: string | null) => {
       const target = id ?? sessionId;
-      if (!target || !closeSessionFn) return;
+      if (!target || !closeSessionFnRef.current) return;
       try {
-        await closeSessionFn(target);
+        await closeSessionFnRef.current(target);
       } catch (error) {
         console.warn("关闭搜索会话失败", error);
       }
     },
-    [sessionId, closeSessionFn]
+    [sessionId]
   );
 
   // 判断是否应该忽略"搜索已取消"错误
@@ -375,7 +344,12 @@ export function EverythingSearchWindow() {
   const startSearchSession = useCallback(
     async (searchQuery: string) => {
       if (!searchQuery || searchQuery.trim() === "") {
-        await closeSessionSafe();
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          await closeSessionSafe(oldSessionId);
+        }
+        console.log("[pendingSessionIdRef] 设置为 null - 原因: 查询为空", { oldSessionId, searchQuery });
+        pendingSessionIdRef.current = null;
         resetCaches();
         setSessionId(null);
         setSessionMode(false);
@@ -384,6 +358,12 @@ export function EverythingSearchWindow() {
         return;
       }
       if (!isEverythingAvailable) {
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          await closeSessionSafe(oldSessionId);
+        }
+        console.log("[pendingSessionIdRef] 设置为 null - 原因: Everything不可用", { oldSessionId, isEverythingAvailable });
+        pendingSessionIdRef.current = null;
         setSessionMode(false);
         setSessionId(null);
         setTotalCount(null);
@@ -398,154 +378,194 @@ export function EverythingSearchWindow() {
 
       // 保存当前搜索的 query，用于错误处理时判断是否应该忽略取消错误
       currentSearchQueryRef.current = trimmed;
-
-      // 关闭旧会话
-      await closeSessionSafe();
-      resetCaches();
-      scrollToTop();
-      setCurrentLoadedCount(0); // 重置已加载数量
-      setIsSearching(true);
-      setSessionMode(!!(startSessionFn && getRangeFn));
-      setSessionError(null);
-
-      // 若后端尚未升级，回退老的批次接口
-      if (!startSessionFn || !getRangeFn) {
-        try {
-          // 清空批次累积，等待事件逐步填充
-          batchAccumRef.current = [];
-
-          const response = await tauriApi.searchEverything(trimmed, {
-            extensions: extFilter,
-            maxResults: maxResultsToUse,
-            matchWholeWord,
-            matchFolderNameOnly,
-          });
-          const limited = response.results.slice(0, Math.min(maxResultsToUse, SAFE_DISPLAY_LIMIT));
-          // 限制 totalCount 为用户设置的 maxResults，而不是 Everything 的真实总数
-          const fallbackTotal = Math.min(
-            response.total_count ?? limited.length,
-            maxResultsToUse,
-            limited.length,
-            SAFE_DISPLAY_LIMIT
-          );
-
-          // 最终结果回填一次，确保列表完整（使用 requestIdleCallback 避免阻塞 UI）
-          const updateCache = () => {
-            // 分批处理，避免一次性处理太多数据阻塞 UI
-            const processBatch = (startPage: number, endPage: number) => {
-              for (let pageIndex = startPage; pageIndex < endPage; pageIndex += 1) {
-                const start = pageIndex * PAGE_SIZE;
-                const end = Math.min(start + PAGE_SIZE, limited.length);
-                if (start < limited.length) {
-                  const slice = limited.slice(start, end);
-                  pageCacheRef.current.set(pageIndex, slice);
-                  pageOrderRef.current.push(pageIndex);
-                }
-              }
-            };
-
-            pageCacheRef.current.clear();
-            pageOrderRef.current = [];
-            const pageCount = Math.ceil(limited.length / PAGE_SIZE);
-            const BATCH_SIZE = 50; // 每批处理 50 页
-
-            // 分批处理，每批之间让出控制权
-            let currentPage = 0;
-            const processNextBatch = () => {
-              const endPage = Math.min(currentPage + BATCH_SIZE, pageCount);
-              processBatch(currentPage, endPage);
-              currentPage = endPage;
-
-              if (currentPage < pageCount) {
-                // 使用 setTimeout(0) 让出控制权，继续处理下一批
-                setTimeout(processNextBatch, 0);
-              } else {
-                // 全部处理完成，更新版本
-                setCacheVersion((v) => v + 1);
-              }
-            };
-
-            processNextBatch();
-          };
-
-          if ('requestIdleCallback' in window) {
-            requestIdleCallback(updateCache, { timeout: 200 });
-          } else {
-            setTimeout(updateCache, 0);
-          }
-
-          setTotalCount(fallbackTotal);
-          setCurrentLoadedCount(limited.length); // 设置最终已加载数量
-          setSessionMode(false);
-          applySoftLimitHint(fallbackTotal);
-        } catch (error) {
-          console.error("legacy 搜索失败:", error);
-          if (shouldIgnoreCancelError(error, trimmed)) {
-            console.log("搜索被取消（用户切换查询），忽略错误");
-            return;
-          }
-          const errorStr = typeof error === "string" ? error : String(error);
-          setSessionError(errorStr);
-        } finally {
-          setIsSearching(false);
-        }
+      
+      // 如果相同查询的会话正在创建中，或已经存在活跃/挂起的会话，则直接等待，避免重复创建
+      if (creatingSessionQueryRef.current === trimmed) {
+        console.log("相同查询的会话正在创建中，等待完成");
+        return;
+      }
+      if (
+        pendingSessionIdRef.current &&
+        sessionMode &&
+        currentSearchQueryRef.current === trimmed
+      ) {
+        console.log("相同查询已有活跃会话，等待完成");
         return;
       }
 
+      // 标记正在创建会话
+      creatingSessionQueryRef.current = trimmed;
+
+      // 关闭旧会话
+      const oldSessionId = pendingSessionIdRef.current;
+      if (oldSessionId) {
+        await closeSessionSafe(oldSessionId);
+      }
+      // 在创建新会话前先清空 pendingSessionIdRef，防止旧的 fetchPage 使用已失效的会话
+      console.log("[pendingSessionIdRef] 设置为 null - 原因: 创建新会话前清空旧会话", { oldSessionId, newQuery: trimmed, currentQuery: currentSearchQueryRef.current });
+      pendingSessionIdRef.current = null;
+      resetCaches();
+      scrollToTop();
+      console.log("[currentLoadedCount] 重置为 0，开始新搜索，查询:", trimmed);
+      setCurrentLoadedCount(0);
+      setIsSearching(true);
+      setSessionMode(true);
+      setSessionError(null);
+
       try {
-        const session = await startSessionFn(trimmed, {
-          extensions: extFilter,
-          maxResults: maxResultsToUse,
-          sortKey,
-          sortOrder,
-          matchWholeWord,
-          matchFolderNameOnly,
+        console.log("开始创建搜索会话，查询:", trimmed);
+        // 为会话创建添加超时机制
+        const sessionTimeoutMs = 60000; // 60秒超时
+        const sessionTimeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`创建搜索会话超时（${sessionTimeoutMs}ms）`));
+          }, sessionTimeoutMs);
         });
+        
+        const session = await Promise.race([
+          startSessionFn(trimmed, {
+            extensions: extFilter,
+            maxResults: maxResultsToUse,
+            sortKey,
+            sortOrder,
+            matchWholeWord,
+            matchFolderNameOnly,
+          }),
+          sessionTimeoutPromise,
+        ]);
+        
+        console.log("搜索会话创建成功，会话ID:", session.sessionId, "总数:", session.totalCount);
+        
+        // 检查查询是否仍然有效（可能在异步等待期间用户切换了查询）
+        if (currentSearchQueryRef.current !== trimmed) {
+          console.log("查询已切换，忽略旧会话结果");
+          await closeSessionSafe(session.sessionId);
+          console.log("[pendingSessionIdRef] 设置为 null - 原因: 查询已切换，忽略旧会话", { sessionId: session.sessionId, oldQuery: trimmed, newQuery: currentSearchQueryRef.current });
+          pendingSessionIdRef.current = null;
+          creatingSessionQueryRef.current = null; // 清除创建标记
+          setIsSearching(false);
+          return;
+        }
+        
+        console.log("[pendingSessionIdRef] 设置为会话ID - 原因: 会话创建成功", { sessionId: session.sessionId, query: trimmed, totalCount: session.totalCount });
         pendingSessionIdRef.current = session.sessionId;
+        creatingSessionQueryRef.current = null; // 会话创建成功，清除创建标记
         setSessionId(session.sessionId);
         setTotalCount(Math.min(session.totalCount ?? 0, SAFE_DISPLAY_LIMIT));
         applySoftLimitHint(session.totalCount ?? 0);
+        
         // 预取首屏页
         const pageIndex = 0;
         const offset = pageIndex * PAGE_SIZE;
+        const currentSessionId = session.sessionId;
+        const currentQueryForPage = trimmed; // 保存当前查询，用于验证
+        // 保存创建会话时的 pendingSessionIdRef 值，用于验证首屏页返回时是否仍然是这个会话
+        const sessionIdAtCreation = pendingSessionIdRef.current;
         inflightPagesRef.current.add(pageIndex);
-        getRangeFn(session.sessionId, offset, PAGE_SIZE, {
-          extensions: extFilter,
-          sortKey,
-          sortOrder,
-          matchWholeWord,
-          matchFolderNameOnly,
-        })
+        
+        console.log("开始获取首屏页，会话ID:", currentSessionId, "offset:", offset, "limit:", PAGE_SIZE, "创建时的pendingSessionIdRef:", sessionIdAtCreation);
+        
+        // 添加超时机制，防止 getRangeFn 卡住
+        const timeoutMs = 30000; // 30秒超时
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`获取首屏页超时（${timeoutMs}ms）`));
+          }, timeoutMs);
+        });
+        
+        // 确保无论成功还是失败，都会更新搜索状态
+        Promise.race([
+          getRangeFn(currentSessionId, offset, PAGE_SIZE, {
+            extensions: extFilter,
+            sortKey,
+            sortOrder,
+            matchWholeWord,
+            matchFolderNameOnly,
+          }),
+          timeoutPromise,
+        ])
           .then((res) => {
-            if (pendingSessionIdRef.current !== session.sessionId) return;
+            console.log("首屏页获取成功，返回", res.items.length, "条结果");
+            // 检查会话和查询是否仍然有效（双重验证，避免误判）
+            // 检查当前 pendingSessionIdRef 是否匹配当前会话ID
+            const currentPendingSessionId = pendingSessionIdRef.current;
+            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
+            
+            if (!isSessionStillValid || !isQueryStillValid) {
+              console.log(
+                "会话或查询已切换，忽略旧会话的首屏页结果",
+                `会话有效: ${isSessionStillValid}, 查询有效: ${isQueryStillValid}, 当前会话ID: ${currentSessionId}, 当前pendingSessionIdRef: ${currentPendingSessionId}, 创建时的pendingSessionIdRef: ${sessionIdAtCreation}`
+              );
+              // 如果会话已切换且没有新的有效会话，清除搜索状态
+              // 如果有新会话，新会话会自己管理 isSearching 状态
+              if (!pendingSessionIdRef.current) {
+                setIsSearching(false);
+              }
+              return;
+            }
             pageCacheRef.current.set(pageIndex, res.items);
             pageOrderRef.current = [pageIndex];
             setCacheVersion((v) => v + 1);
+            // 如果批次事件还没有更新 currentLoadedCount，则根据实际加载的数据量更新
+            // 这样可以确保显示正确的已加载数量
+            setCurrentLoadedCount((prev) => {
+              // 如果批次事件已经更新过（prev > 0），则保持批次事件的值（更准确）
+              // 否则使用实际加载的数据量
+              const newValue = prev > 0 ? prev : res.items.length;
+              console.log(
+                `[currentLoadedCount] 首屏页加载成功，更新计数: ${prev} -> ${newValue} (批次事件已更新: ${prev > 0}, 实际加载: ${res.items.length} 条)`
+              );
+              return newValue;
+            });
+            setIsSearching(false);
           })
           .catch((error) => {
-            if (pendingSessionIdRef.current !== session.sessionId) return;
+            // 检查会话和查询是否仍然有效（双重验证）
+            const currentPendingSessionId = pendingSessionIdRef.current;
+            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
+            
+            if (!isSessionStillValid || !isQueryStillValid) {
+              console.log(
+                "会话或查询已切换，忽略旧会话的首屏页错误",
+                `会话有效: ${isSessionStillValid}, 查询有效: ${isQueryStillValid}, 当前会话ID: ${currentSessionId}, 当前pendingSessionIdRef: ${currentPendingSessionId}, 创建时的pendingSessionIdRef: ${sessionIdAtCreation}`
+              );
+              // 如果会话已切换且没有新的有效会话，清除搜索状态
+              // 如果有新会话，新会话会自己管理 isSearching 状态
+              if (!pendingSessionIdRef.current) {
+                setIsSearching(false);
+              }
+              return;
+            }
             console.error("加载首屏页失败:", error);
-            if (shouldIgnoreCancelError(error, trimmed)) {
+            if (shouldIgnoreCancelError(error, currentQueryForPage)) {
               console.log("搜索被取消（用户切换查询），忽略错误");
+              setIsSearching(false);
               return;
             }
             const errorStr = typeof error === "string" ? error : String(error);
             setSessionError(errorStr);
+            setIsSearching(false);
           })
           .finally(() => {
             inflightPagesRef.current.delete(pageIndex);
-            if (pendingSessionIdRef.current === session.sessionId) {
-              setIsSearching(false);
-            }
           });
       } catch (error) {
         console.error("开启会话失败:", error);
+        creatingSessionQueryRef.current = null; // 会话创建失败，清除创建标记
         if (shouldIgnoreCancelError(error, trimmed)) {
           console.log("搜索被取消（用户切换查询），忽略错误");
+          // 如果会话已切换且没有新的有效会话，清除搜索状态
+          if (!pendingSessionIdRef.current) {
+            setIsSearching(false);
+          }
           return;
         }
         const errorStr = typeof error === "string" ? error : String(error);
         setSessionError(errorStr);
+        console.log("[pendingSessionIdRef] 设置为 null - 原因: 会话创建失败", { error: errorStr, query: trimmed });
+        pendingSessionIdRef.current = null;
         setSessionMode(false);
         setIsSearching(false);
       }
@@ -587,6 +607,14 @@ export function EverythingSearchWindow() {
     async (pageIndex: number) => {
       if (!sessionMode) return;
       if (!sessionId || !getRangeFn) return;
+      
+      // 使用 ref 保存当前会话ID，避免闭包问题
+      const currentSessionId = pendingSessionIdRef.current;
+      if (!currentSessionId || currentSessionId !== sessionId) {
+        // 会话已切换或无效，忽略此请求
+        return;
+      }
+      
       if (pageCacheRef.current.has(pageIndex)) {
         touchPageOrder(pageIndex);
         return;
@@ -599,35 +627,42 @@ export function EverythingSearchWindow() {
       const currentQuery = currentSearchQueryRef.current;
       try {
         const offset = pageIndex * PAGE_SIZE;
-        const res = await getRangeFn(sessionId, offset, PAGE_SIZE, {
+        const res = await getRangeFn(currentSessionId, offset, PAGE_SIZE, {
           extensions: extFilter,
           sortKey,
           sortOrder,
           matchWholeWord,
           matchFolderNameOnly,
         });
+        
+        // 再次检查会话是否仍然有效
+        if (pendingSessionIdRef.current !== currentSessionId) {
+          console.log("会话已切换，忽略分页结果");
+          return;
+        }
+        
         pageCacheRef.current.set(pageIndex, res.items);
         touchPageOrder(pageIndex);
         pruneLRU();
         setCacheVersion((v) => v + 1);
-        if (typeof res.totalCount === "number") {
-          setTotalCount(Math.min(res.totalCount, SAFE_DISPLAY_LIMIT));
-        } else if (res.items.length === 0) {
-          // 后端可能截断或无更多结果，收敛总数避免无限"加载中"
-          const inferredTotal = Math.max(0, pageIndex * PAGE_SIZE);
-          setTotalCount((prev) => {
-            if (prev === null) return inferredTotal;
-            return Math.min(prev, inferredTotal);
-          });
-        }
+        // 不在这里更新 totalCount，因为它在会话创建时已经确定了
+        // 如果后端返回了不同的 totalCount，可能是会话过期了，应该忽略
       } catch (error) {
+        // 检查会话是否仍然有效
+        if (pendingSessionIdRef.current !== currentSessionId) {
+          console.log("会话已切换，忽略分页错误");
+          return;
+        }
         console.error("加载分页失败:", error);
         if (shouldIgnoreCancelError(error, currentQuery)) {
           console.log("搜索被取消（用户切换查询），忽略分页错误");
           return;
         }
         const errorStr = typeof error === "string" ? error : String(error);
-        setSessionError(errorStr);
+        // 只有当前会话仍然有效时才设置错误
+        if (pendingSessionIdRef.current === currentSessionId) {
+          setSessionError(errorStr);
+        }
       } finally {
         inflightPagesRef.current.delete(pageIndex);
       }
@@ -661,8 +696,11 @@ export function EverythingSearchWindow() {
       fetchPage(pageIndex);
       return null;
     },
-    [fetchPage, touchPageOrder]
+    [fetchPage, touchPageOrder    ]
   );
+
+  // 保持 startSearchSession 的 ref 始终是最新版本
+  startSearchSessionRef.current = startSearchSession;
 
   // 防抖触发搜索
   useEffect(() => {
@@ -672,19 +710,19 @@ export function EverythingSearchWindow() {
     const trimmed = query.trim();
     if (trimmed === "") {
       debounceTimeoutRef.current = window.setTimeout(() => {
-        startSearchSession("");
+        startSearchSessionRef.current?.("");
       }, 150) as unknown as number;
       return;
     }
     debounceTimeoutRef.current = window.setTimeout(() => {
-      startSearchSession(trimmed);
+      startSearchSessionRef.current?.(trimmed);
     }, 320) as unknown as number;
     return () => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
     };
-  }, [query, startSearchSession]);
+  }, [query]); // 只依赖 query，不依赖 startSearchSession，避免函数重新创建时重复触发
 
   // 选中项变化时触发预览
   useEffect(() => {
@@ -842,124 +880,68 @@ export function EverythingSearchWindow() {
     return () => resizeObserver.disconnect();
   }, []);
 
-  // 离开页面或窗口关闭时释放会话
+  // 监听后端批次事件，更新 currentLoadedCount
   useEffect(() => {
-    return () => {
-      closeSessionSafe();
-    };
-  }, [closeSessionSafe]);
+    let unlistenFn: (() => void) | null = null;
 
-  // 监听后端批次事件（仅用于 legacy searchEverything 路径的实时进度）
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const setup = async () => {
-      unlisten = await listen<{
-        results: EverythingResult[];
-        total_count: number;
-        current_count: number;
-      }>("everything-search-batch", (event) => {
-        // 会话模式时不处理（session API 不依赖事件）
-        if (sessionMode) return;
+    const setupBatchListener = async () => {
+      try {
+        const unlisten = await listen<{
+          results: EverythingResult[];
+          total_count: number;
+          current_count: number;
+        }>("everything-search-batch", (event) => {
+          const { current_count } = event.payload;
 
-        const { results, total_count, current_count } = event.payload;
-        if (!Array.isArray(results) || results.length === 0) return;
-
-        // 立即更新进度显示（轻量级操作，不阻塞 UI）
-        const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
-        const cappedCurrentCount = Math.min(current_count ?? 0, maxResultsToUse, SAFE_DISPLAY_LIMIT);
-        setCurrentLoadedCount(cappedCurrentCount);
-
-        // 限制 totalCount 为用户设置的 maxResults，而不是 Everything 的真实总数
-        const cappedTotal = Math.min(
-          total_count ?? cappedCurrentCount,
-          maxResultsToUse,
-          SAFE_DISPLAY_LIMIT
-        );
-        setTotalCount(cappedTotal);
-
-        // 追加到累积（使用 push 避免创建新数组，减少内存分配）
-        const currentLength = batchAccumRef.current.length;
-        const remaining = maxResultsToUse - currentLength;
-        if (remaining > 0 && results.length > 0) {
-          const toAdd = Math.min(remaining, results.length);
-          // 使用循环 push 而不是展开运算符，避免参数过多导致性能问题
-          for (let i = 0; i < toAdd; i++) {
-            batchAccumRef.current.push(results[i]);
-          }
-          // 如果超出限制，直接截断（避免 slice 创建新数组）
-          if (batchAccumRef.current.length > maxResultsToUse) {
-            batchAccumRef.current.length = maxResultsToUse;
-          }
-        }
-
-        // 检查是否已完成
-        const isComplete = cappedCurrentCount >= maxResultsToUse || cappedCurrentCount >= cappedTotal;
-        if (isComplete) {
-          setIsSearching(false);
-        } else {
-          setIsSearching(true);
-        }
-
-        // 延迟更新缓存（使用防抖 + requestIdleCallback，避免频繁重建和阻塞 UI）
-        if (batchUpdateTimerRef.current) {
-          clearTimeout(batchUpdateTimerRef.current);
-        }
-        batchUpdateTimerRef.current = window.setTimeout(() => {
-          const limited = batchAccumRef.current;
-          const updateCache = () => {
-            // 分批处理，避免一次性处理太多数据阻塞 UI
-            const processBatch = (startPage: number, endPage: number) => {
-              for (let pageIndex = startPage; pageIndex < endPage; pageIndex += 1) {
-                const start = pageIndex * PAGE_SIZE;
-                const end = Math.min(start + PAGE_SIZE, limited.length);
-                if (start < limited.length) {
-                  const slice = limited.slice(start, end);
-                  pageCacheRef.current.set(pageIndex, slice);
-                  pageOrderRef.current.push(pageIndex);
-                }
-              }
-            };
-
-            pageCacheRef.current.clear();
-            pageOrderRef.current = [];
-            const pageCount = Math.ceil(limited.length / PAGE_SIZE);
-            const BATCH_SIZE = 50; // 每批处理 50 页
-
-            // 分批处理，每批之间让出控制权
-            let currentPage = 0;
-            const processNextBatch = () => {
-              const endPage = Math.min(currentPage + BATCH_SIZE, pageCount);
-              processBatch(currentPage, endPage);
-              currentPage = endPage;
-
-              if (currentPage < pageCount) {
-                // 使用 setTimeout(0) 让出控制权，继续处理下一批
-                setTimeout(processNextBatch, 0);
-              } else {
-                // 全部处理完成，更新版本
-                setCacheVersion((v) => v + 1);
-              }
-            };
-
-            processNextBatch();
-          };
-
-          // 使用 requestIdleCallback 在浏览器空闲时更新缓存
-          if ('requestIdleCallback' in window) {
-            requestIdleCallback(updateCache, { timeout: 200 });
+          // 只有在会话模式下且当前有活跃会话时才更新
+          // 通过检查 pendingSessionIdRef 和 currentSearchQueryRef 来确保是当前搜索的事件
+          // 批次事件在搜索过程中发送，此时会话可能正在创建，所以也检查 creatingSessionQueryRef
+          const hasActiveSession = pendingSessionIdRef.current !== null;
+          const hasActiveQuery = currentSearchQueryRef.current !== "";
+          const isCreatingSession = creatingSessionQueryRef.current !== null;
+          
+          if (sessionMode && (hasActiveSession || isCreatingSession) && hasActiveQuery) {
+            console.log(
+              `[currentLoadedCount] 批次事件更新: ${current_count} (会话模式: ${sessionMode}, 活跃会话: ${hasActiveSession}, 创建中: ${isCreatingSession}, 查询: ${currentSearchQueryRef.current})`
+            );
+            setCurrentLoadedCount(current_count);
           } else {
-            // 降级到 setTimeout
-            setTimeout(updateCache, 0);
+            console.log(
+              `[currentLoadedCount] 批次事件被忽略: current_count=${current_count}, sessionMode=${sessionMode}, hasActiveSession=${hasActiveSession}, isCreatingSession=${isCreatingSession}, hasActiveQuery=${hasActiveQuery}`
+            );
           }
-          batchUpdateTimerRef.current = null;
-        }, 100) as unknown as number; // 100ms 防抖，减少重建频率
-      });
+        });
+
+        unlistenFn = unlisten;
+      } catch (error) {
+        console.error("设置批次事件监听失败:", error);
+      }
     };
-    setup();
+
+    setupBatchListener();
+
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenFn) {
+        unlistenFn();
+      }
     };
-  }, [sessionMode, maxResults]);
+  }, [sessionMode]);
+
+  // 离开页面或窗口关闭时释放会话（只在组件真正卸载时执行）
+  useEffect(() => {
+    return () => {
+      const oldSessionId = pendingSessionIdRef.current;
+      if (oldSessionId && closeSessionFnRef.current) {
+        // 直接使用 ref 中的函数，避免依赖变化导致重复执行清理函数
+        closeSessionFnRef.current(oldSessionId).catch((error) => {
+          console.warn("组件卸载时关闭搜索会话失败", error);
+        });
+      }
+      console.log("[pendingSessionIdRef] 设置为 null - 原因: 组件卸载", { oldSessionId });
+      pendingSessionIdRef.current = null;
+    };
+  }, []); // 空依赖数组，只在组件真正卸载时执行
+
 
   const displayCount = useMemo(() => {
     if (!totalCount) return 0;
@@ -981,7 +963,7 @@ export function EverythingSearchWindow() {
       items.push({ index: i, item: getItemByIndex(i) });
     }
     return items;
-  }, [displayCount, getItemByIndex, visibleRange.end, visibleRange.start]);
+  }, [displayCount, getItemByIndex, visibleRange.end, visibleRange.start, cacheVersion]);
 
   const paddingTop = visibleRange.start * ITEM_HEIGHT;
   const paddingBottom = Math.max(0, (displayCount - visibleRange.end - 1) * ITEM_HEIGHT);
@@ -1098,7 +1080,7 @@ export function EverythingSearchWindow() {
                   {isIndeterminateProgress
                     ? "搜索中... 正在获取首批结果"
                     : totalCount
-                    ? `搜索中... ${currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount}/${totalCount}`
+                    ? `搜索中... ${Math.max(currentLoadedCount, computedLoadedCount)}/${totalCount}`
                     : "搜索中..."}
                 </span>
               </div>
@@ -1113,9 +1095,9 @@ export function EverythingSearchWindow() {
                       : `${Math.min(
                           100,
                           totalCount
-                            ? ((currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount) /
+                            ? ((Math.max(currentLoadedCount, computedLoadedCount) /
                                 Math.max(totalCount, 1)) *
-                              100
+                              100)
                             : 20
                         )}%`,
                   }}
@@ -1123,9 +1105,9 @@ export function EverythingSearchWindow() {
               </div>
             </div>
           )}
-          {totalCount !== null && (
+          {!isSearching && totalCount !== null && (
             <span>
-              找到 {currentLoadedCount > 0 ? currentLoadedCount : computedLoadedCount} / {totalCount} 个结果，当前展示上限 {displayCount} 条
+              找到 {Math.max(currentLoadedCount, computedLoadedCount)} / {totalCount} 个结果，当前展示上限 {displayCount} 条
             </span>
           )}
           {sessionError && (

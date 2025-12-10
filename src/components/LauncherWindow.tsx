@@ -1994,20 +1994,6 @@ export function LauncherWindow() {
         : (hasExistingHorizontal ? currentHorizontalRef : []);
       setResults(allResults);
       setHorizontalResults(finalHorizontal);
-      // 打印横向结果列表
-      console.log('[horizontalResults] 设置横向结果:', finalHorizontal);
-      console.log('[horizontalResults] 数量:', finalHorizontal.length);
-      finalHorizontal.forEach((result, index) => {
-        console.log(`[horizontalResults] [${index}]`, {
-          type: result.type,
-          displayName: result.displayName,
-          path: result.path,
-          app: result.app ? {
-            name: result.app.name,
-            path: result.app.path,
-          } : undefined,
-        });
-      });
       setVerticalResults(vertical);
       // 更新ref以跟踪当前的横向结果
       horizontalResultsRef.current = finalHorizontal;
@@ -2042,20 +2028,6 @@ export function LauncherWindow() {
       setResults(initialResults);
       // Split the initial results too
       setHorizontalResults(finalHorizontal);
-      // 打印横向结果列表
-      console.log('[horizontalResults] 设置横向结果 (增量加载):', finalHorizontal);
-      console.log('[horizontalResults] 数量:', finalHorizontal.length);
-      finalHorizontal.forEach((result, index) => {
-        console.log(`[horizontalResults] [${index}]`, {
-          type: result.type,
-          displayName: result.displayName,
-          path: result.path,
-          app: result.app ? {
-            name: result.app.name,
-            path: result.app.path,
-          } : undefined,
-        });
-      });
       setVerticalResults(finalVertical);
       // 更新ref以跟踪当前的横向结果
       horizontalResultsRef.current = finalHorizontal;

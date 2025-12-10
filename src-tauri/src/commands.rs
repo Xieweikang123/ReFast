@@ -1645,7 +1645,7 @@ pub struct EverythingSearchRangeResponse {
 pub async fn start_everything_search_session(
     search_query: String,
     options: Option<EverythingSearchSessionOptions>,
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
 ) -> Result<EverythingSearchSessionResponse, String> {
     #[cfg(target_os = "windows")]
     {
@@ -1682,16 +1682,45 @@ pub async fn start_everything_search_session(
         // 在移动之前克隆 combined_query，用于后续生成会话 ID
         let combined_query_for_session = combined_query.clone();
 
+        // 获取窗口用于发送批次事件
+        let everything_window = app.get_webview_window("everything-search-window");
+
+        // 获取异步运行时句柄，用于在阻塞线程中发送事件
+        let rt_handle = tokio::runtime::Handle::current();
+
         // 执行搜索
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let result = {
+            // 创建批次回调，用于实时发送结果（用于进度显示）
+            let on_batch = move |batch_results: &[everything_search::EverythingResult], total_count: u32, current_count: u32| {
+                // 在异步运行时中发送事件
+                let everything_win = everything_window.clone();
+                let batch_results = batch_results.to_vec();
+                let handle = rt_handle.clone();
+                
+                // 使用运行时句柄在阻塞线程中发送异步事件
+                handle.spawn(async move {
+                    let event_data = serde_json::json!({
+                        "results": batch_results,
+                        "total_count": total_count,
+                        "current_count": current_count,
+                    });
+
+                    if let Some(win) = everything_win {
+                        if let Err(e) = win.emit("everything-search-batch", &event_data) {
+                            eprintln!("[DEBUG] Failed to emit search batch event to search window: {}", e);
+                        }
+                    }
+                });
+            };
+
             tokio::task::spawn_blocking(move || {
                 everything_search::windows::search_files(
                     &combined_query,
                     max_results,
                     5000,
                     Some(&cancel_flag),
-                    None::<fn(&[everything_search::EverythingResult], u32, u32)>, // 不需要批次回调
+                    Some(on_batch),
                     match_whole_word,
                 )
             })
