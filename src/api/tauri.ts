@@ -132,6 +132,18 @@ export const tauriApi = {
     return invoke("get_clipboard_text");
   },
 
+  async saveClipboardImage(imageData: Uint8Array, extension: string): Promise<string> {
+    return invoke("save_clipboard_image", { imageData: Array.from(imageData), extension });
+  },
+
+  async getDownloadsFolder(): Promise<string> {
+    return invoke("get_downloads_folder");
+  },
+
+  async copyFileToDownloads(sourcePath: string): Promise<string> {
+    return invoke("copy_file_to_downloads", { sourcePath });
+  },
+
   async searchEverything(
     query: string,
     options?: EverythingSearchOptions

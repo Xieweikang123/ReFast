@@ -2771,6 +2771,138 @@ pub fn get_clipboard_text() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+pub fn save_clipboard_image(image_data: Vec<u8>, extension: String) -> Result<String, String> {
+    use std::fs;
+    use std::io::Write;
+    
+    // 获取临时目录
+    let temp_dir = std::env::temp_dir();
+    
+    // 生成唯一的文件名
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let filename = format!("pasted_image_{}.{}", timestamp, extension);
+    let file_path = temp_dir.join(&filename);
+    
+    // 写入文件
+    let mut file = fs::File::create(&file_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    
+    file.write_all(&image_data)
+        .map_err(|e| format!("Failed to write image data: {}", e))?;
+    
+    // 返回文件路径
+    file_path.to_str()
+        .ok_or_else(|| "Failed to convert path to string".to_string())
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
+pub fn get_downloads_folder() -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::UI::Shell::*;
+        
+        const CSIDL_PROFILE: i32 = 0x0028;
+        
+        unsafe {
+            let mut path: Vec<u16> = vec![0; 260];
+            let result = SHGetSpecialFolderPathW(0, path.as_mut_ptr(), CSIDL_PROFILE, 0);
+            if result != 0 {
+                let len = path.iter().position(|&x| x == 0).unwrap_or(path.len());
+                path.truncate(len);
+                let os_string = OsString::from_wide(&path);
+                let profile_path = os_string.to_string_lossy().to_string();
+                let downloads = std::path::Path::new(&profile_path).join("Downloads");
+                if downloads.exists() {
+                    return Ok(downloads.to_string_lossy().to_string());
+                }
+            }
+        }
+        Err("Failed to get downloads folder".to_string())
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let downloads = std::path::Path::new(&home).join("Downloads");
+            if downloads.exists() {
+                return Ok(downloads.to_string_lossy().to_string());
+            }
+        }
+        Err("Failed to get downloads folder".to_string())
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let downloads = std::path::Path::new(&home).join("Downloads");
+            if downloads.exists() {
+                return Ok(downloads.to_string_lossy().to_string());
+            }
+        }
+        Err("Failed to get downloads folder".to_string())
+    }
+    
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        Err("Downloads folder is not supported on this platform".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn copy_file_to_downloads(source_path: String) -> Result<String, String> {
+    use std::fs;
+    use std::path::Path;
+    
+    let source = Path::new(&source_path);
+    if !source.exists() {
+        return Err("Source file does not exist".to_string());
+    }
+    
+    // 获取下载目录
+    let downloads_path = get_downloads_folder()?;
+    let downloads = Path::new(&downloads_path);
+    
+    // 获取源文件名
+    let filename = source.file_name()
+        .ok_or_else(|| "Failed to get filename".to_string())?;
+    
+    let dest_path = downloads.join(filename);
+    
+    // 如果目标文件已存在，添加序号
+    let mut final_dest = dest_path.clone();
+    let mut counter = 1;
+    while final_dest.exists() {
+        let stem = source.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("image");
+        let ext = source.extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let new_filename = if ext.is_empty() {
+            format!("{} ({})", stem, counter)
+        } else {
+            format!("{} ({}).{}", stem, counter, ext)
+        };
+        final_dest = downloads.join(&new_filename);
+        counter += 1;
+    }
+    
+    // 复制文件
+    fs::copy(&source, &final_dest)
+        .map_err(|e| format!("Failed to copy file: {}", e))?;
+    
+    final_dest.to_str()
+        .ok_or_else(|| "Failed to convert path to string".to_string())
+        .map(|s| s.to_string())
+}
+
+#[tauri::command]
 pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
     // Add to history when launched
     let app_data_dir = get_app_data_dir(&app)?;

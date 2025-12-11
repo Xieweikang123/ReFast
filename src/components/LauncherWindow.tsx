@@ -99,6 +99,8 @@ export function LauncherWindow() {
   const [systemFolders, setSystemFolders] = useState<SystemFolderItem[]>([]);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
+  const [pastedImagePath, setPastedImagePath] = useState<string | null>(null); // 粘贴的图片路径
+  const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null); // 粘贴的图片 base64 data URL
   const [resultStyle, setResultStyle] = useState<ResultStyle>(() => {
     const cached = localStorage.getItem("result-style");
     if (cached === "soft" || cached === "skeuomorphic" || cached === "compact") {
@@ -429,6 +431,10 @@ export function LauncherWindow() {
       setQuery("");
       setSelectedIndex(0);
       setContextMenu(null);
+      setSuccessMessage(null); // 清除成功消息
+      setErrorMessage(null); // 清除错误消息
+      setPastedImagePath(null); // 清除粘贴的图片路径
+      setPastedImageDataUrl(null); // 清除粘贴的图片预览
       if (options?.resetMemo) {
         resetMemoState();
       }
@@ -2206,6 +2212,11 @@ export function LauncherWindow() {
         clearTimeout(incrementalTimeoutRef.current);
         incrementalTimeoutRef.current = null;
       }
+      // 如果查询变化且不是粘贴的图片路径，清除粘贴图片状态
+      if (query.trim() !== pastedImagePath) {
+        setPastedImagePath(null);
+        setPastedImageDataUrl(null);
+      }
       lastQueryInEffectRef.current = query;
     }
     // 使用分批加载来更新结果，避免一次性渲染大量DOM导致卡顿
@@ -3607,6 +3618,76 @@ export function LauncherWindow() {
     const clipboardTypes = Array.from(e.clipboardData.types);
     console.log("Clipboard types:", clipboardTypes);
     
+    // 首先检查剪贴板是否包含图片
+    const imageTypes = clipboardTypes.filter(type => type.startsWith("image/"));
+    if (imageTypes.length > 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      try {
+        // 获取图片数据
+        const imageType = imageTypes[0];
+        const imageItem = Array.from(e.clipboardData.items).find(item => item.type.startsWith("image/"));
+        
+        if (imageItem) {
+          const imageFile = imageItem.getAsFile();
+          
+          if (imageFile) {
+            // 读取图片数据
+            const arrayBuffer = await imageFile.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+            
+            // 创建 base64 data URL 用于预览（使用 FileReader 避免大文件问题）
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                if (reader.result) {
+                  resolve(reader.result as string);
+                } else {
+                  reject(new Error("Failed to read image data"));
+                }
+              };
+              reader.onerror = () => reject(new Error("Failed to read image"));
+              reader.readAsDataURL(imageFile);
+            });
+            setPastedImageDataUrl(dataUrl);
+            
+            // 确定文件扩展名
+            let extension = "png";
+            if (imageType.includes("jpeg") || imageType.includes("jpg")) {
+              extension = "jpg";
+            } else if (imageType.includes("gif")) {
+              extension = "gif";
+            } else if (imageType.includes("webp")) {
+              extension = "webp";
+            } else if (imageType.includes("bmp")) {
+              extension = "bmp";
+            }
+            
+            // 保存图片到临时文件
+            const tempPath = await tauriApi.saveClipboardImage(uint8Array, extension);
+            console.log("Saved clipboard image to:", tempPath);
+            
+            // 保存粘贴的图片路径到状态
+            setPastedImagePath(tempPath);
+            
+            // 处理粘贴的图片路径
+            await processPastedPath(tempPath);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error("Failed to process clipboard image:", error);
+        setErrorMessage("粘贴图片失败: " + (error as Error).message);
+      }
+    }
+    
+    // 清除粘贴图片状态（如果粘贴的是其他内容）
+    if (!clipboardTypes.some(type => type.startsWith("image/"))) {
+      setPastedImagePath(null);
+      setPastedImageDataUrl(null);
+    }
+    
     // Check if clipboard contains files (when copying folders/files in Windows)
     if (clipboardTypes.includes("Files")) {
       e.preventDefault();
@@ -3616,6 +3697,65 @@ export function LauncherWindow() {
       console.log("Files in clipboard:", files.length);
       
       if (files.length > 0) {
+        // 检查第一个文件是否是图片文件
+        const firstFile = files[0];
+        const fileName = firstFile.name.toLowerCase();
+        const isImageFile = fileName.endsWith('.png') || 
+                          fileName.endsWith('.jpg') || 
+                          fileName.endsWith('.jpeg') || 
+                          fileName.endsWith('.gif') || 
+                          fileName.endsWith('.webp') || 
+                          fileName.endsWith('.bmp');
+        
+        // 如果是图片文件且剪贴板中没有 image/ 类型，尝试作为图片处理
+        if (isImageFile && imageTypes.length === 0) {
+          try {
+            const arrayBuffer = await firstFile.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+            
+            // 创建 base64 data URL 用于预览（使用 FileReader 避免大文件问题）
+            const dataUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                if (reader.result) {
+                  resolve(reader.result as string);
+                } else {
+                  reject(new Error("Failed to read image data"));
+                }
+              };
+              reader.onerror = () => reject(new Error("Failed to read image"));
+              reader.readAsDataURL(firstFile);
+            });
+            setPastedImageDataUrl(dataUrl);
+            
+            // 确定文件扩展名
+            let extension = "png";
+            if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) {
+              extension = "jpg";
+            } else if (fileName.endsWith('.gif')) {
+              extension = "gif";
+            } else if (fileName.endsWith('.webp')) {
+              extension = "webp";
+            } else if (fileName.endsWith('.bmp')) {
+              extension = "bmp";
+            }
+            
+            // 保存图片到临时文件
+            const tempPath = await tauriApi.saveClipboardImage(uint8Array, extension);
+            console.log("Saved clipboard image file to:", tempPath);
+            
+            // 保存粘贴的图片路径到状态
+            setPastedImagePath(tempPath);
+            
+            // 处理粘贴的图片路径
+            await processPastedPath(tempPath);
+            return;
+          } catch (error) {
+            console.error("Failed to process clipboard image file:", error);
+            // 如果图片处理失败，继续尝试作为普通文件处理
+          }
+        }
+        
         // Get the first file/folder path
         // Note: In browser, we can't directly get the full path from File object
         // We need to use Tauri's clipboard API or handle it differently
@@ -3643,6 +3783,8 @@ export function LauncherWindow() {
               console.log("Got path from clipboard API:", clipboardPath);
               await processPastedPath(clipboardPath);
               return;
+            } else {
+              console.log("Tauri clipboard API returned null");
             }
           } catch (error) {
             console.error("Failed to get clipboard file path:", error);
@@ -3653,7 +3795,9 @@ export function LauncherWindow() {
           console.log("Processing path from clipboard files:", pathText);
           await processPastedPath(pathText);
         } else {
-          console.log("Could not get file path from clipboard");
+          console.log("Could not get file path from clipboard - file may need to be selected from file system");
+          // 如果无法获取路径，至少显示文件名
+          setQuery(firstFile.name);
         }
       }
       return;
@@ -3732,6 +3876,28 @@ export function LauncherWindow() {
     } catch (error) {
       console.error("Failed to check path:", error);
       // Query is already set, search will still run
+    }
+  };
+
+  const handleSaveImageToDownloads = async (imagePath: string) => {
+    try {
+      const savedPath = await tauriApi.copyFileToDownloads(imagePath);
+      setSuccessMessage(`图片已保存到下载目录: ${savedPath}`);
+      setPastedImagePath(null); // 清除状态
+      setPastedImageDataUrl(null); // 清除预览
+      // 只添加到历史记录，不更新搜索结果，避免自动打开
+      try {
+        await tauriApi.addFileToHistory(savedPath);
+      } catch (error) {
+        // 静默处理历史记录添加错误
+        console.log("Failed to add to history:", error);
+      }
+      // 3秒后自动清除成功消息
+      setTimeout(() => {
+        setSuccessMessage(null);
+      }, 3000);
+    } catch (error) {
+      setErrorMessage("保存图片失败: " + (error as Error).message);
     }
   };
 
@@ -4089,13 +4255,15 @@ export function LauncherWindow() {
                   userSelect: 'none', 
                   WebkitUserSelect: 'none',
                   height: '100%',
-                  alignItems: 'center'
+                  alignItems: 'center',
+                  gap: '8px'
                 }}
                 onMouseDown={async (e) => {
                   // 如果点击的不是输入框，触发拖拽（这个逻辑是可靠的，从不失效）
                   const target = e.target as HTMLElement;
                   const isInput = target.tagName === 'INPUT' || target.closest('input');
-                  if (!isInput) {
+                  const isImage = target.tagName === 'IMG' || target.closest('img');
+                  if (!isInput && !isImage) {
                     // 阻止事件冒泡，避免 header 重复处理
                     e.stopPropagation();
                     e.preventDefault();
@@ -4104,6 +4272,22 @@ export function LauncherWindow() {
                   // 如果是输入框，不阻止冒泡，让输入框自己处理
                 }}
               >
+                {/* 粘贴图片预览 */}
+                {pastedImageDataUrl && (
+                  <img
+                    src={pastedImageDataUrl}
+                    alt="粘贴的图片"
+                    className="w-8 h-8 object-cover rounded border border-gray-300 flex-shrink-0"
+                    style={{ imageRendering: 'auto' }}
+                    onError={(e) => {
+                      // 如果图片加载失败，隐藏预览
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
+                  />
+                )}
                 <input
                   ref={inputRef}
                   type="text"
@@ -4560,6 +4744,52 @@ export function LauncherWindow() {
                           className={`text-xs mt-0.5 ${theme.usageText(isSelected)}`}
                         >
                           使用 {result.file.use_count} 次
+                        </div>
+                      )}
+                      {/* 粘贴图片的保存选项 */}
+                      {result.type === "file" && result.path === pastedImagePath && (
+                        <div 
+                          className="flex items-center gap-2 mt-1.5"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                          }}
+                        >
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              await handleSaveImageToDownloads(result.path);
+                            }}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                            }}
+                            className="text-xs px-3 py-1.5 rounded-md font-medium transition-all text-white hover:bg-blue-600"
+                            style={{ backgroundColor: '#3b82f6' }}
+                            title="保存到下载目录"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                                />
+                              </svg>
+                              <span>保存到下载目录</span>
+                            </div>
+                          </button>
                         </div>
                       )}
                       {result.type === "url" && (
