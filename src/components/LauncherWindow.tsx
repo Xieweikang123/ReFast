@@ -556,6 +556,31 @@ export function LauncherWindow() {
     loadOpenHistory();
   }, []);
 
+  // 静默预加载应用列表（组件挂载时，不显示加载状态）
+  useEffect(() => {
+    let isMounted = true;
+    const preloadApplications = async () => {
+      try {
+        // 静默加载，不设置 isLoading 状态
+        const allApps = await tauriApi.scanApplications();
+        if (isMounted) {
+          console.log(`[DEBUG] Preloaded ${allApps.length} applications`);
+          setApps(allApps);
+          // 不设置 filteredApps，等待用户输入查询时再设置
+        }
+      } catch (error) {
+        console.error("Failed to preload applications:", error);
+        // 预加载失败不影响用户体验，静默处理
+      }
+    };
+    // 延迟一小段时间，避免阻塞初始渲染
+    const timer = setTimeout(preloadApplications, 100);
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, []);
+
   // 监听插件快捷键（通过后端全局监听）
   const lastTriggeredRef = useRef<{ pluginId: string; time: number } | null>(null);
   
@@ -2879,24 +2904,19 @@ export function LauncherWindow() {
           });
         });
       } else {
-        // 正常扫描：直接返回结果
-        await new Promise<void>((resolve) => {
-          setTimeout(async () => {
-            try {
-              const allApps = await tauriApi.scanApplications();
-              console.log(`[DEBUG] Loaded ${allApps.length} applications`);
-              setApps(allApps);
-              setFilteredApps(allApps.slice(0, 10));
-            } catch (error) {
-              console.error("Failed to load applications:", error);
-              setApps([]);
-              setFilteredApps([]);
-            } finally {
-              setIsLoading(false);
-              resolve();
-            }
-          }, 0);
-        });
+        // 正常扫描：直接返回结果（移除不必要的延迟包装）
+        try {
+          const allApps = await tauriApi.scanApplications();
+          console.log(`[DEBUG] Loaded ${allApps.length} applications`);
+          setApps(allApps);
+          setFilteredApps(allApps.slice(0, 10));
+        } catch (error) {
+          console.error("Failed to load applications:", error);
+          setApps([]);
+          setFilteredApps([]);
+        } finally {
+          setIsLoading(false);
+        }
       }
     } catch (error) {
       console.error("Failed to load applications:", error);
@@ -3061,6 +3081,10 @@ export function LauncherWindow() {
       }>("everything-search-batch", (event) => {
         const { results: batchResults, total_count, current_count } = event.payload;
 
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H1',location:'LauncherWindow.tsx:batch',message:'batch event received',data:{batchLen:batchResults?.length ?? 0,total_count,current_count,cancelled:currentSearchRef.current?.cancelled ?? null,currentQuery:currentSearchRef.current?.query ?? null,finalResultsSet:finalResultsSetRef.current},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+
         // 搜索已取消，忽略本批次
         if (currentSearchRef.current?.cancelled) {
           return;
@@ -3201,12 +3225,23 @@ export function LauncherWindow() {
       });
       const response = await tauriApi.searchEverything(searchQuery);
       console.log("[DEBUG] tauriApi.searchEverything returned successfully for query:", searchQuery);
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H2',location:'LauncherWindow.tsx:final',message:'final response received',data:{respLen:response?.results?.length ?? 0,total_count:response?.total_count ?? null,currentQuery:currentSearchRef.current?.query ?? null,cancelled:currentSearchRef.current?.cancelled ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       
       // 检查是否是当前搜索，以及 query 是否仍然有效
+      const finalGuardState = {
+        currentSearchQuery: currentSearchRef.current?.query ?? null,
+        currentSearchCancelled: currentSearchRef.current?.cancelled ?? null,
+        incomingSearchQuery: searchQuery,
+        uiQuery: query,
+      };
+      console.log("[最终结果][guard-check]", finalGuardState);
       if (currentSearchRef.current?.cancelled || 
           currentSearchRef.current?.query !== searchQuery ||
           query.trim() !== searchQuery.trim()) {
-        console.log("Search was cancelled or superseded, ignoring final response");
+        console.warn("[最终结果][guard-blocked] 忽略最终响应", finalGuardState);
         // 如果搜索被取消，确保清理状态
         if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
           setIsSearchingEverything(false);
@@ -3225,16 +3260,32 @@ export function LauncherWindow() {
       );
       
       // 再次检查 query 是否仍然有效（防止在异步操作期间 query 被清空）
+      const secondCheckState = {
+        queryTrim: query.trim(),
+        searchQueryTrim: searchQuery.trim(),
+        queryMatch: query.trim() === searchQuery.trim(),
+        currentSearchRefExists: !!currentSearchRef.current,
+        currentSearchCancelled: currentSearchRef.current?.cancelled ?? null,
+        currentSearchQuery: currentSearchRef.current?.query ?? null,
+        queryMatchRef: currentSearchRef.current?.query === searchQuery,
+      };
+      console.log("[最终结果][second-check] 第二次检查状态", secondCheckState);
+      
       if (query.trim() === searchQuery.trim() && 
           currentSearchRef.current && 
           !currentSearchRef.current.cancelled &&
           currentSearchRef.current.query === searchQuery) {
+        console.log("[最终结果][second-check] ✓ 通过第二次检查，将处理结果");
         // 用最终结果覆盖批次累积的结果，因为最终结果才是后端实际返回的准确结果
         // 批次事件中的 total_count 是 Everything 找到的总数，可能远大于后端实际返回的结果数
         // 对结果进行去重，基于路径（path）字段，防止重复显示
         // 性能优化：使用 Map 实现 O(n) 去重，而不是 O(n²) 的 findIndex
         // 性能优化：使用 requestIdleCallback 延迟处理大量结果，避免阻塞主线程
         const processResults = () => {
+          console.log("[最终结果][processResults] 开始处理最终结果", {
+            respLen: response.results.length,
+            totalCount: response.total_count,
+          });
           const seenPaths = new Map<string, EverythingResult>();
           const uniqueResults: EverythingResult[] = [];
           for (const result of response.results) {
@@ -3243,6 +3294,19 @@ export function LauncherWindow() {
               uniqueResults.push(result);
             }
           }
+          console.log("[最终结果][process] 去重后数量", {
+            uniqueLen: uniqueResults.length,
+            totalCount: response.total_count,
+            currentSearch: currentSearchRef.current
+              ? { query: currentSearchRef.current.query, cancelled: currentSearchRef.current.cancelled }
+              : null,
+            uiQuery: query,
+          });
+
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/7b6f7af1-8135-4973-8f41-60f30b037947',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:'debug-session',runId:'run1',hypothesisId:'H3',location:'LauncherWindow.tsx:processResults',message:'processing final results',data:{uniqueLen:uniqueResults.length,total_count:response.total_count,currentQuery:currentSearchRef.current?.query ?? null,cancelled:currentSearchRef.current?.cancelled ?? null},timestamp:Date.now()})}).catch(()=>{});
+          // #endregion
+
           setEverythingResults(uniqueResults);
           setEverythingTotalCount(response.total_count);
           setEverythingCurrentCount(uniqueResults.length);
@@ -3255,10 +3319,15 @@ export function LauncherWindow() {
           processResults();
         } else {
           // 使用 setTimeout 将处理延迟到下一个事件循环，让 UI 有机会更新
+          console.log("[最终结果][process] 使用 setTimeout 延迟处理最终结果", {
+            respLen: response.results.length,
+            totalCount: response.total_count,
+          });
           setTimeout(processResults, 0);
         }
       } else {
         // Query 已改变，清空结果
+        console.warn("[最终结果][second-check] ✗ 第二次检查失败，清空结果", secondCheckState);
         setEverythingResults([]);
         setEverythingTotalCount(null);
         setEverythingCurrentCount(0);
