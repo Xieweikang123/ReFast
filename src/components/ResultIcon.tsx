@@ -62,8 +62,9 @@ export function ResultIcon({
     // 检查是否是 Windows 设置应用，如果是则使用齿轮图标
     const appName = (result.app?.name || result.displayName || '').toLowerCase();
     const appPath = (result.path || '').toLowerCase();
+    // 只对名称是"设置"/"Settings"或路径是ms-settings:的应用使用齿轮图标
+    // 不要对所有shell:appsfolder路径使用齿轮图标（因为所有UWP应用都是这个路径）
     const isSettingsApp = (appName === '设置' || appName === 'settings') || 
-                         appPath.startsWith('shell:appsfolder') || 
                          appPath.startsWith('ms-settings:');
     
     if (isSettingsApp) {
@@ -86,6 +87,30 @@ export function ResultIcon({
             strokeLinejoin="round"
             strokeWidth={2}
             d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+          />
+        </svg>
+      );
+    }
+    
+    // 检查是否是计算器应用，如果是则使用计算器图标
+    const isCalculatorApp = (appName === '计算器' || appName === 'calculator') ||
+                           appPath.includes('calculator') ||
+                           appPath.includes('windows.calculator');
+    
+    if (isCalculatorApp) {
+      // 计算器应用使用计算器图标
+      const className = size === "horizontal"
+        ? `${isSelected ? "w-9 h-9" : "w-7 h-7"} ${isSelected 
+            ? (resultStyle === "soft" ? "text-blue-600" : resultStyle === "skeuomorphic" ? "text-[#4a6fa5]" : "text-indigo-600")
+            : (resultStyle === "skeuomorphic" ? "text-gray-700" : "text-gray-600")}`
+        : `${iconSize} ${theme.iconColor(isSelected, "text-gray-600")}`;
+      return (
+        <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"
           />
         </svg>
       );

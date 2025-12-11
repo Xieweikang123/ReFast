@@ -670,9 +670,29 @@ pub async fn search_applications(
             .as_ref()
             .ok_or_else(|| "Applications not scanned yet. Call scan_applications first.".to_string())?;
 
+        // Ensure builtin calculator is always available (even if not in cache)
+        let mut apps_with_builtin = apps.clone();
+        let has_calculator = apps.iter().any(|app| {
+            let name_lower = app.name.to_lowercase();
+            name_lower == "计算器" || name_lower == "calculator" ||
+            name_lower.contains("计算器") || name_lower.contains("calculator")
+        });
+        
+        if !has_calculator {
+            let builtin_calculator = app_search::AppInfo {
+                name: "计算器".to_string(),
+                path: "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_string(),
+                icon: None,
+                description: Some("Windows 计算器".to_string()),
+                name_pinyin: Some("jisuanqi".to_string()),
+                name_pinyin_initials: Some("jsq".to_string()),
+            };
+            apps_with_builtin.push(builtin_calculator);
+        }
+
         // Perform search while holding the lock (search is fast, lock is held briefly)
         // The search function only reads from the apps list, so this is safe
-        let mut results = app_search::windows::search_apps(&query_clone, apps);
+        let mut results = app_search::windows::search_apps(&query_clone, &apps_with_builtin);
         
         // 如果搜索结果为空，检查特定路径是否存在匹配的应用
         if results.is_empty() && !query_clone.trim().is_empty() {
@@ -760,17 +780,23 @@ pub async fn search_applications(
             let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
             
             for path_str in results_paths {
-                let path = std::path::Path::new(&path_str);
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_lowercase());
-                let icon = if ext == Some("lnk".to_string()) {
-                    app_search::windows::extract_lnk_icon_base64(path)
-                } else if ext == Some("exe".to_string()) {
-                    app_search::windows::extract_icon_base64(path)
+                let path_lower = path_str.to_lowercase();
+                let icon = if path_lower.starts_with("shell:appsfolder\\") {
+                    // UWP app - extract icon using special method
+                    app_search::windows::extract_uwp_app_icon_base64(&path_str)
                 } else {
-                    None
+                    let path = std::path::Path::new(&path_str);
+                    let ext = path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_lowercase());
+                    if ext == Some("lnk".to_string()) {
+                        app_search::windows::extract_lnk_icon_base64(path)
+                    } else if ext == Some("exe".to_string()) {
+                        app_search::windows::extract_icon_base64(path)
+                    } else {
+                        None
+                    }
                 };
 
                 if let Some(icon_data) = icon {

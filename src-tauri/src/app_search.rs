@@ -200,6 +200,7 @@ pub mod windows {
         let mut deduplicated = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
         let mut settings_apps: Vec<AppInfo> = Vec::new();
+        let mut calculator_apps: Vec<AppInfo> = Vec::new();
         
         for app in apps {
             let name_lower = app.name.to_lowercase();
@@ -209,6 +210,10 @@ pub mod windows {
             if name_lower == "设置" || name_lower == "settings" || 
                name_lower.contains("设置") || name_lower.contains("settings") {
                 settings_apps.push(app);
+            } else if name_lower == "计算器" || name_lower == "calculator" ||
+                      name_lower.contains("计算器") || name_lower.contains("calculator") {
+                // Special handling for Calculator app
+                calculator_apps.push(app);
             } else {
                 // For other apps, normal deduplication
                 if !seen_names.contains(&name_lower) {
@@ -249,6 +254,34 @@ pub mod windows {
         }
         seen_names.insert("设置".to_string());
         seen_names.insert("settings".to_string());
+        
+        // Add Calculator app(s) - prefer shell:AppsFolder
+        // IMPORTANT: Always add at least one Calculator app (from builtin if UWP scan didn't find it)
+        if !calculator_apps.is_empty() {
+            // Sort calculator apps by priority (prefer shell:AppsFolder)
+            calculator_apps.sort_by(|a, b| {
+                let a_priority = if a.path.starts_with("shell:AppsFolder") { 0 } else { 1 };
+                let b_priority = if b.path.starts_with("shell:AppsFolder") { 0 } else { 1 };
+                a_priority.cmp(&b_priority)
+            });
+            
+            // Add the first (best) Calculator app
+            let selected_calculator = calculator_apps[0].clone();
+            deduplicated.push(selected_calculator);
+        } else {
+            // UWP scan didn't find Calculator, add builtin one
+            let builtin_calculator = AppInfo {
+                name: "计算器".to_string(),
+                path: "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_string(),
+                icon: None,
+                description: Some("Windows 计算器".to_string()),
+                name_pinyin: Some("jisuanqi".to_string()),
+                name_pinyin_initials: Some("jsq".to_string()),
+            };
+            deduplicated.push(builtin_calculator);
+        }
+        seen_names.insert("计算器".to_string());
+        seen_names.insert("calculator".to_string());
         
         apps = deduplicated;
         
