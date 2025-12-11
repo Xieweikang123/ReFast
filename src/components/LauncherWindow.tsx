@@ -764,7 +764,11 @@ export function LauncherWindow() {
             return result.type === "plugin";
           });
           
-          const horizontalResults = [...executableResults, ...pluginResults];
+          const systemFolderResults = results.filter(result => {
+            return result.type === "system_folder";
+          });
+          
+          const horizontalResults = [...executableResults, ...pluginResults, ...systemFolderResults];
           const horizontalIndices = horizontalResults.map(hr => results.indexOf(hr)).filter(idx => idx >= 0);
           
           
@@ -1937,10 +1941,11 @@ export function LauncherWindow() {
     const deduplicatedExecutableResults = Array.from(normalizedPathMap.values());
     
     const pluginResults = allResults.filter(result => result.type === "plugin");
-    const horizontal = [...deduplicatedExecutableResults, ...pluginResults];
+    const systemFolderResults = allResults.filter(result => result.type === "system_folder");
+    const horizontal = [...deduplicatedExecutableResults, ...pluginResults, ...systemFolderResults];
     
     const vertical = allResults.filter(result => {
-      // Not an executable app and not a plugin
+      // Not an executable app, not a plugin, and not a system folder
       if (result.type === "app") {
         const pathLower = result.path.toLowerCase();
         // 排除可执行文件、快捷方式，以及 UWP 应用 URI（这些应该在横向列表中）
@@ -1949,7 +1954,7 @@ export function LauncherWindow() {
                !pathLower.startsWith('shell:appsfolder') &&
                !pathLower.startsWith('ms-settings:');
       }
-      return result.type !== "plugin";
+      return result.type !== "plugin" && result.type !== "system_folder";
     });
     return { horizontal, vertical };
   };
@@ -2262,7 +2267,11 @@ export function LauncherWindow() {
       return result.type === "plugin";
     });
     
-    const horizontalResults = [...executableResults, ...pluginResults];
+    const systemFolderResults = results.filter(result => {
+      return result.type === "system_folder";
+    });
+    
+    const horizontalResults = [...executableResults, ...pluginResults, ...systemFolderResults];
     
     
     // If there are horizontal results, set selectedIndex to the first one
