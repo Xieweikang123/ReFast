@@ -518,8 +518,12 @@ fn main() {
                 }
             }
 
-            // Load file history on startup
-            file_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
+            // 性能优化：异步预加载文件历史缓存，避免首次搜索时访问 SQLite
+            // 不阻塞应用启动，在后台加载
+            let app_data_dir_clone = app_data_dir.clone();
+            std::thread::spawn(move || {
+                file_history::load_history(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
+            });
             open_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist
 

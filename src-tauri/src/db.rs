@@ -60,6 +60,29 @@ pub fn get_connection(app_data_dir: &Path) -> Result<Connection, String> {
     Ok(conn)
 }
 
+/// Open a read-only SQLite connection for search operations.
+/// This reduces file lock contention compared to read-write connections.
+pub fn get_readonly_connection(app_data_dir: &Path) -> Result<Connection, String> {
+    let db_path = ensure_db_path(app_data_dir)?;
+    // 使用只读标志，减少文件锁竞争
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+
+    let conn = Connection::open_with_flags(&db_path, flags)
+        .map_err(|e| format!("Failed to open read-only database: {}", e))?;
+
+    // 只读连接不需要设置 WAL 模式，减少开销
+    conn.execute_batch(
+        r#"
+        PRAGMA synchronous = NORMAL;
+        PRAGMA foreign_keys = ON;
+    "#,
+    )
+    .map_err(|e| format!("Failed to set SQLite pragmas: {}", e))?;
+
+    Ok(conn)
+}
+
 fn run_migrations(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"

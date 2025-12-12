@@ -1876,11 +1876,6 @@ pub fn get_everything_search_range(
         Vec::new()
     };
     
-    // 调试日志：记录实际返回的数量
-    eprintln!(
-        "[RUST] get_everything_search_range: session_id={}, offset={}, limit={}, total_in_session={}, total_count={}, returned={}",
-        session_id, offset, limit, total_count, session.total_count, items.len()
-    );
 
     Ok(EverythingSearchRangeResponse {
         offset,

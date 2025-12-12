@@ -1259,6 +1259,18 @@ export function LauncherWindow() {
       const hasResults = filteredApps.length > 0 || filteredFiles.length > 0 || filteredMemos.length > 0 || 
                          filteredPlugins.length > 0 || everythingResults.length > 0;
       
+      console.log("[搜索调试] 会话检查:", {
+        hasActiveSession,
+        currentSearchQuery: currentSearchQueryRef.current,
+        trimmedQuery,
+        hasResults,
+        filteredApps: filteredApps.length,
+        filteredFiles: filteredFiles.length,
+        filteredMemos: filteredMemos.length,
+        filteredPlugins: filteredPlugins.length,
+        everythingResults: everythingResults.length,
+      });
+      
       // 如果已有相同查询的活跃会话且有结果，跳过重复搜索
       if (hasActiveSession && hasResults) {
         console.log("[搜索调试] ✓ 相同查询已有活跃会话且有结果，跳过重复搜索");
@@ -1273,6 +1285,21 @@ export function LauncherWindow() {
         closeSessionSafe(oldSessionId).catch((err) => {
           console.warn("[搜索调试] 关闭旧会话失败:", err);
         });
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
+      }
+      
+      // 如果会话存在但结果为空，说明结果被清空了，需要重新搜索
+      if (hasActiveSession && !hasResults) {
+        console.log("[搜索调试] ⚠ 会话存在但结果为空，重新搜索");
+        // 重置会话状态，强制重新搜索
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          closeSessionSafe(oldSessionId).catch((err) => {
+            console.warn("[搜索调试] 关闭空结果会话失败:", err);
+          });
+        }
         pendingSessionIdRef.current = null;
         currentSearchQueryRef.current = "";
         displayedSearchQueryRef.current = "";
@@ -1329,11 +1356,9 @@ export function LauncherWindow() {
         handleSearchPlugins(trimmedQuery);
       }, 10);
       
-      // searchFileHistory 需要加锁和从 SQLite 加载数据，延迟更长时间执行
-      // 避免阻塞 Everything 搜索（已改为异步，但延迟执行进一步降低影响）
-      setTimeout(() => {
-        searchFileHistory(trimmedQuery);
-      }, 100); // 延迟 100ms，让 Everything 搜索先完成
+      // searchFileHistory 需要加锁和从 SQLite 加载数据
+      // 已改为异步执行，不阻塞 Everything 搜索
+      searchFileHistory(trimmedQuery);
     }, debounceTime) as unknown as number;
     
     debounceTimeoutRef.current = timeoutId;
@@ -3046,6 +3071,7 @@ export function LauncherWindow() {
         return;
       }
       
+      // 恢复真实查询（已优化：使用只读连接减少 SQLite 文件锁竞争）
       const results = await tauriApi.searchFileHistory(searchQuery);
       
       // Only update if query hasn't changed

@@ -32,8 +32,26 @@ pub fn load_history_into(
     state: &mut HashMap<String, FileHistoryItem>,
     app_data_dir: &Path,
 ) -> Result<(), String> {
-    let conn = db::get_connection(app_data_dir)?;
-    maybe_migrate_from_json(&conn, app_data_dir)?;
+    // 性能优化：搜索操作优先使用只读连接，减少文件锁竞争
+    // 只读连接不能执行迁移，所以先检查数据库是否存在
+    let db_path = db::get_db_path(app_data_dir);
+    let conn = if db_path.exists() {
+        // 数据库已存在，使用只读连接（减少锁竞争）
+        match db::get_readonly_connection(app_data_dir) {
+            Ok(conn) => conn,
+            Err(_) => {
+                // 如果只读连接失败，回退到读写连接
+                let conn = db::get_connection(app_data_dir)?;
+                maybe_migrate_from_json(&conn, app_data_dir)?;
+                conn
+            }
+        }
+    } else {
+        // 数据库不存在，使用读写连接（需要创建和迁移）
+        let conn = db::get_connection(app_data_dir)?;
+        maybe_migrate_from_json(&conn, app_data_dir)?;
+        conn
+    };
 
     println!(
         "[后端] file_history.load_history_into: Loading from SQLite at {:?}",
@@ -76,9 +94,30 @@ pub fn load_history_into(
 }
 
 // Legacy function for backward compatibility - but now uses lock_history internally
+// 性能优化：应用启动时预加载缓存，避免首次搜索时访问 SQLite
 pub fn load_history(app_data_dir: &Path) -> Result<(), String> {
+    println!("[file_history] load_history: 开始预加载缓存...");
+    // 先检查缓存是否已加载
+    {
+        let state = lock_history()?;
+        if !state.is_empty() {
+            // 缓存已加载，无需重复加载
+            println!("[file_history] load_history: ✓ 缓存已加载（{} 条），无需重复加载", state.len());
+            return Ok(());
+        }
+        println!("[file_history] load_history: 缓存为空，需要加载");
+    }
+    // 缓存为空，加载数据
     let mut state = lock_history_write()?;
-    load_history_into(&mut state, app_data_dir)
+    // 双重检查：可能其他线程已经加载了
+    if state.is_empty() {
+        println!("[file_history] load_history: 开始从 SQLite 加载...");
+        load_history_into(&mut state, app_data_dir)?;
+        println!("[file_history] load_history: ✓ 预加载完成，缓存大小: {}", state.len());
+    } else {
+        println!("[file_history] load_history: ✓ 其他线程已加载，缓存大小: {}", state.len());
+    }
+    Ok(())
 }
 
 // Save history from a provided state (no locking)
@@ -239,10 +278,11 @@ pub fn lock_history(
     // 使用读锁，不会阻塞其他读操作
     match FILE_HISTORY.read() {
         Ok(guard) => {
-            // 不再打印锁日志，减少日志输出
+            println!("[file_history] lock_history: 获取读锁成功，缓存大小: {}", guard.len());
             Ok(guard)
         }
         Err(e) => {
+            println!("[file_history] lock_history: 获取读锁失败: {}", e);
             Err(format!("Failed to acquire read lock: {}", e))
         }
     }
@@ -251,9 +291,16 @@ pub fn lock_history(
 // 获取写锁的辅助函数（需要公开，供其他模块使用）
 pub fn lock_history_write(
 ) -> Result<std::sync::RwLockWriteGuard<'static, HashMap<String, FileHistoryItem>>, String> {
+    println!("[file_history] lock_history_write: 尝试获取写锁...");
     match FILE_HISTORY.write() {
-        Ok(guard) => Ok(guard),
-        Err(e) => Err(format!("Failed to acquire write lock: {}", e)),
+        Ok(guard) => {
+            println!("[file_history] lock_history_write: ✓ 获取写锁成功，缓存大小: {}", guard.len());
+            Ok(guard)
+        }
+        Err(e) => {
+            println!("[file_history] lock_history_write: ✗ 获取写锁失败: {}", e);
+            Err(format!("Failed to acquire write lock: {}", e))
+        }
     }
 }
 
@@ -337,28 +384,50 @@ pub fn search_in_history(
 }
 
 // Search helper that ensures data is loaded from SQLite.
+// 性能优化：优先使用内存缓存，避免每次搜索都访问 SQLite
 pub fn search_file_history(
     query: &str,
     app_data_dir: &Path,
 ) -> Result<Vec<FileHistoryItem>, String> {
-    // 性能优化：先尝试读锁（不需要阻塞），如果数据为空再使用写锁加载数据
+    println!("[file_history] search_file_history: 开始搜索，查询: '{}'", query);
+    
+    // 性能优化：先尝试读锁（不需要阻塞），如果数据已加载直接搜索
     {
+        println!("[file_history] search_file_history: 尝试获取读锁检查缓存...");
         let state = lock_history()?;
         if !state.is_empty() {
-            // 数据已加载，直接搜索
-            return Ok(search_in_history(&state, query));
+            // 缓存已加载，直接使用缓存搜索（不访问 SQLite）
+            println!("[file_history] search_file_history: ✓ 缓存已加载（{} 条），直接使用缓存搜索，不访问 SQLite", state.len());
+            let results = search_in_history(&state, query);
+            println!("[file_history] search_file_history: ✓ 缓存搜索完成，返回 {} 条结果", results.len());
+            return Ok(results);
         }
+        println!("[file_history] search_file_history: ✗ 缓存为空，需要从 SQLite 加载");
     }
-    // 数据为空，需要加载（使用写锁）
+    
+    // 缓存为空，需要加载（使用写锁，只加载一次）
+    // 注意：这里会访问 SQLite，但只会在第一次搜索或缓存被清空时执行
     {
+        println!("[file_history] search_file_history: 获取写锁准备加载数据...");
         let mut state = lock_history_write()?;
+        // 双重检查：可能其他线程已经加载了
         if state.is_empty() {
+            println!("[file_history] search_file_history: 缓存确实为空，开始从 SQLite 加载...");
+            // 只在缓存为空时加载，避免重复加载
             load_history_into(&mut state, app_data_dir)?;
+            println!("[file_history] search_file_history: ✓ SQLite 加载完成，缓存大小: {}", state.len());
+        } else {
+            println!("[file_history] search_file_history: ✓ 其他线程已加载，缓存大小: {}", state.len());
         }
-        // 释放写锁后，使用读锁搜索
+        // 释放写锁
     }
+    
+    // 使用读锁进行搜索（缓存已加载，不访问 SQLite）
+    println!("[file_history] search_file_history: 使用读锁进行搜索...");
     let state = lock_history()?;
-    Ok(search_in_history(&state, query))
+    let results = search_in_history(&state, query);
+    println!("[file_history] search_file_history: ✓ 搜索完成，返回 {} 条结果", results.len());
+    Ok(results)
 }
 
 pub fn delete_file_history(path: String, app_data_dir: &Path) -> Result<(), String> {
