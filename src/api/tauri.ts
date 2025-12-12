@@ -171,6 +171,7 @@ export const tauriApi = {
       sortOrder?: "asc" | "desc";
       matchWholeWord?: boolean;
       matchFolderNameOnly?: boolean;
+      chunkSize?: number;
     }
   ): Promise<{ sessionId: string; totalCount: number; truncated?: boolean }> {
     return invoke("start_everything_search_session", {

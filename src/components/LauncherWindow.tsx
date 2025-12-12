@@ -126,7 +126,6 @@ export function LauncherWindow() {
   // 记录应用中心弹窗是否打开，用于全局 ESC 处理时优先关闭应用中心，而不是隐藏整个窗口
   const isPluginListModalOpenRef = useRef(false);
   const shouldPreserveScrollRef = useRef(false); // 标记是否需要保持滚动位置
-  const finalResultsSetRef = useRef(false); // 方案 B 中仅用于调试/校验，不再阻止批次更新
   const incrementalLoadRef = useRef<number | null>(null); // 用于取消增量加载
   const incrementalTimeoutRef = useRef<number | null>(null); // 用于取消增量加载的 setTimeout
   const lastSearchQueryRef = useRef<string>(""); // 用于去重，避免相同查询重复搜索
@@ -144,6 +143,9 @@ export function LauncherWindow() {
     isMemoModalOpenRef.current = isMemoModalOpen;
   }, [isMemoModalOpen]);
 
+  // 组件卸载时清理 Everything 搜索会话
+  // 注意：这个 useEffect 需要在 closeSessionSafe 定义之后，所以放在后面
+
   useEffect(() => {
     isPluginListModalOpenRef.current = isPluginListModalOpen;
   }, [isPluginListModalOpen]);
@@ -151,6 +153,8 @@ export function LauncherWindow() {
   useEffect(() => {
     closeOnBlurRef.current = closeOnBlur;
   }, [closeOnBlur]);
+
+  // 注意：组件卸载时清理 Everything 搜索会话的 useEffect 在 closeSessionSafe 定义之后
 
   // 动态注入滚动条样式，确保样式生效（随风格变化）
   // 注意：Windows 11 可能使用系统原生滚动条，webkit-scrollbar 样式可能不生效
@@ -1148,11 +1152,14 @@ export function LauncherWindow() {
     }
     
     if (trimmedQuery === "") {
-      // Cancel any ongoing search
-      if (currentSearchRef.current) {
-        currentSearchRef.current.cancelled = true;
-        currentSearchRef.current = null;
+      // 关闭当前 Everything 搜索会话
+      const oldSessionId = pendingSessionIdRef.current;
+      if (oldSessionId) {
+        closeSessionSafe(oldSessionId);
       }
+      pendingSessionIdRef.current = null;
+      currentSearchQueryRef.current = "";
+      displayedSearchQueryRef.current = "";
       lastSearchQueryRef.current = "";
       
       // React 会自动批处理 useEffect 中的状态更新，不需要 flushSync
@@ -1217,12 +1224,12 @@ export function LauncherWindow() {
     }
     
     // Debounce search to avoid too many requests
-    // 优化防抖时间：增加防抖时间以应对频繁输入
-    // Short queries (1-2 chars): 400ms (增加延迟，减少频繁搜索)
+    // 优化防抖时间：与 EverythingSearchWindow 保持一致，提升响应速度
+    // Short queries (1-2 chars): 320ms (与 EverythingSearchWindow 一致)
     // Medium queries (3-5 chars): 300ms
     // Long queries (6+ chars): 200ms (仍然较快响应长查询)
     const queryLength = trimmedQuery.length;
-    let debounceTime = 400; // default for short queries
+    let debounceTime = 320; // default for short queries (与 EverythingSearchWindow 一致)
     if (queryLength >= 3 && queryLength <= 5) {
       debounceTime = 300; // medium queries
     } else if (queryLength >= 6) {
@@ -1246,90 +1253,87 @@ export function LauncherWindow() {
       }
       
       const isPathQuery = isLikelyAbsolutePath(trimmedQuery);
-      if (isPathQuery) {
-        handleDirectPathLookup(trimmedQuery);
-      } else {
-        setDirectPathResult(null);
+      
+      // 检查是否已有相同查询的活跃会话（快速检查，避免重复搜索）
+      const hasActiveSession = pendingSessionIdRef.current && currentSearchQueryRef.current === trimmedQuery;
+      const hasResults = filteredApps.length > 0 || filteredFiles.length > 0 || filteredMemos.length > 0 || 
+                         filteredPlugins.length > 0 || everythingResults.length > 0;
+      
+      // 如果已有相同查询的活跃会话且有结果，跳过重复搜索
+      if (hasActiveSession && hasResults) {
+        console.log("[搜索调试] ✓ 相同查询已有活跃会话且有结果，跳过重复搜索");
+        return;
       }
       
-      // 在防抖结束后、开始搜索前，取消之前的 Everything 搜索
-      // 这样可以确保只有在真正开始新搜索时才取消旧搜索
-      console.log("[搜索调试] setTimeout检查currentSearchRef:", {
-        hasCurrentSearch: !!currentSearchRef.current,
-        currentSearchQuery: currentSearchRef.current?.query,
-        trimmedQuery,
-        queryMatch: currentSearchRef.current?.query === trimmedQuery,
-        isCancelled: currentSearchRef.current?.cancelled
-      });
-      
-      if (currentSearchRef.current) {
-        if (currentSearchRef.current.query !== trimmedQuery) {
-          console.log("[搜索调试] ✗ 查询不同，取消旧搜索");
-          // 标记旧搜索为已取消
-          currentSearchRef.current.cancelled = true;
-          // 立即清空引用，避免状态混乱
-          currentSearchRef.current = null;
-        } else {
-          console.log("[搜索调试] ⚠ 查询相同，检查结果状态");
-          // query 相同，不取消，直接返回（避免重复搜索）
-          // 但是，如果结果为空，应该重新搜索（可能是用户全选后再次输入相同内容）
-          const hasResults = filteredApps.length > 0 || filteredFiles.length > 0 || filteredMemos.length > 0 || 
-                             filteredPlugins.length > 0 || everythingResults.length > 0;
-          console.log("[搜索调试] setTimeout结果检查:", {
-            hasResults,
-            filteredApps: filteredApps.length,
-            filteredFiles: filteredFiles.length,
-            filteredMemos: filteredMemos.length,
-            filteredPlugins: filteredPlugins.length,
-            everythingResults: everythingResults.length
-          });
-          if (!hasResults) {
-            console.log("[搜索调试] ✗ 结果为空，清空currentSearchRef，继续搜索");
-            // 清空currentSearchRef，允许重新搜索everything
-            if (currentSearchRef.current) {
-              currentSearchRef.current.cancelled = true;
-              currentSearchRef.current = null;
-            }
-            // 继续执行搜索，不返回
-          } else {
-            console.log("[搜索调试] ✓ 有结果，跳过重复搜索");
-            return;
-          }
-        }
-      } else {
-        console.log("[搜索调试] ✓ 无currentSearchRef，继续执行搜索");
+      // 如果查询不同，关闭旧会话（不阻塞，异步执行）
+      if (pendingSessionIdRef.current && currentSearchQueryRef.current !== trimmedQuery) {
+        console.log("[搜索调试] ✗ 查询不同，关闭旧会话");
+        const oldSessionId = pendingSessionIdRef.current;
+        // 不阻塞等待，立即开始新搜索
+        closeSessionSafe(oldSessionId).catch((err) => {
+          console.warn("[搜索调试] 关闭旧会话失败:", err);
+        });
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
       }
       
       // 标记当前查询为已搜索
       lastSearchQueryRef.current = trimmedQuery;
       console.log("[搜索调试] ✓ 开始执行搜索，更新lastSearchQueryRef为:", trimmedQuery);
-      // 立即清空所有搜索结果，避免显示旧结果
-      setFilteredApps([]);
-      setFilteredFiles([]);
-      setFilteredMemos([]);
-      setFilteredPlugins([]);
-      console.log("[搜索调试] 调用各搜索函数:", {
-        isEverythingAvailable,
-        isPathQuery
-      });
-      searchApplications(trimmedQuery);
-      searchFileHistory(trimmedQuery);
-      searchMemos(trimmedQuery);
-      handleSearchPlugins(trimmedQuery);
-      if (isEverythingAvailable && !isPathQuery) {
-        console.log("[搜索调试] 调用searchEverything:", trimmedQuery);
-        searchEverything(trimmedQuery).catch((error) => {
-          console.error("[搜索调试] searchEverything错误:", error);
-        });
+      
+      // 处理绝对路径查询
+      if (isPathQuery) {
+        handleDirectPathLookup(trimmedQuery);
+        // 绝对路径查询不需要 Everything 结果
+        setEverythingResults([]);
+        setEverythingTotalCount(null);
+        setEverythingCurrentCount(0);
+        setIsSearchingEverything(false);
+        // 关闭当前会话
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          closeSessionSafe(oldSessionId).catch((err) => {
+            console.warn("[搜索调试] 关闭会话失败:", err);
+          });
+        }
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
       } else {
-        if (isPathQuery) {
-          // 绝对路径查询不需要 Everything 结果，避免显示旧搜索残留
-          setEverythingResults([]);
-          setEverythingTotalCount(null);
-          setEverythingCurrentCount(0);
-          setIsSearchingEverything(false);
+        setDirectPathResult(null);
+        
+        // 性能优化：优先启动 Everything 搜索（最重要），然后延迟执行其他搜索
+        // Everything 搜索是异步的，不会阻塞其他搜索
+        if (isEverythingAvailable) {
+          console.log("[搜索调试] 优先调用startSearchSession:", trimmedQuery);
+          // 立即启动 Everything 搜索，不等待其他搜索
+          startSearchSession(trimmedQuery).catch((error) => {
+            console.error("[搜索调试] startSearchSession错误:", error);
+          });
         }
       }
+      
+      // ========== 性能优化：延迟执行其他搜索，确保 Everything 搜索优先执行 ==========
+      // Everything 搜索是异步的，立即启动不会阻塞
+      // 其他搜索延迟执行，避免与 Everything 搜索竞争资源
+      
+      // 应用搜索暂时禁用（需要获取 APP_CACHE 锁，影响性能）
+      // setTimeout(() => {
+      //   searchApplications(trimmedQuery);
+      // }, 200);
+      
+      // 备忘录和插件搜索是纯前端过滤，延迟较短
+      setTimeout(() => {
+        searchMemos(trimmedQuery);
+        handleSearchPlugins(trimmedQuery);
+      }, 10);
+      
+      // searchFileHistory 需要加锁和从 SQLite 加载数据，延迟更长时间执行
+      // 避免阻塞 Everything 搜索（已改为异步，但延迟执行进一步降低影响）
+      setTimeout(() => {
+        searchFileHistory(trimmedQuery);
+      }, 100); // 延迟 100ms，让 Everything 搜索先完成
     }, debounceTime) as unknown as number;
     
     debounceTimeoutRef.current = timeoutId;
@@ -3059,286 +3063,283 @@ export function LauncherWindow() {
   };
 
 
-  // Use ref to track current search request and allow cancellation
-  const currentSearchRef = useRef<{ query: string; cancelled: boolean } | null>(null);
-  // 跟踪当前显示的搜索 query，用于判断是否是新搜索（避免闪烁）
+  // 会话模式相关的 ref（完全复刻 EverythingSearchWindow）
+  const pendingSessionIdRef = useRef<string | null>(null);
+  const currentSearchQueryRef = useRef<string>("");
+  const creatingSessionQueryRef = useRef<string | null>(null);
   const displayedSearchQueryRef = useRef<string>("");
+  const LAUNCHER_PAGE_SIZE = 50; // 启动器只显示前 50 条结果
+  const LAUNCHER_MAX_RESULTS = 5000; // 启动器会话最大结果数（与 EverythingSearchWindow 一致，确保性能）
 
-  // 监听 Everything 搜索的批次事件：实时累积结果 + 更新进度（方案 B）
-  useEffect(() => {
-    let unlistenFn: (() => void) | null = null;
-
-    const setupBatchListener = async () => {
-      const unlisten = await listen<{
-        results: EverythingResult[];
-        total_count: number;
-        current_count: number;
-      }>("everything-search-batch", (event) => {
-        const { results: batchResults, total_count, current_count } = event.payload;
-
-        // 搜索已取消，忽略本批次
-        if (currentSearchRef.current?.cancelled) {
-          return;
-        }
-
-        // 如果已经收到最终结果，忽略批次事件（防止重复添加）
-        // 因为批次事件和最终结果包含相同的数据，如果最终结果已经设置，批次事件就是重复的
-        if (finalResultsSetRef.current) {
-          return;
-        }
-
-        // 如果当前 query 为空，忽略批次结果（防止在清空搜索后仍显示结果）
-        // 使用函数式更新来获取最新的 query 值
-        setEverythingResults((prev) => {
-          // 检查当前 query 是否为空（通过检查 currentSearchRef）
-          if (!currentSearchRef.current || currentSearchRef.current.cancelled) {
-            return prev; // 保持当前状态，不更新
-          }
-          
-          const currentQuery = currentSearchRef.current.query;
-          
-          // 如果这是新搜索的第一批（query 不同），清空旧结果并替换为新结果
-          // 这样可以避免在切换搜索关键词时出现闪烁
-          if (displayedSearchQueryRef.current !== currentQuery) {
-            displayedSearchQueryRef.current = currentQuery;
-            return batchResults.slice(); // 拷贝一份，替换旧结果
-          }
-          
-          // 如果这是新搜索的第一批（prev.length === 0），直接用这一批
-          if (prev.length === 0) {
-            displayedSearchQueryRef.current = currentQuery;
-            return batchResults.slice(); // 拷贝一份
-          }
-
-          // 按顺序追加当前批次结果
-          // 不限制数量，因为最终结果会在 searchEverything 的最终响应中覆盖
-          return [...prev, ...batchResults];
-        });
-
-        // 只有在搜索未取消时才更新总数和当前已加载数量
-        if (currentSearchRef.current && !currentSearchRef.current.cancelled) {
-          setEverythingTotalCount(total_count);
-          setEverythingCurrentCount(current_count);
-        }
-
-      });
-
-      unlistenFn = unlisten;
-    };
-
-    setupBatchListener();
-
-    return () => {
-      if (unlistenFn) {
-        unlistenFn();
+  // 关闭会话的安全方法（完全复刻 EverythingSearchWindow）
+  const closeSessionSafe = useCallback(
+    async (id?: string | null) => {
+      const target = id ?? pendingSessionIdRef.current;
+      if (!target) return;
+      try {
+        await tauriApi.closeEverythingSearchSession(target);
+        console.log("[Launcher] 关闭搜索会话:", target);
+      } catch (error) {
+        console.warn("[Launcher] 关闭搜索会话失败:", error);
       }
-    };
-  }, []);
+    },
+    []
+  );
 
-  const searchEverything = async (searchQuery: string) => {
-    // Don't search if query is empty
-    if (!searchQuery || searchQuery.trim() === "") {
-      setEverythingResults([]);
-      setEverythingTotalCount(null);
-      setEverythingCurrentCount(0);
-      setIsSearchingEverything(false);
-      displayedSearchQueryRef.current = ""; // 清空显示的搜索 query
-      // 取消当前搜索
-      if (currentSearchRef.current) {
-        currentSearchRef.current.cancelled = true;
-        currentSearchRef.current = null;
-      }
-      return;
-    }
-    
-    if (!isEverythingAvailable) {
-      setEverythingResults([]);
-      setEverythingTotalCount(null);
-      setEverythingCurrentCount(0);
-      setIsSearchingEverything(false);
-      displayedSearchQueryRef.current = ""; // 清空显示的搜索 query
-      return;
-    }
-    
-    // 检查是否是重复调用（在取消之前检查，避免不必要的取消操作）
-    // 注意：防抖结束后已经检查过了，但这里需要再次检查，因为可能有异步调用
-    console.log("[搜索调试] searchEverything开始:", {
-      searchQuery,
-      hasCurrentSearch: !!currentSearchRef.current,
-      currentSearchQuery: currentSearchRef.current?.query,
-      currentSearchCancelled: currentSearchRef.current?.cancelled,
-      queryMatch: currentSearchRef.current?.query === searchQuery
-    });
-    
-    if (currentSearchRef.current) {
-      if (currentSearchRef.current.query === searchQuery) {
-        console.log("[搜索调试] ✗ searchEverything: 查询相同，直接返回（重复调用保护）");
-        // 如果 query 相同，说明是重复调用，不应该取消
-        return;
-      }
-      console.log("[搜索调试] ✓ searchEverything: 查询不同，继续执行");
-      // 如果 query 不同，说明需要取消旧搜索
-    } else {
-      console.log("[搜索调试] ✓ searchEverything: 无currentSearchRef，继续执行");
-    }
-
-    // 后端存在"相同查询进行中则报错跳过"的保护，这里每次新搜索前主动取消上一轮，避免误判卡死
-    try {
-      await tauriApi.cancelEverythingSearch();
-    } catch (cancelErr) {
-      console.warn("取消上一轮 Everything 搜索失败（忽略继续）:", cancelErr);
-    }
-    // 前端同步清理当前搜索引用，允许同一关键字立即重新发起请求
-    if (currentSearchRef.current) {
-      console.log("[搜索调试] searchEverything: 清空旧的currentSearchRef:", {
-        oldQuery: currentSearchRef.current.query,
-        oldCancelled: currentSearchRef.current.cancelled
-      });
-      currentSearchRef.current.cancelled = true;
-      currentSearchRef.current = null;
-    }
-    
-    // 创建新的搜索请求（确保在清空旧引用后才创建新引用）
-    const searchRequest = { query: searchQuery, cancelled: false };
-    currentSearchRef.current = searchRequest;
-    console.log("[搜索调试] searchEverything: 创建新的currentSearchRef:", {
-      query: searchRequest.query,
-      cancelled: searchRequest.cancelled
-    });
-    
-    // 性能优化：不要立即清空旧结果，避免列表闪烁
-    // 旧结果会保留显示，直到新结果的第一批到达（在批次事件处理中清空）
-    // 只重置计数和 loading 状态
-    setEverythingTotalCount(null);
-    setEverythingCurrentCount(0);
-    setIsSearchingEverything(true);
-    
-    // 标记：最终结果尚未设置，仅用于后面做校验日志
-    finalResultsSetRef.current = false;
-    
-    try {
-      const response = await tauriApi.searchEverything(searchQuery);
-
-      // 检查是否是当前搜索，以及 query 是否仍然有效
-      if (currentSearchRef.current?.cancelled || 
-          currentSearchRef.current?.query !== searchQuery ||
-          query.trim() !== searchQuery.trim()) {
-        // 如果搜索被取消，确保清理状态
-        if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
-          setIsSearchingEverything(false);
-        }
-        return;
-      }
+  // 启动 Everything 搜索会话（完全复刻 EverythingSearchWindow 的模式）
+  const startSearchSession = useCallback(
+    async (searchQuery: string) => {
+      console.log("[Launcher] startSearchSession 被调用，查询:", searchQuery, "isEverythingAvailable:", isEverythingAvailable);
       
-      if (query.trim() === searchQuery.trim() && 
-          currentSearchRef.current && 
-          !currentSearchRef.current.cancelled &&
-          currentSearchRef.current.query === searchQuery) {
-        // 用最终结果覆盖批次累积的结果，因为最终结果才是后端实际返回的准确结果
-        // 批次事件中的 total_count 是 Everything 找到的总数，可能远大于后端实际返回的结果数
-        // 对结果进行去重，基于路径（path）字段，防止重复显示
-        // 性能优化：使用 Map 实现 O(n) 去重，而不是 O(n²) 的 findIndex
-        // 性能优化：使用 requestIdleCallback 延迟处理大量结果，避免阻塞主线程
-        const processResults = () => {
-          const seenPaths = new Map<string, EverythingResult>();
-          const uniqueResults: EverythingResult[] = [];
-          for (const result of response.results) {
-            if (!seenPaths.has(result.path)) {
-              seenPaths.set(result.path, result);
-              uniqueResults.push(result);
-            }
-          }
-
-          setEverythingResults(uniqueResults);
-          setEverythingTotalCount(response.total_count);
-          setEverythingCurrentCount(uniqueResults.length);
-          // 更新显示的搜索 query
-          displayedSearchQueryRef.current = searchQuery;
-        };
-        
-        // 如果结果数量较少，立即处理；否则延迟处理以避免阻塞 UI
-        if (response.results.length <= 20) {
-          processResults();
-        } else {
-          // 使用 setTimeout 将处理延迟到下一个事件循环，让 UI 有机会更新
-          setTimeout(processResults, 0);
+      if (!searchQuery || searchQuery.trim() === "") {
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          await closeSessionSafe(oldSessionId);
         }
-      } else {
-        // Query 已改变，清空结果
-        console.warn("[最终结果][second-check] ✗ 第二次检查失败，清空结果", {
-          currentQuery: query.trim(),
-          searchQuery: searchQuery.trim(),
-          cancelled: currentSearchRef.current?.cancelled,
-          refQuery: currentSearchRef.current?.query
-        });
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
         setEverythingResults([]);
         setEverythingTotalCount(null);
         setEverythingCurrentCount(0);
-        displayedSearchQueryRef.current = ""; // 清空显示的搜索 query
-      }
-      
-      finalResultsSetRef.current = true;
-    } catch (error) {
-      if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
-        // 如果搜索被取消，确保清理状态
         setIsSearchingEverything(false);
         return;
       }
-      
-      console.error("Failed to search Everything:", error);
+
+      if (!isEverythingAvailable) {
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          await closeSessionSafe(oldSessionId);
+        }
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
+        setEverythingResults([]);
+        setEverythingTotalCount(null);
+        setEverythingCurrentCount(0);
+        setIsSearchingEverything(false);
+        return;
+      }
+
+      const trimmed = searchQuery.trim();
+      // 性能优化：使用更大的 maxResults（5000），与 EverythingSearchWindow 一致
+      // 这样后端第一批请求就能返回足够的结果，不需要等待多次分页
+      // 虽然只显示 50 条，但会话中存储更多结果可以提升性能
+      const maxResultsToUse = LAUNCHER_MAX_RESULTS; // 5000，与 EverythingSearchWindow 一致
+
+      // 保存当前搜索的 query
+      currentSearchQueryRef.current = trimmed;
+
+      // 如果相同查询的会话正在创建中，直接返回
+      if (creatingSessionQueryRef.current === trimmed) {
+        console.log("[Launcher] 相同查询的会话正在创建中，等待完成");
+        return;
+      }
+
+      // 检查是否已有相同查询的活跃会话
+      if (
+        pendingSessionIdRef.current &&
+        currentSearchQueryRef.current === trimmed
+      ) {
+        console.log("[Launcher] 相同查询已有活跃会话，跳过");
+        return;
+      }
+
+      // 标记正在创建会话
+      creatingSessionQueryRef.current = trimmed;
+
+      // 关闭旧会话（不阻塞，异步执行）
+      const oldSessionId = pendingSessionIdRef.current;
+      if (oldSessionId) {
+        // 不等待关闭完成，立即开始新搜索
+        closeSessionSafe(oldSessionId).catch((err) => {
+          console.warn("[Launcher] 关闭旧会话失败:", err);
+        });
+      }
+      // 在创建新会话前先清空 pendingSessionIdRef，防止旧的请求使用已失效的会话
+      pendingSessionIdRef.current = null;
+      // 注意：不要清空 currentSearchQueryRef.current，它应该保持当前查询
+      displayedSearchQueryRef.current = "";
       setEverythingResults([]);
       setEverythingTotalCount(null);
       setEverythingCurrentCount(0);
-      
-      // 失败时重查状态（只有在特定错误时才更新状态）
-      const errorStr = typeof error === 'string' ? error : String(error);
-      console.error("Everything search error:", errorStr);
-      
-      // 只有在明确的错误（如未安装、服务未运行）时才更新状态
-      // 其他错误（如取消、超时等）不应该影响 isEverythingAvailable
-      if (
-        errorStr.includes('NOT_INSTALLED') || 
-        errorStr.includes('SERVICE_NOT_RUNNING') ||
-        errorStr.includes('not found') ||
-        errorStr.includes('未找到') ||
-        errorStr.includes('未运行')
-      ) {
-        try {
-          const status = await tauriApi.getEverythingStatus();
-          setIsEverythingAvailable(status.available);
-          setEverythingError(status.error || null);
-          
-          if (!status.available) {
-            console.warn("Everything became unavailable after search failed:", status.error);
-          }
-        } catch (statusError) {
-          console.error("Failed to re-check Everything status:", statusError);
-          // 只有在确认服务不可用时才设置为 false
-          setIsEverythingAvailable(false);
-          setEverythingError("搜索失败后无法重新检查状态");
+      setIsSearchingEverything(true);
+
+      try {
+        console.log("[Launcher] 开始创建搜索会话，查询:", trimmed);
+        const sessionTimeoutMs = 60000; // 60秒超时
+        const sessionTimeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`创建搜索会话超时（${sessionTimeoutMs}ms）`));
+          }, sessionTimeoutMs);
+        });
+
+        const session = await Promise.race([
+          tauriApi.startEverythingSearchSession(trimmed, {
+            maxResults: maxResultsToUse,
+            chunkSize: 50, // 启动器使用较小的 chunk_size，提升响应速度
+          }),
+          sessionTimeoutPromise,
+        ]);
+
+        console.log("[Launcher] 搜索会话创建成功，会话ID:", session.sessionId, "总数:", session.totalCount, "查询:", trimmed);
+        
+        // 调试：如果总数为0，记录警告
+        if (session.totalCount === 0) {
+          console.warn("[Launcher] 警告：会话创建成功但总数为0，查询:", trimmed);
         }
-      } else if (errorStr.includes('搜索已取消') || errorStr.includes('搜索正在进行中') || errorStr.includes('跳过重复调用')) {
-        // 搜索被取消或重复调用是正常情况，不应该影响状态
-        console.log("Search was cancelled or duplicate, this is normal:", errorStr);
-        // 如果是重复调用，确保清理状态
-        if (errorStr.includes('跳过重复调用')) {
+
+        // 检查查询是否仍然有效
+        if (currentSearchQueryRef.current !== trimmed) {
+          console.log("[Launcher] 查询已切换，忽略旧会话结果");
+          await closeSessionSafe(session.sessionId);
+          pendingSessionIdRef.current = null;
+          creatingSessionQueryRef.current = null;
           setIsSearchingEverything(false);
+          return;
         }
-      } else {
-        // 其他错误（如超时等），不更新 isEverythingAvailable
-        console.warn("Everything search failed with unknown error, keeping current status:", errorStr);
-      }
-    } finally {
-      // 只有当前仍是本次搜索时才结束 loading 状态
-      // 如果搜索被取消或 superseded，也要清理状态
-      if (currentSearchRef.current?.query === searchQuery && !currentSearchRef.current?.cancelled) {
+
+        pendingSessionIdRef.current = session.sessionId;
+        creatingSessionQueryRef.current = null;
+        setEverythingTotalCount(Math.min(session.totalCount ?? 0, maxResultsToUse));
+
+        // 立即获取第一页结果（启动器只需要第一页）
+        const offset = 0;
+        const currentSessionId = session.sessionId;
+        const currentQueryForPage = trimmed;
+
+        console.log("[Launcher] 开始获取首屏页，会话ID:", currentSessionId, "offset:", offset, "limit:", LAUNCHER_PAGE_SIZE);
+
+        const timeoutMs = 30000; // 30秒超时
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`获取首屏页超时（${timeoutMs}ms）`));
+          }, timeoutMs);
+        });
+
+        Promise.race([
+          tauriApi.getEverythingSearchRange(currentSessionId, offset, LAUNCHER_PAGE_SIZE, {}),
+          timeoutPromise,
+        ])
+          .then((res) => {
+            console.log("[Launcher] 首屏页获取成功，返回", res.items.length, "条结果", {
+              sessionId: currentSessionId,
+              offset,
+              limit: LAUNCHER_PAGE_SIZE,
+              items: res.items.slice(0, 3).map(i => i.path) // 只打印前3条路径用于调试
+            });
+
+            // 检查会话和查询是否仍然有效
+            const currentPendingSessionId = pendingSessionIdRef.current;
+            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
+
+            if (!isSessionStillValid || !isQueryStillValid) {
+              console.log(
+                "[Launcher] 会话或查询已切换，忽略旧会话的首屏页结果",
+                `会话有效: ${isSessionStillValid}, 查询有效: ${isQueryStillValid}`
+              );
+              if (!pendingSessionIdRef.current) {
+                setIsSearchingEverything(false);
+              }
+              return;
+            }
+
+            // 更新结果
+            console.log("[Launcher] 更新结果到状态，实际数量:", res.items.length, "请求数量:", LAUNCHER_PAGE_SIZE, "会话总数:", session.totalCount);
+            
+            // 调试：检查结果数量是否匹配
+            if (res.items.length === 0 && session.totalCount > 0) {
+              console.warn("[Launcher] 警告：获取到的结果为空，但会话总数是:", session.totalCount);
+            } else if (res.items.length < Math.min(LAUNCHER_PAGE_SIZE, session.totalCount)) {
+              console.warn("[Launcher] 警告：返回的结果数量少于预期，实际:", res.items.length, "预期:", Math.min(LAUNCHER_PAGE_SIZE, session.totalCount));
+            }
+            
+            setEverythingResults(res.items);
+            setEverythingCurrentCount(res.items.length);
+            displayedSearchQueryRef.current = trimmed;
+            setIsSearchingEverything(false);
+          })
+          .catch((error) => {
+            const currentPendingSessionId = pendingSessionIdRef.current;
+            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
+
+            if (!isSessionStillValid || !isQueryStillValid) {
+              console.log("[Launcher] 会话或查询已切换，忽略首屏页错误");
+              return;
+            }
+
+            console.error("[Launcher] 获取首屏页失败:", error);
+            const errorStr = typeof error === "string" ? error : String(error);
+            
+            // 检查是否是服务不可用错误
+            if (
+              errorStr.includes('NOT_INSTALLED') ||
+              errorStr.includes('SERVICE_NOT_RUNNING') ||
+              errorStr.includes('not found') ||
+              errorStr.includes('未找到') ||
+              errorStr.includes('未运行')
+            ) {
+              tauriApi.getEverythingStatus()
+                .then((status) => {
+                  setIsEverythingAvailable(status.available);
+                  setEverythingError(status.error || null);
+                })
+                .catch(() => {
+                  setIsEverythingAvailable(false);
+                  setEverythingError("搜索失败后无法重新检查状态");
+                });
+            }
+            
+            setEverythingResults([]);
+            setEverythingTotalCount(null);
+            setEverythingCurrentCount(0);
+            setIsSearchingEverything(false);
+          });
+      } catch (error) {
+        creatingSessionQueryRef.current = null;
+        console.error("[Launcher] 创建搜索会话失败:", error);
+        
+        const errorStr = typeof error === "string" ? error : String(error);
+        if (
+          errorStr.includes('NOT_INSTALLED') ||
+          errorStr.includes('SERVICE_NOT_RUNNING') ||
+          errorStr.includes('not found') ||
+          errorStr.includes('未找到') ||
+          errorStr.includes('未运行')
+        ) {
+          tauriApi.getEverythingStatus()
+            .then((status) => {
+              setIsEverythingAvailable(status.available);
+              setEverythingError(status.error || null);
+            })
+            .catch(() => {
+              setIsEverythingAvailable(false);
+              setEverythingError("搜索失败后无法重新检查状态");
+            });
+        }
+        
+        setEverythingResults([]);
+        setEverythingTotalCount(null);
+        setEverythingCurrentCount(0);
         setIsSearchingEverything(false);
-      } else if (currentSearchRef.current?.cancelled || currentSearchRef.current?.query !== searchQuery) {
-        // 搜索被取消或 superseded，清理状态
-        setIsSearchingEverything(false);
       }
-    }
-  };
+    },
+    [isEverythingAvailable, closeSessionSafe]
+  );
+
+  // 组件卸载时清理 Everything 搜索会话
+  useEffect(() => {
+    return () => {
+      const oldSessionId = pendingSessionIdRef.current;
+      if (oldSessionId) {
+        closeSessionSafe(oldSessionId).catch((error) => {
+          console.warn("[Launcher] 组件卸载时关闭会话失败:", error);
+        });
+      }
+    };
+  }, [closeSessionSafe]);
 
 
   const handleCheckAgain = useCallback(async () => {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,8 +19,9 @@ pub struct FileHistoryItem {
     pub is_folder: Option<bool>, // 是否为文件夹
 }
 
-static FILE_HISTORY: LazyLock<Arc<Mutex<HashMap<String, FileHistoryItem>>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+// 临时使用 RwLock，读操作不需要锁，写操作才需要锁（测试性能影响）
+static FILE_HISTORY: LazyLock<Arc<RwLock<HashMap<String, FileHistoryItem>>>> =
+    LazyLock::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub fn get_history_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("file_history.json")
@@ -76,7 +77,7 @@ pub fn load_history_into(
 
 // Legacy function for backward compatibility - but now uses lock_history internally
 pub fn load_history(app_data_dir: &Path) -> Result<(), String> {
-    let mut state = lock_history()?;
+    let mut state = lock_history_write()?;
     load_history_into(&mut state, app_data_dir)
 }
 
@@ -165,7 +166,7 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to get timestamp: {}", e))?
         .as_secs();
 
-    let mut state = FILE_HISTORY.lock().map_err(|e| e.to_string())?;
+    let mut state = lock_history_write()?;
 
     if state.is_empty() {
         load_history_into(&mut state, app_data_dir)?;
@@ -232,21 +233,27 @@ fn contains_chinese(text: &str) -> bool {
 }
 
 // Get a lock guard - caller must ensure no nested locking
+// 临时改为使用读锁（RwLock），读操作不需要阻塞，提升性能
 pub fn lock_history(
-) -> Result<std::sync::MutexGuard<'static, HashMap<String, FileHistoryItem>>, String> {
-    println!("[后端] file_history.lock_history: Attempting to acquire lock...");
-    match FILE_HISTORY.lock() {
+) -> Result<std::sync::RwLockReadGuard<'static, HashMap<String, FileHistoryItem>>, String> {
+    // 使用读锁，不会阻塞其他读操作
+    match FILE_HISTORY.read() {
         Ok(guard) => {
-            println!("[后端] file_history.lock_history: Lock acquired successfully");
+            // 不再打印锁日志，减少日志输出
             Ok(guard)
         }
         Err(e) => {
-            println!(
-                "[后端] file_history.lock_history: ERROR acquiring lock: {}",
-                e
-            );
-            Err(e.to_string())
+            Err(format!("Failed to acquire read lock: {}", e))
         }
+    }
+}
+
+// 获取写锁的辅助函数（需要公开，供其他模块使用）
+pub fn lock_history_write(
+) -> Result<std::sync::RwLockWriteGuard<'static, HashMap<String, FileHistoryItem>>, String> {
+    match FILE_HISTORY.write() {
+        Ok(guard) => Ok(guard),
+        Err(e) => Err(format!("Failed to acquire write lock: {}", e)),
     }
 }
 
@@ -334,16 +341,29 @@ pub fn search_file_history(
     query: &str,
     app_data_dir: &Path,
 ) -> Result<Vec<FileHistoryItem>, String> {
-    let mut state = lock_history()?;
-    if state.is_empty() {
-        load_history_into(&mut state, app_data_dir)?;
+    // 性能优化：先尝试读锁（不需要阻塞），如果数据为空再使用写锁加载数据
+    {
+        let state = lock_history()?;
+        if !state.is_empty() {
+            // 数据已加载，直接搜索
+            return Ok(search_in_history(&state, query));
+        }
     }
+    // 数据为空，需要加载（使用写锁）
+    {
+        let mut state = lock_history_write()?;
+        if state.is_empty() {
+            load_history_into(&mut state, app_data_dir)?;
+        }
+        // 释放写锁后，使用读锁搜索
+    }
+    let state = lock_history()?;
     Ok(search_in_history(&state, query))
 }
 
 pub fn delete_file_history(path: String, app_data_dir: &Path) -> Result<(), String> {
     // Lock once, do all operations
-    let mut state = lock_history()?;
+    let mut state = lock_history_write()?;
     load_history_into(&mut state, app_data_dir)?;
 
     state
@@ -367,7 +387,7 @@ pub fn delete_file_history_by_range(
     app_data_dir: &Path,
 ) -> Result<usize, String> {
     // start_ts/end_ts 为 Unix 秒时间戳，若为空则不限制该侧
-    let mut state = lock_history()?;
+    let mut state = lock_history_write()?;
     load_history_into(&mut state, app_data_dir)?;
 
     let before = state.len();
@@ -396,7 +416,7 @@ pub fn delete_file_history_by_range(
 pub fn purge_history_older_than(days: u64, app_data_dir: &Path) -> Result<usize, String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let mut state = lock_history()?;
+    let mut state = lock_history_write()?;
     // 确保内存数据最新
     load_history_into(&mut state, app_data_dir)?;
 
@@ -427,7 +447,7 @@ pub fn update_file_history_name(
         .as_secs();
 
     // Lock once, do all operations
-    let mut state = lock_history()?;
+    let mut state = lock_history_write()?;
     load_history_into(&mut state, app_data_dir)?;
 
     let item = state

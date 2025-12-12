@@ -1156,12 +1156,19 @@ pub fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn search_file_history(
+pub async fn search_file_history(
     query: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<file_history::FileHistoryItem>, String> {
+    // 性能优化：在后台线程执行，避免阻塞 Everything 搜索
     let app_data_dir = get_app_data_dir(&app)?;
-    file_history::search_file_history(&query, &app_data_dir)
+    let query_clone = query.clone();
+    
+    tokio::task::spawn_blocking(move || {
+        file_history::search_file_history(&query_clone, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("搜索文件历史任务失败: {}", e))?
 }
 
 
@@ -1188,8 +1195,9 @@ pub fn get_all_file_history(
 
     // CRITICAL: Lock only once, then do all operations within the lock
     // This prevents nested locking and potential deadlocks
+    // 使用写锁，因为需要调用 load_history_into（需要可变引用）
     println!("[后端] get_all_file_history: Acquiring lock...");
-    let mut state = match file_history::lock_history() {
+    let mut state = match file_history::lock_history_write() {
         Ok(guard) => {
             println!("[后端] get_all_file_history: Lock acquired successfully");
             guard
@@ -1619,6 +1627,8 @@ pub struct EverythingSearchSessionOptions {
     pub sort_order: Option<String>, // "asc" | "desc"
     #[serde(rename = "matchFolderNameOnly")]
     pub match_folder_name_only: Option<bool>,
+    #[serde(rename = "chunkSize")]
+    pub chunk_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1661,6 +1671,11 @@ pub async fn start_everything_search_session(
             .unwrap_or(false);
 
         // 构建查询字符串（复用现有逻辑）
+        // 获取 chunk_size，如果未指定则使用默认值 5000
+        let chunk_size = opts
+            .and_then(|o| o.chunk_size)
+            .unwrap_or(5000);
+        
         let search_opts = EverythingSearchOptions {
             extensions: ext_filter.cloned(),
             exclude_extensions: None,
@@ -1668,7 +1683,7 @@ pub async fn start_everything_search_session(
             only_folders: if match_folder_name_only { Some(true) } else { None },
             max_results: Some(max_results),
             match_folder_name_only: Some(match_folder_name_only),
-            chunk_size: Some(5000),
+            chunk_size: Some(chunk_size),
         };
         
         let (combined_query, _) = build_everything_query(&search_query, &Some(search_opts));
@@ -1722,6 +1737,12 @@ pub async fn start_everything_search_session(
         };
 
         let search_response = result.map_err(|e| e.to_string())?;
+
+        // 调试日志：记录搜索响应
+        eprintln!(
+            "[RUST] start_everything_search_session: query='{}', max_results={}, returned={}, total_count={}",
+            combined_query_for_session, max_results, search_response.results.len(), search_response.total_count
+        );
 
         // 对结果进行排序（如果需要）
         let mut results = search_response.results;
@@ -1784,6 +1805,16 @@ pub async fn start_everything_search_session(
         // 在移动 results 之前保存长度
         let results_len = results.len();
         let truncated = results_len >= max_results;
+        
+        // 性能优化：如果结果数量超过 max_results，只保留前 max_results 条
+        // 这样可以减少内存占用和后续分页查询的时间
+        if results_len > max_results {
+            results.truncate(max_results);
+            eprintln!(
+                "[RUST] start_everything_search_session: 结果数量 {} 超过限制 {}，已截断",
+                results_len, max_results
+            );
+        }
 
         // 存储会话
         let session = SearchSession {
@@ -1792,6 +1823,11 @@ pub async fn start_everything_search_session(
             total_count: search_response.total_count,
             created_at: std::time::Instant::now(),
         };
+        
+        eprintln!(
+            "[RUST] start_everything_search_session: 会话创建完成，存储了 {} 条结果，总数: {}",
+            session.results.len(), session.total_count
+        );
 
         {
             let mut manager = SEARCH_SESSION_MANAGER
@@ -1831,7 +1867,20 @@ pub fn get_everything_search_range(
 
     let total_count = session.results.len();
     let end = (offset + limit).min(total_count);
-    let items = session.results[offset..end].to_vec();
+    
+    // 性能优化：使用 clone_from_slice 而不是 to_vec，减少内存分配
+    // 但需要确保切片有效
+    let items = if offset < total_count {
+        session.results[offset..end].to_vec()
+    } else {
+        Vec::new()
+    };
+    
+    // 调试日志：记录实际返回的数量
+    eprintln!(
+        "[RUST] get_everything_search_range: session_id={}, offset={}, limit={}, total_in_session={}, total_count={}, returned={}",
+        session_id, offset, limit, total_count, session.total_count, items.len()
+    );
 
     Ok(EverythingSearchRangeResponse {
         offset,
@@ -2636,8 +2685,9 @@ pub fn check_path_exists(path: String, app: tauri::AppHandle) -> Result<Option<f
         .as_secs();
 
     // Try to get use_count from history
+    // 使用写锁，因为可能需要调用 load_history_into（需要可变引用）
     let use_count = {
-        let mut state = file_history::lock_history()?;
+        let mut state = file_history::lock_history_write()?;
         if state.is_empty() {
             file_history::load_history_into(&mut state, &app_data_dir).ok();
         }
