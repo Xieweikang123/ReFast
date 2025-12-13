@@ -33,7 +33,7 @@ static RECORDING_STATE: LazyLock<Arc<Mutex<RecordingState>>> =
 static REPLAY_STATE: LazyLock<Arc<Mutex<ReplayState>>> =
     LazyLock::new(|| Arc::new(Mutex::new(ReplayState::new())));
 
-pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Vec<app_search::AppInfo>>>>> =
+pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Arc<Vec<app_search::AppInfo>>>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
 // 搜索任务管理器：管理 Everything 搜索的取消标志
@@ -494,13 +494,13 @@ pub async fn scan_applications(app: tauri::AppHandle) -> Result<Vec<app_search::
         let cache = APP_CACHE.clone();
         let mut cache_guard = cache.lock().map_err(|e| e.to_string())?;
 
-        let mut apps = if let Some(ref cached_apps) = *cache_guard {
-            // Return cached apps if available
+        let apps = if let Some(ref cached_apps) = *cache_guard {
+            // Return cached apps if available (Arc 共享引用，只增加引用计数)
             cached_apps.clone()
         } else {
             // Try to load from disk cache first
             let app_data_dir = get_app_data_dir(&app_clone)?;
-            if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
+            let apps_vec = if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
                 if !disk_cache.is_empty() {
                     disk_cache
                 } else {
@@ -510,19 +510,22 @@ pub async fn scan_applications(app: tauri::AppHandle) -> Result<Vec<app_search::
             } else {
                 // Scan applications (potentially slow) on background thread
                 app_search::windows::scan_start_menu(None)?
-            }
+            };
+            Arc::new(apps_vec)
         };
 
-
-        // Update cache with apps including builtin apps
+        // Update cache with apps including builtin apps (包装为 Arc)
         *cache_guard = Some(apps.clone());
+        
+        // 为了返回 Vec，需要克隆（但这是 scan_applications 的返回值，必须返回 Vec）
+        let apps_vec: Vec<app_search::AppInfo> = (*apps).clone();
 
         // Save to disk cache (including builtin apps)
         let app_data_dir = get_app_data_dir(&app_clone)?;
-        let _ = app_search::windows::save_cache(&app_data_dir, &apps);
+        let _ = app_search::windows::save_cache(&app_data_dir, &apps_vec);
 
         // No background icon extraction - icons will be extracted on-demand during search
-        Ok(apps)
+        Ok(apps_vec)
     })
     .await
     .map_err(|e| format!("scan_applications join error: {}", e))?
@@ -595,15 +598,15 @@ pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
             let _ = fs::remove_file(&cache_file); // Ignore errors if file doesn't exist
 
             // Force rescan with progress callback
-            let apps = app_search::windows::scan_start_menu(Some(tx))?;
+            let apps_vec = app_search::windows::scan_start_menu(Some(tx))?;
 
-            // Cache the results
-            *cache_guard = Some(apps.clone());
+            // Cache the results (包装为 Arc)
+            *cache_guard = Some(Arc::new(apps_vec.clone()));
 
             // Save to disk cache
-            let _ = app_search::windows::save_cache(&app_data_dir, &apps);
+            let _ = app_search::windows::save_cache(&app_data_dir, &apps_vec);
 
-            Ok(apps)
+            Ok(apps_vec)
         })
         .await;
         
@@ -648,123 +651,103 @@ pub async fn search_applications(
     let cache = APP_CACHE.clone();
     let app_handle_clone = app.clone();
     let query_clone = query.clone();
-    let query_for_log = query.clone(); // 用于日志记录，避免被移动
     
     // 在后台线程执行搜索，避免阻塞 UI
-    // 需要提前克隆 cache，因为闭包会移动它
     let cache_for_search = cache.clone();
     let app_handle_for_scan = app_handle_clone.clone();
-    let results = async_runtime::spawn_blocking(move || {
-        let mut cache_guard = cache_for_search.lock().map_err(|e| e.to_string())?;
-
-        // 如果缓存为空，尝试加载磁盘缓存
-        if cache_guard.is_none() {
-            let app_data_dir = get_app_data_dir(&app_handle_for_scan)?;
-            if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
-                if !disk_cache.is_empty() {
-                    *cache_guard = Some(disk_cache);
-                }
+    
+    let results = async_runtime::spawn_blocking(move || -> Result<Vec<app_search::AppInfo>, String> {
+        let total_start = std::time::Instant::now();
+        
+        // 步骤1: 获取锁并读取数据，然后立即释放锁
+        let lock_start = std::time::Instant::now();
+        let apps = {
+            let mut cache_guard = cache_for_search.lock().map_err(|e| e.to_string())?;
+            let lock_acquired = std::time::Instant::now();
+            let lock_wait_time = lock_acquired.duration_since(lock_start);
+            if lock_wait_time.as_millis() > 1 {
+                eprintln!("[性能警告] 获取 APP_CACHE 锁等待时间: {:?}", lock_wait_time);
             }
-        }
-
-        let apps = cache_guard
-            .as_ref()
-            .ok_or_else(|| "Applications not scanned yet. Call scan_applications first.".to_string())?;
-
-        // Ensure builtin calculator is always available (even if not in cache)
-        let mut apps_with_builtin = apps.clone();
-        let has_calculator = apps.iter().any(|app| {
-            let name_lower = app.name.to_lowercase();
-            name_lower == "计算器" || name_lower == "calculator" ||
-            name_lower.contains("计算器") || name_lower.contains("calculator")
-        });
-        
-        if !has_calculator {
-            let builtin_calculator = app_search::AppInfo {
-                name: "计算器".to_string(),
-                path: "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_string(),
-                icon: None,
-                description: Some("Windows 计算器".to_string()),
-                name_pinyin: Some("jisuanqi".to_string()),
-                name_pinyin_initials: Some("jsq".to_string()),
-            };
-            apps_with_builtin.push(builtin_calculator);
-        }
-
-        // Perform search while holding the lock (search is fast, lock is held briefly)
-        // The search function only reads from the apps list, so this is safe
-        let mut results = app_search::windows::search_apps(&query_clone, &apps_with_builtin);
-        
-        // 如果搜索结果为空，检查特定路径是否存在匹配的应用
-        if results.is_empty() && !query_clone.trim().is_empty() {
-            let query_lower = query_clone.to_lowercase();
             
-            // 检查常见的应用安装路径
-            let potential_paths: Vec<std::path::PathBuf> = vec![
-                // Cursor 路径
-                std::env::var("PROGRAMDATA")
-                    .ok()
-                    .map(|p| std::path::PathBuf::from(p).join("Microsoft/Windows/Start Menu/Programs/Cursor")),
-                // 其他可能的路径（如果 Cursor 文件夹不存在，扫描整个 Programs 目录）
-                std::env::var("PROGRAMDATA")
-                    .ok()
-                    .map(|p| std::path::PathBuf::from(p).join("Microsoft/Windows/Start Menu/Programs")),
-                std::env::var("LOCALAPPDATA")
-                    .ok()
-                    .map(|p| std::path::PathBuf::from(p).join("Microsoft/Windows/Start Menu/Programs")),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
-            
-            for dir_path in potential_paths {
-                if dir_path.exists() {
-                    // 扫描这个目录
-                    if let Ok(mut dir_apps) = app_search::windows::scan_specific_path(&dir_path) {
-                        // 在扫描到的应用中查找匹配的
-                        for app in &dir_apps {
-                            let name_lower = app.name.to_lowercase();
-                            let path_lower = app.path.to_lowercase();
-                            if name_lower.contains(&query_lower) || path_lower.contains(&query_lower) {
-                                // 检查是否已经在结果中
-                                if !results.iter().any(|r| r.path == app.path) {
-                                    results.push(app.clone());
-                                }
-                            }
-                        }
-                        
-                        // 如果找到了新应用，更新缓存
-                        if !results.is_empty() {
-                            let mut all_apps = apps.to_vec();
-                            // 只添加新找到的应用到缓存（避免重复）
-                            for new_app in &results {
-                                if !all_apps.iter().any(|a| a.path == new_app.path) {
-                                    all_apps.push(new_app.clone());
-                                }
-                            }
-                            *cache_guard = Some(all_apps);
-                            
-                            // 保存到磁盘缓存
-                            if let Ok(app_data_dir) = get_app_data_dir(&app_handle_for_scan) {
-                                if let Some(ref cached_apps) = *cache_guard {
-                                    let _ = app_search::windows::save_cache(&app_data_dir, cached_apps);
-                                }
-                            }
-                            
-                            // 只检查第一个找到匹配的路径，避免扫描太多
-                            break;
-                        }
+            // 如果内存缓存为空，从磁盘加载
+            let disk_load_start = std::time::Instant::now();
+            if cache_guard.is_none() {
+                let app_data_dir = get_app_data_dir(&app_handle_for_scan)?;
+                if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
+                    if !disk_cache.is_empty() {
+                        *cache_guard = Some(Arc::new(disk_cache));
                     }
                 }
             }
+            let disk_load_time = disk_load_start.elapsed();
+            if disk_load_time.as_millis() > 10 {
+                eprintln!("[性能警告] 从磁盘加载缓存耗时: {:?}", disk_load_time);
+            }
+            
+            // 获取应用列表的 Arc 引用（只增加引用计数，不克隆数据）
+            let apps_arc = cache_guard
+                .as_ref()
+                .ok_or_else(|| "Applications not scanned yet. Call scan_applications first.".to_string())?
+                .clone();  // 克隆 Arc，只增加引用计数，不克隆 Vec 数据
+            
+            let lock_held_time = std::time::Instant::now().duration_since(lock_acquired);
+            if lock_held_time.as_millis() > 5 {
+                eprintln!("[性能警告] 持有 APP_CACHE 锁时间: {:?}", lock_held_time);
+            }
+            
+            apps_arc
+        }; // 锁在这里释放
+        let lock_total_time = std::time::Instant::now().duration_since(lock_start);
+        
+        // 步骤2: 先执行搜索（避免预先检查计算器，节省时间）
+        let search_start = std::time::Instant::now();
+        let mut results = app_search::windows::search_apps(&query_clone, apps.as_slice());
+        let search_time = search_start.elapsed();
+        
+        let total_time = std::time::Instant::now().duration_since(total_start);
+        if total_time.as_millis() > 50 {
+            eprintln!("[性能警告] search_applications 总耗时: {:?}", total_time);
+            eprintln!("[性能警告] - 锁操作总耗时: {:?}", lock_total_time);
+            eprintln!("[性能警告] - 搜索耗时: {:?}", search_time);
         }
         
-        // Lock is released here when cache_guard goes out of scope
-        Ok::<Vec<app_search::AppInfo>, String>(results)
+        // 步骤3: 如果查询非空，检查是否需要添加内置计算器
+        if !query_clone.trim().is_empty() {
+            let query_lower = query_clone.to_lowercase();
+            // 检查查询是否匹配计算器相关关键词
+            let query_matches_calculator = query_lower == "计算器" || query_lower == "calculator" ||
+                query_lower == "jsq" || query_lower == "jisuanqi" ||
+                query_lower.contains("计算器") || query_lower.contains("calculator");
+            
+            // 只在查询匹配计算器时才检查结果中是否有计算器
+            if query_matches_calculator {
+                let has_calculator_in_results = results.iter().any(|app| {
+                    let name_lower = app.name.to_lowercase();
+                    name_lower == "计算器" || name_lower == "calculator" ||
+                    name_lower.contains("计算器") || name_lower.contains("calculator")
+                });
+                
+                // 如果结果中没有计算器，添加内置计算器
+                if !has_calculator_in_results {
+                    let builtin_calculator = app_search::AppInfo {
+                        name: "计算器".to_string(),
+                        path: "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_string(),
+                        icon: None,
+                        description: Some("Windows 计算器".to_string()),
+                        name_pinyin: Some("jisuanqi".to_string()),
+                        name_pinyin_initials: Some("jsq".to_string()),
+                    };
+                    // 插入到结果开头（最高优先级）
+                    results.insert(0, builtin_calculator);
+                }
+            }
+        }
+        
+        Ok(results)
     })
     .await
     .map_err(|e| format!("搜索任务失败: {}", e))??;
-
+    
     // 在后台异步提取图标，提取完成后通过事件通知前端刷新
     let cache_clone = cache.clone();
     let app_handle_for_emit = app_handle_clone.clone();
@@ -811,7 +794,10 @@ pub async fn search_applications(
                 let mut updated = false;
                 // Get current cache - 只在更新时持有锁，时间尽可能短
                 if let Ok(mut guard) = cache_clone.lock() {
-                    if let Some(ref mut apps) = *guard {
+                    if let Some(ref apps_arc) = *guard {
+                        // 克隆 Vec 以便修改
+                        let mut apps: Vec<app_search::AppInfo> = (**apps_arc).clone();
+                        
                         // 更新缓存中的图标
                         for (path_str, icon_data) in &icon_updates {
                             if let Some(app) = apps.iter_mut().find(|a| a.path == *path_str) {
@@ -822,8 +808,10 @@ pub async fn search_applications(
 
                         // Save to disk if updated
                         if updated {
+                            // 更新缓存（用新的 Arc 替换）
+                            *guard = Some(Arc::new(apps.clone()));
                             if let Ok(app_data_dir) = get_app_data_dir(&app_handle_for_save) {
-                                let _ = app_search::windows::save_cache(&app_data_dir, apps);
+                                let _ = app_search::windows::save_cache(&app_data_dir, &apps);
                             }
                         }
                     }
@@ -854,10 +842,12 @@ pub async fn populate_app_icons(
         let cache = APP_CACHE.clone();
         let mut cache_guard = cache.lock().map_err(|e| e.to_string())?;
 
-        let apps = cache_guard.as_mut().ok_or_else(|| {
+        let apps_arc = cache_guard.as_ref().ok_or_else(|| {
             "Applications not scanned yet. Call scan_applications first.".to_string()
         })?;
 
+        // 克隆 Vec 以便修改（只在需要更新图标时才会发生）
+        let mut apps: Vec<app_search::AppInfo> = (**apps_arc).clone();
         let mut processed = 0usize;
         let mut updated = false;
 
@@ -900,11 +890,13 @@ pub async fn populate_app_icons(
         }
 
         if updated {
+            // 更新缓存（用新的 Arc 替换）
+            *cache_guard = Some(Arc::new(apps.clone()));
             let app_data_dir = get_app_data_dir(&app_clone)?;
             let _ = app_search::windows::save_cache(&app_data_dir, &apps);
         }
 
-        Ok(apps.clone())
+        Ok(apps)
     })
     .await
     .map_err(|e| format!("populate_app_icons join error: {}", e))?
@@ -923,11 +915,12 @@ pub async fn remove_app_from_index(app_path: String, app: tauri::AppHandle) -> R
         let cache = APP_CACHE.clone();
         let mut cache_guard = cache.lock().map_err(|e| format!("锁定缓存失败: {}", e))?;
 
-        let apps = cache_guard.as_mut().ok_or_else(|| {
+        let apps_arc = cache_guard.as_ref().ok_or_else(|| {
             "Applications not scanned yet. Call scan_applications first.".to_string()
         })?;
 
-        // 查找并删除匹配的应用
+        // 克隆 Vec 以便修改
+        let mut apps: Vec<app_search::AppInfo> = (**apps_arc).clone();
         let initial_len = apps.len();
         apps.retain(|app_info| app_info.path != app_path);
         
@@ -935,9 +928,12 @@ pub async fn remove_app_from_index(app_path: String, app: tauri::AppHandle) -> R
             return Err(format!("未找到路径为 '{}' 的应用", app_path));
         }
 
+        // 更新缓存（用新的 Arc 替换）
+        *cache_guard = Some(Arc::new(apps.clone()));
+        
         // 保存更新后的缓存到磁盘
         let app_data_dir = get_app_data_dir(&app_clone)?;
-        let _ = app_search::windows::save_cache(&app_data_dir, apps);
+        let _ = app_search::windows::save_cache(&app_data_dir, &apps);
 
         Ok(())
     })
@@ -1160,15 +1156,45 @@ pub async fn search_file_history(
     query: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<file_history::FileHistoryItem>, String> {
+    // #region agent log
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"location":"commands.rs:1155","message":"search_file_history API入口","data":{{"query":"{}"}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, query, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    }
+    // #endregion
+    
     // 性能优化：在后台线程执行，避免阻塞 Everything 搜索
     let app_data_dir = get_app_data_dir(&app)?;
     let query_clone = query.clone();
-    
-    tokio::task::spawn_blocking(move || {
-        file_history::search_file_history(&query_clone, &app_data_dir)
+
+    // #region agent log
+    let spawn_start = std::time::Instant::now();
+    // #endregion
+    let result = tokio::task::spawn_blocking(move || {
+        // #region agent log
+        let blocking_start = std::time::Instant::now();
+        // #endregion
+        let search_result = file_history::search_file_history(&query_clone, &app_data_dir);
+        // #region agent log
+        let blocking_duration = blocking_start.elapsed();
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"location":"commands.rs:1164","message":"file_history::search_file_history 返回","data":{{"duration_ms":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, blocking_duration.as_millis(), search_result.as_ref().map(|r| r.len()).unwrap_or(0), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        }
+        // #endregion
+        search_result
     })
     .await
-    .map_err(|e| format!("搜索文件历史任务失败: {}", e))?
+    .map_err(|e| format!("搜索文件历史任务失败: {}", e))??;
+    
+    // #region agent log
+    let spawn_duration = spawn_start.elapsed();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"location":"commands.rs:1167","message":"search_file_history API返回","data":{{"spawn_duration_ms":{},"await_duration_ms":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, spawn_duration.as_millis(), spawn_duration.as_millis(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    }
+    // #endregion
+    
+    Ok(result)
 }
 
 
@@ -2437,7 +2463,7 @@ pub fn get_index_status(app: tauri::AppHandle) -> Result<IndexStatus, String> {
         if cache_guard.is_none() {
             if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
                 if !disk_cache.is_empty() {
-                    *cache_guard = Some(disk_cache);
+                    *cache_guard = Some(Arc::new(disk_cache));
                 }
             }
         }

@@ -1677,12 +1677,16 @@ public class IconExtractor {
     }
 
     pub fn search_apps(query: &str, apps: &[AppInfo]) -> Vec<AppInfo> {
+        let total_start = std::time::Instant::now();
+        
         if query.is_empty() {
             return apps.iter().take(10).cloned().collect();
         }
 
+        let query_lower_start = std::time::Instant::now();
         let query_lower = query.to_lowercase();
         let query_is_pinyin = !contains_chinese(&query_lower);
+        let query_lower_duration = query_lower_start.elapsed();
 
         // Pre-allocate with capacity estimate to reduce allocations
         let mut results: Vec<(usize, i32)> = Vec::with_capacity(20);
@@ -1694,13 +1698,26 @@ public class IconExtractor {
         // Check all apps to ensure we find matches regardless of their position in the list
         // Early exit optimization is still in place for perfect matches to maintain performance
 
+        let loop_start = std::time::Instant::now();
+        let mut name_lower_count = 0;
+        let mut path_lower_count = 0;
+        let mut apps_checked = 0;
+        
         // Use indices instead of cloning to avoid expensive clones
         for (idx, app) in apps.iter().enumerate() {
+            apps_checked += 1;
             let mut score = 0;
 
             // Direct text match (highest priority) - use case-insensitive comparison
             // Optimize: compute to_lowercase once per app name
+            let name_lower_start = std::time::Instant::now();
             let name_lower = app.name.to_lowercase();
+            name_lower_count += 1;
+            let name_lower_duration = name_lower_start.elapsed();
+            if name_lower_duration.as_micros() > 100 {
+                println!("[搜索性能] 应用 {} 的 name.to_lowercase() 耗时: {:?}", idx, name_lower_duration);
+            }
+            
             if name_lower == query_lower {
                 score += 1000;
                 perfect_matches += 1;
@@ -1757,7 +1774,10 @@ public class IconExtractor {
 
             // Path match gets lower score (only check if no name match to save time)
             if score == 0 {
+                let path_lower_start = std::time::Instant::now();
                 let path_lower = app.path.to_lowercase();
+                path_lower_count += 1;
+                let _path_lower_duration = path_lower_start.elapsed();
                 if path_lower.contains(&query_lower) {
                     score += 10;
                 }
@@ -1767,24 +1787,33 @@ public class IconExtractor {
                 results.push((idx, score));
             }
         }
+        let loop_duration = loop_start.elapsed();
 
         // If we have perfect matches and early exited, return them immediately without sorting
-        if perfect_matches >= MAX_PERFECT_MATCHES && results.len() <= MAX_PERFECT_MATCHES {
-            return results
+        let clone_start = std::time::Instant::now();
+        let final_results: Vec<AppInfo> = if perfect_matches >= MAX_PERFECT_MATCHES && results.len() <= MAX_PERFECT_MATCHES {
+            results
                 .into_iter()
                 .map(|(idx, _)| apps[idx].clone())
-                .collect();
-        }
+                .collect()
+        } else {
+            // Sort by score (descending) only if we need to
+            let sort_start = std::time::Instant::now();
+            results.sort_by(|a, b| b.1.cmp(&a.1));
+            let _sort_duration = sort_start.elapsed();
 
-        // Sort by score (descending) only if we need to
-        results.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Limit to top 20 results for performance, clone only the selected apps
-        results
-            .into_iter()
-            .take(20)
-            .map(|(idx, _)| apps[idx].clone())
-            .collect()
+            // Limit to top 20 results for performance, clone only the selected apps
+            results
+                .into_iter()
+                .take(20)
+                .map(|(idx, _)| apps[idx].clone())
+                .collect()
+        };
+        let clone_duration = clone_start.elapsed();
+        
+        // 性能日志已移除，避免 println! I/O 开销影响性能
+        // 如果需要调试，可以临时启用
+        final_results
     }
 
     pub fn launch_app(app: &AppInfo) -> Result<(), String> {

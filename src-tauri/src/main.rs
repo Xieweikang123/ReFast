@@ -565,7 +565,7 @@ fn main() {
                 if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir_clone) {
                     if !disk_cache.is_empty() {
                         if let Ok(mut cache_guard) = APP_CACHE.lock() {
-                            *cache_guard = Some(disk_cache);
+                            *cache_guard = Some(std::sync::Arc::new(disk_cache));
                         }
                     }
                 }

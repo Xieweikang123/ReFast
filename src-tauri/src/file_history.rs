@@ -391,41 +391,105 @@ pub fn search_file_history(
 ) -> Result<Vec<FileHistoryItem>, String> {
     println!("[file_history] search_file_history: 开始搜索，查询: '{}'", query);
     
+    // #region agent log
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    let func_start = std::time::Instant::now();
+    // #endregion
+    
     // 性能优化：先尝试读锁（不需要阻塞），如果数据已加载直接搜索
     {
+        // #region agent log
+        let read_lock_start = std::time::Instant::now();
+        // #endregion
         println!("[file_history] search_file_history: 尝试获取读锁检查缓存...");
         let state = lock_history()?;
+        // #region agent log
+        let read_lock_duration = read_lock_start.elapsed();
+        let cache_size = state.len();
+        // #endregion
         if !state.is_empty() {
             // 缓存已加载，直接使用缓存搜索（不访问 SQLite）
             println!("[file_history] search_file_history: ✓ 缓存已加载（{} 条），直接使用缓存搜索，不访问 SQLite", state.len());
+            // #region agent log
+            let search_start = std::time::Instant::now();
+            // #endregion
             let results = search_in_history(&state, query);
+            // #region agent log
+            let search_duration = search_start.elapsed();
+            let total_duration = func_start.elapsed();
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"location":"file_history.rs:401","message":"使用缓存搜索","data":{{"read_lock_wait_ms":{},"search_duration_ms":{},"total_duration_ms":{},"cache_size":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, read_lock_duration.as_millis(), search_duration.as_millis(), total_duration.as_millis(), cache_size, results.len(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+            // #endregion
             println!("[file_history] search_file_history: ✓ 缓存搜索完成，返回 {} 条结果", results.len());
             return Ok(results);
         }
         println!("[file_history] search_file_history: ✗ 缓存为空，需要从 SQLite 加载");
+        // #region agent log
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"location":"file_history.rs:405","message":"缓存为空，需要加载","data":{{"read_lock_wait_ms":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, read_lock_duration.as_millis(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        }
+        // #endregion
     }
     
     // 缓存为空，需要加载（使用写锁，只加载一次）
     // 注意：这里会访问 SQLite，但只会在第一次搜索或缓存被清空时执行
     {
+        // #region agent log
+        let write_lock_start = std::time::Instant::now();
+        // #endregion
         println!("[file_history] search_file_history: 获取写锁准备加载数据...");
         let mut state = lock_history_write()?;
+        // #region agent log
+        let write_lock_wait = write_lock_start.elapsed();
+        // #endregion
         // 双重检查：可能其他线程已经加载了
         if state.is_empty() {
             println!("[file_history] search_file_history: 缓存确实为空，开始从 SQLite 加载...");
+            // #region agent log
+            let sqlite_load_start = std::time::Instant::now();
+            // #endregion
             // 只在缓存为空时加载，避免重复加载
             load_history_into(&mut state, app_data_dir)?;
+            // #region agent log
+            let sqlite_load_duration = sqlite_load_start.elapsed();
+            // #endregion
             println!("[file_history] search_file_history: ✓ SQLite 加载完成，缓存大小: {}", state.len());
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"location":"file_history.rs:417","message":"从SQLite加载数据","data":{{"write_lock_wait_ms":{},"sqlite_load_ms":{},"cache_size":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, write_lock_wait.as_millis(), sqlite_load_duration.as_millis(), state.len(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+            // #endregion
         } else {
             println!("[file_history] search_file_history: ✓ 其他线程已加载，缓存大小: {}", state.len());
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"location":"file_history.rs:420","message":"其他线程已加载","data":{{"write_lock_wait_ms":{},"cache_size":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, write_lock_wait.as_millis(), state.len(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            }
+            // #endregion
         }
         // 释放写锁
     }
     
     // 使用读锁进行搜索（缓存已加载，不访问 SQLite）
     println!("[file_history] search_file_history: 使用读锁进行搜索...");
+    // #region agent log
+    let final_read_lock_start = std::time::Instant::now();
+    // #endregion
     let state = lock_history()?;
+    // #region agent log
+    let final_read_lock_wait = final_read_lock_start.elapsed();
+    let search_start = std::time::Instant::now();
+    // #endregion
     let results = search_in_history(&state, query);
+    // #region agent log
+    let search_duration = search_start.elapsed();
+    let total_duration = func_start.elapsed();
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"location":"file_history.rs:428","message":"加载后搜索","data":{{"final_read_lock_wait_ms":{},"search_duration_ms":{},"total_duration_ms":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, final_read_lock_wait.as_millis(), search_duration.as_millis(), total_duration.as_millis(), results.len(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    }
+    // #endregion
     println!("[file_history] search_file_history: ✓ 搜索完成，返回 {} 条结果", results.len());
     Ok(results)
 }

@@ -568,6 +568,8 @@ export function LauncherWindow() {
         if (isMounted) {
           setApps(allApps);
           // 不设置 filteredApps，等待用户输入查询时再设置
+          // 注意：allAppsCacheRef 在函数组件内部定义，这里无法直接访问
+          // 应用列表会在 performAppSearch 首次调用时自动加载到缓存
         }
       } catch (error) {
         console.error("Failed to preload applications:", error);
@@ -576,6 +578,30 @@ export function LauncherWindow() {
     };
     // 延迟一小段时间，避免阻塞初始渲染
     const timer = setTimeout(preloadApplications, 100);
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  // 静默预加载文件历史（组件挂载时，不显示加载状态）
+  useEffect(() => {
+    let isMounted = true;
+    const preloadFileHistory = async () => {
+      try {
+        // 静默加载所有文件历史到前端缓存
+        const allFileHistory = await tauriApi.getAllFileHistory();
+        if (isMounted) {
+          allFileHistoryCacheRef.current = allFileHistory;
+          allFileHistoryCacheLoadedRef.current = true;
+        }
+      } catch (error) {
+        console.error("Failed to preload file history:", error);
+        // 预加载失败不影响用户体验，静默处理
+      }
+    };
+    // 延迟一小段时间，避免阻塞初始渲染
+    const timer = setTimeout(preloadFileHistory, 200);
     return () => {
       isMounted = false;
       clearTimeout(timer);
@@ -1348,14 +1374,11 @@ export function LauncherWindow() {
       // 应用搜索立即执行（已优化：使用 spawn_blocking 在后台线程执行）
       searchApplications(trimmedQuery);
       
-      // 备忘录和插件搜索是纯前端过滤，延迟较短
-      setTimeout(() => {
-        searchMemos(trimmedQuery);
-        handleSearchPlugins(trimmedQuery);
-      }, 10);
+      // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞 Everything 搜索）
+      searchMemos(trimmedQuery);
+      handleSearchPlugins(trimmedQuery);
       
-      // searchFileHistory 需要加锁和从 SQLite 加载数据
-      // 已改为异步执行，不阻塞 Everything 搜索
+      // searchFileHistory 已改为前端缓存搜索，不阻塞 Everything 搜索
       searchFileHistory(trimmedQuery);
     }, debounceTime) as unknown as number;
     
@@ -2908,6 +2931,8 @@ export function LauncherWindow() {
               setApps(apps);
               setFilteredApps(apps.slice(0, 10));
               setIsLoading(false);
+              // 应用列表更新，更新前端搜索缓存（通过 clearAppSearchCache 触发重新加载）
+              clearAppSearchCache();
               
               // 清理监听器
               if (unlistenComplete) unlistenComplete();
@@ -2957,6 +2982,9 @@ export function LauncherWindow() {
           const allApps = await tauriApi.scanApplications();
           setApps(allApps);
           setFilteredApps(allApps.slice(0, 10));
+          // 应用列表更新，更新前端搜索缓存
+          allAppsCacheRef.current = allApps;
+          allAppsCacheLoadedRef.current = true;
         } catch (error) {
           console.error("Failed to load applications:", error);
           setApps([]);
@@ -2973,43 +3001,282 @@ export function LauncherWindow() {
     }
   };
 
-  const searchApplications = async (searchQuery: string) => {
-    // 立即清空旧结果，避免显示上一个搜索的结果
+  // ========== 性能调试配置：用于定位性能瓶颈 ==========
+  // 修改这些值来屏蔽/启用各个功能，定位性能问题
+  const APP_SEARCH_DEBUG_CONFIG = {
+    // 是否启用查询验证
+    enableQueryValidation: true,
+    // 是否启用应用列表加载检查
+    enableEnsureAppsLoaded: false,  // 已屏蔽：测试其他步骤性能
+    // 是否执行实际搜索（调用后端 API）
+    enablePerformSearch: true,       // ✅ 已开启：恢复执行搜索
+    // 是否更新搜索结果
+    enableUpdateResults: true,
+    // 是否清空旧结果
+    enableClearResults: true,
+    // 是否输出性能日志
+    enablePerformanceLog: true,
+  };
+  // ========== 调试配置结束 ==========
+
+  // 验证搜索查询是否有效
+  const validateSearchQuery = (searchQuery: string): boolean => {
+    return !!(searchQuery && searchQuery.trim() !== "");
+  };
+
+  // 确保应用列表已加载
+  const ensureAppsLoaded = async (): Promise<void> => {
+    if (apps.length === 0 && !isLoading) {
+      await loadApplications();
+    }
+  };
+
+  // 所有应用列表缓存（前端搜索使用）
+  const allAppsCacheRef = useRef<AppInfo[]>([]);
+  const allAppsCacheLoadedRef = useRef<boolean>(false);
+
+  // 所有文件历史缓存（前端搜索使用）
+  const allFileHistoryCacheRef = useRef<FileHistoryItem[]>([]);
+  const allFileHistoryCacheLoadedRef = useRef<boolean>(false);
+
+  // 检查是否包含中文字符（简化版，用于判断是否为拼音查询）
+  const containsChinese = (str: string): boolean => {
+    return /[\u4e00-\u9fa5]/.test(str);
+  };
+
+  // 前端搜索应用（基于缓存的应用列表）
+  const searchAppsFrontend = (query: string, apps: AppInfo[]): AppInfo[] => {
+    if (!query || query.trim() === "") {
+      return apps.slice(0, 10);
+    }
+
+    const queryLower = query.trim().toLowerCase();
+    const queryIsPinyin = !containsChinese(queryLower);
+    const MAX_PERFECT_MATCHES = 3;
+    const MAX_RESULTS = 20;
+
+    // 使用索引和分数，避免频繁克隆
+    const results: Array<{ index: number; score: number }> = [];
+    let perfectMatches = 0;
+
+    for (let idx = 0; idx < apps.length; idx++) {
+      const app = apps[idx];
+      let score = 0;
+
+      // 名称匹配（最高优先级）
+      const nameLower = app.name.toLowerCase();
+      if (nameLower === queryLower) {
+        score += 1000;
+        perfectMatches++;
+        // 短查询（如 "qq"）立即返回第一个完全匹配
+        if (queryLower.length <= 3 && perfectMatches >= 1) {
+          results.push({ index: idx, score });
+          break;
+        }
+        // 找到足够完全匹配时提前退出
+        if (perfectMatches >= MAX_PERFECT_MATCHES) {
+          results.push({ index: idx, score });
+          break;
+        }
+      } else if (nameLower.startsWith(queryLower)) {
+        score += 500;
+      } else if (nameLower.includes(queryLower)) {
+        score += 100;
+      }
+
+      // 拼音匹配（如果查询是拼音）
+      if (queryIsPinyin && app.name_pinyin && app.name_pinyin_initials) {
+        // 完整拼音匹配
+        if (app.name_pinyin === queryLower) {
+          score += 800;
+          perfectMatches++;
+          if (perfectMatches >= MAX_PERFECT_MATCHES) {
+            results.push({ index: idx, score });
+            break;
+          }
+        } else if (app.name_pinyin.startsWith(queryLower)) {
+          score += 400;
+        } else if (app.name_pinyin.includes(queryLower)) {
+          score += 150;
+        }
+
+        // 拼音首字母匹配
+        if (app.name_pinyin_initials === queryLower) {
+          score += 600;
+        } else if (app.name_pinyin_initials.startsWith(queryLower)) {
+          score += 300;
+        } else if (app.name_pinyin_initials.includes(queryLower)) {
+          score += 120;
+        }
+      }
+
+      // 路径匹配（仅在名称未匹配时检查，节省时间）
+      if (score === 0) {
+        const pathLower = app.path.toLowerCase();
+        if (pathLower.includes(queryLower)) {
+          score += 10;
+        }
+      }
+
+      if (score > 0) {
+        results.push({ index: idx, score });
+      }
+    }
+
+    // 如果有完全匹配且提前退出，直接返回
+    if (perfectMatches >= MAX_PERFECT_MATCHES && results.length <= MAX_PERFECT_MATCHES) {
+      return results.map((r) => apps[r.index]);
+    }
+
+    // 按分数排序
+    results.sort((a, b) => b.score - a.score);
+    // 限制结果数量并返回
+    return results.slice(0, MAX_RESULTS).map((r) => apps[r.index]);
+  };
+
+  // 执行应用搜索（前端搜索，使用缓存的应用列表）
+  const performAppSearch = async (searchQuery: string): Promise<AppInfo[]> => {
+    // 如果缓存未加载，先加载所有应用
+    if (!allAppsCacheLoadedRef.current || allAppsCacheRef.current.length === 0) {
+      try {
+        const allApps = await tauriApi.scanApplications();
+        allAppsCacheRef.current = allApps;
+        allAppsCacheLoadedRef.current = true;
+      } catch (error) {
+        console.error("Failed to load applications for search:", error);
+        return [];
+      }
+    }
+
+    // 使用前端搜索
+    return searchAppsFrontend(searchQuery, allAppsCacheRef.current);
+  };
+  
+  // 清空应用列表缓存（当应用列表更新时调用）
+  const clearAppSearchCache = useCallback(() => {
+    allAppsCacheRef.current = [];
+    allAppsCacheLoadedRef.current = false;
+  }, []);
+
+  // 更新搜索结果（带查询验证）
+  const updateAppSearchResults = (results: AppInfo[], searchQuery: string): void => {
+    const currentQueryTrimmed = query.trim();
+    const searchQueryTrimmed = searchQuery.trim();
+    const shouldUpdate = currentQueryTrimmed === searchQueryTrimmed;
+
+    // 使用普通状态更新，React 18 会自动优化渲染性能
+    // 移除 flushSync，因为它会在某些情况下导致同步渲染阻塞主线程
+    if (shouldUpdate) {
+      setFilteredApps(results);
+    } else {
+      // 查询在搜索过程中已改变，忽略结果
+      setFilteredApps([]);
+    }
+  };
+
+  // 清空应用搜索结果
+  const clearAppSearchResults = (): void => {
     setFilteredApps([]);
+  };
+
+  // 主搜索函数：协调各个子功能
+  const searchApplications = async (searchQuery: string) => {
+    const perfStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+    let stepTimeSum = 0; // 累计各步骤耗时，用于验证总耗时
+    let logOverhead = 0; // 累计日志输出开销
+    let perfNowOverhead = 0; // 累计 performance.now() 调用开销
+    
+    // 立即清空旧结果，避免显示上一个搜索的结果
+    if (APP_SEARCH_DEBUG_CONFIG.enableClearResults) {
+      const clearStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+      clearAppSearchResults();
+      if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+        const perfNow1 = performance.now();
+        const clearDuration = perfNow1 - clearStart;
+        stepTimeSum += clearDuration;
+        const logStart = performance.now();
+        console.log("[应用搜索性能] 清空结果耗时:", clearDuration.toFixed(2), "ms");
+        logOverhead += performance.now() - logStart;
+        perfNowOverhead += (perfNow1 - clearStart) - clearDuration; // performance.now() 调用本身的微小开销
+      }
+    }
     
     try {
-      // Don't search if query is empty
-      if (!searchQuery || searchQuery.trim() === "") {
-        setFilteredApps([]);
-        return;
-      }
-      // If apps not loaded yet, load them first
-      if (apps.length === 0 && !isLoading) {
-        await loadApplications();
+      // 简化验证：只验证一次，避免重复验证的开销
+      if (APP_SEARCH_DEBUG_CONFIG.enableQueryValidation) {
+        const validateStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+        const isValid = validateSearchQuery(searchQuery);
+        if (!isValid) {
+          if (APP_SEARCH_DEBUG_CONFIG.enableClearResults) {
+            clearAppSearchResults();
+          }
+          return;
+        }
+        if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+          const perfNow1 = performance.now();
+          const validateDuration = perfNow1 - validateStart;
+          stepTimeSum += validateDuration;
+          const logStart = performance.now();
+          console.log("[应用搜索性能] 查询验证耗时:", validateDuration.toFixed(2), "ms");
+          logOverhead += performance.now() - logStart;
+        }
       }
       
-      // Double check query is still valid after async operations
-      if (!searchQuery || searchQuery.trim() === "") {
-        setFilteredApps([]);
-        return;
+      // 确保应用列表已加载（仅在需要时）
+      if (APP_SEARCH_DEBUG_CONFIG.enableEnsureAppsLoaded) {
+        const ensureStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+        await ensureAppsLoaded();
+        if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+          const perfNow1 = performance.now();
+          const ensureDuration = perfNow1 - ensureStart;
+          stepTimeSum += ensureDuration;
+          const logStart = performance.now();
+          console.log("[应用搜索性能] 确保应用加载耗时:", ensureDuration.toFixed(2), "ms");
+          logOverhead += performance.now() - logStart;
+        }
       }
-      const results = await tauriApi.searchApplications(searchQuery);
       
-      // Final check: only update if query hasn't changed
-      const currentQueryTrimmed = query.trim();
-      const searchQueryTrimmed = searchQuery.trim();
-      const shouldUpdate = currentQueryTrimmed === searchQueryTrimmed;
-      if (shouldUpdate) {
-        setFilteredApps(results);
-      } else {
-        // Query changed during search, ignore results
-        setFilteredApps([]);
+      // 执行搜索
+      let results: AppInfo[] = [];
+      if (APP_SEARCH_DEBUG_CONFIG.enablePerformSearch) {
+        const searchStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+        results = await performAppSearch(searchQuery);
+        if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+          const perfNow1 = performance.now();
+          const searchDuration = perfNow1 - searchStart;
+          stepTimeSum += searchDuration;
+          const logStart = performance.now();
+          console.log("[应用搜索性能] 执行搜索耗时:", searchDuration.toFixed(2), "ms", "结果数:", results.length);
+          logOverhead += performance.now() - logStart;
+        }
+      }
+      
+      // 更新搜索结果（带查询验证）
+      if (APP_SEARCH_DEBUG_CONFIG.enableUpdateResults) {
+        const updateStart = APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog ? performance.now() : 0;
+        updateAppSearchResults(results, searchQuery);
+        if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+          const updateDuration = performance.now() - updateStart;
+          stepTimeSum += updateDuration;
+          console.log("[应用搜索性能] 更新结果耗时:", updateDuration.toFixed(2), "ms");
+        }
       }
     } catch (error) {
       console.error("Failed to search applications:", error);
-      // Only clear on error if query is empty
-      if (!searchQuery || searchQuery.trim() === "") {
-        setFilteredApps([]);
+      // 仅在查询为空时清空结果
+      if (APP_SEARCH_DEBUG_CONFIG.enableQueryValidation && !validateSearchQuery(searchQuery)) {
+        if (APP_SEARCH_DEBUG_CONFIG.enableClearResults) {
+          clearAppSearchResults();
+        }
+      }
+    } finally {
+      if (APP_SEARCH_DEBUG_CONFIG.enablePerformanceLog) {
+        const totalDuration = performance.now() - perfStart;
+        const overhead = totalDuration - stepTimeSum - logOverhead;
+        console.log("[应用搜索性能] 总耗时:", totalDuration.toFixed(2), "ms");
+        console.log("[应用搜索性能] 各步骤累计:", stepTimeSum.toFixed(2), "ms");
+        console.log("[应用搜索性能] 日志输出开销:", logOverhead.toFixed(2), "ms", "(console.log 执行时间)");
+        console.log("[应用搜索性能] 其他未记录开销:", overhead.toFixed(2), "ms", "(函数调用、条件判断、try-catch、performance.now等)");
       }
     }
   };
@@ -3061,6 +3328,65 @@ export function LauncherWindow() {
     };
   }, []);
 
+  // 刷新文件历史缓存（当文件历史更新时调用）
+  const refreshFileHistoryCache = useCallback(async () => {
+    try {
+      const allFileHistory = await tauriApi.getAllFileHistory();
+      allFileHistoryCacheRef.current = allFileHistory;
+      allFileHistoryCacheLoadedRef.current = true;
+    } catch (error) {
+      console.error("Failed to refresh file history cache:", error);
+    }
+  }, []);
+
+  // 前端搜索文件历史（基于缓存的文件历史列表）
+  const searchFileHistoryFrontend = (query: string, fileHistory: FileHistoryItem[]): FileHistoryItem[] => {
+    if (!query || query.trim() === "") {
+      // 返回所有文件，按最后使用时间排序
+      const sorted = [...fileHistory].sort((a, b) => b.last_used - a.last_used);
+      return sorted.slice(0, 100); // 限制返回数量
+    }
+
+    const queryLower = query.trim().toLowerCase();
+
+    const results: Array<{ item: FileHistoryItem; score: number }> = [];
+
+    for (const item of fileHistory) {
+      const nameLower = item.name.toLowerCase();
+      const pathLower = item.path.toLowerCase();
+      let score = 0;
+
+      // 名称匹配（最高优先级）
+      if (nameLower === queryLower) {
+        score += 1000;
+      } else if (nameLower.startsWith(queryLower)) {
+        score += 500;
+      } else if (nameLower.includes(queryLower)) {
+        score += 100;
+      }
+
+      // 路径匹配（较低优先级）
+      if (score === 0 && pathLower.includes(queryLower)) {
+        score += 10;
+      }
+
+      if (score > 0) {
+        results.push({ item, score });
+      }
+    }
+
+    // 按分数排序，然后按最后使用时间排序
+    results.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      return b.item.last_used - a.item.last_used;
+    });
+
+    // 限制结果数量并返回
+    return results.slice(0, 100).map((r) => r.item);
+  };
+
   const searchFileHistory = async (searchQuery: string) => {
     try {
       // Don't search if query is empty
@@ -3068,12 +3394,33 @@ export function LauncherWindow() {
         setFilteredFiles([]);
         return;
       }
-      
-      // 恢复真实查询（已优化：使用只读连接减少 SQLite 文件锁竞争）
-      const results = await tauriApi.searchFileHistory(searchQuery);
-      
+
+      // 如果缓存未加载，先加载所有文件历史
+      if (!allFileHistoryCacheLoadedRef.current || allFileHistoryCacheRef.current.length === 0) {
+        try {
+          const allFileHistory = await tauriApi.getAllFileHistory();
+          allFileHistoryCacheRef.current = allFileHistory;
+          allFileHistoryCacheLoadedRef.current = true;
+        } catch (error) {
+          console.error("Failed to load file history for search:", error);
+          // 如果加载失败，回退到后端搜索
+          const results = await tauriApi.searchFileHistory(searchQuery);
+          if (query.trim() === searchQuery.trim()) {
+            setFilteredFiles(results);
+          } else {
+            setFilteredFiles([]);
+          }
+          return;
+        }
+      }
+
+      // 使用前端搜索
+      const results = searchFileHistoryFrontend(searchQuery, allFileHistoryCacheRef.current);
+
       // Only update if query hasn't changed
-      if (query.trim() === searchQuery.trim()) {
+      const currentQueryTrimmed = query.trim();
+      const searchQueryTrimmed = searchQuery.trim();
+      if (currentQueryTrimmed === searchQueryTrimmed) {
         setFilteredFiles(results);
       } else {
         setFilteredFiles([]);
@@ -3596,6 +3943,8 @@ export function LauncherWindow() {
         // Launch Everything result and add to file history
         await tauriApi.launchFile(result.everything.path);
         await tauriApi.addFileToHistory(result.everything.path);
+        // 更新前端缓存
+        await refreshFileHistoryCache();
       } else if (result.type === "memo" && result.memo) {
         // 打开备忘录详情弹窗（单条模式）
         setIsMemoListMode(false);
@@ -3720,8 +4069,10 @@ export function LauncherWindow() {
         try {
           console.log("Adding to history...");
           await tauriApi.addFileToHistory(trimmedPath);
-          // Reload file history to get updated item with use_count
-          const searchResults = await tauriApi.searchFileHistory(trimmedPath);
+          // 更新前端缓存
+          await refreshFileHistoryCache();
+          // 使用前端缓存搜索
+          const searchResults = searchFileHistoryFrontend(trimmedPath, allFileHistoryCacheRef.current);
           console.log("Search results:", searchResults);
           if (searchResults.length > 0) {
             setFilteredFiles(searchResults);
@@ -3975,6 +4326,8 @@ export function LauncherWindow() {
       // 只添加到历史记录，不更新搜索结果，避免自动打开
       try {
         await tauriApi.addFileToHistory(savedPath);
+        // 更新前端缓存
+        await refreshFileHistoryCache();
       } catch (error) {
         // 静默处理历史记录添加错误
         console.log("Failed to add to history:", error);
