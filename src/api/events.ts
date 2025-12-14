@@ -1,4 +1,5 @@
 import { getClientId } from "../utils/clientId";
+import { tauriApi } from "./tauri";
 
 const importMetaEnv = typeof import.meta !== "undefined" ? (import.meta as any).env : undefined;
 
@@ -10,6 +11,54 @@ const API_KEY = importMetaEnv?.VITE_EVENTS_API_KEY as string | undefined;
 
 // 固定项目键
 const PROJECT_KEY = "refast";
+
+// 缓存应用版本号
+let cachedAppVersion: string | null = null;
+let versionFetchPromise: Promise<string> | null = null;
+
+/**
+ * 获取应用版本号（带缓存）
+ */
+async function getAppVersion(): Promise<string | null> {
+  // 如果已经缓存，直接返回
+  if (cachedAppVersion !== null) {
+    return cachedAppVersion;
+  }
+
+  // 如果正在获取，等待获取完成
+  if (versionFetchPromise) {
+    try {
+      cachedAppVersion = await versionFetchPromise;
+      return cachedAppVersion;
+    } catch {
+      return null;
+    }
+  }
+
+  // 开始获取版本号
+  versionFetchPromise = (async () => {
+    try {
+      const version = await tauriApi.getAppVersion();
+      cachedAppVersion = version;
+      return version;
+    } catch (error) {
+      console.warn("[events] Failed to get app version:", error);
+      cachedAppVersion = ""; // 缓存空字符串，避免重复请求
+      return "";
+    } finally {
+      versionFetchPromise = null;
+    }
+  })();
+
+  try {
+    return await versionFetchPromise;
+  } catch {
+    return null;
+  }
+}
+
+// 在模块加载时预获取版本号（不阻塞）
+void getAppVersion();
 
 export interface EventWriteRequest {
   name: string;
@@ -41,8 +90,16 @@ async function sendRequest(path: string, body: unknown) {
 export async function sendEvent(event: EventWriteRequest): Promise<void> {
   if (!event.name?.trim()) return;
   try {
+    // 获取应用版本号并添加到 properties 中
+    const appVersion = await getAppVersion();
+    const properties = {
+      ...event.properties,
+      ...(appVersion ? { version: appVersion } : {}),
+    };
+
     await sendRequest("", {
       ...event,
+      properties,
       userId: event.userId || getClientId(),
       project_key: PROJECT_KEY,
     });
@@ -54,9 +111,15 @@ export async function sendEvent(event: EventWriteRequest): Promise<void> {
 export async function sendEventsBatch(events: EventWriteRequest[]): Promise<void> {
   if (!events.length) return;
   try {
+    // 获取应用版本号并添加到所有事件的 properties 中
+    const appVersion = await getAppVersion();
     const payload = {
       events: events.map((evt) => ({
         ...evt,
+        properties: {
+          ...evt.properties,
+          ...(appVersion ? { version: appVersion } : {}),
+        },
         userId: evt.userId || getClientId(),
         project_key: PROJECT_KEY,
       })),
