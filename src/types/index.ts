@@ -191,3 +191,14 @@ export interface PluginUsage {
   lastOpened: number;
 }
 
+export interface UpdateCheckResult {
+  has_update: boolean;
+  current_version: string;
+  latest_version: string;
+  release_url: string;
+  release_name: string;
+  release_notes: string;
+  download_url: string | null;
+  published_at: string;
+}
+

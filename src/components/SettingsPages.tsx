@@ -1,14 +1,7 @@
 import { tauriApi } from "../api/tauri";
 import { useEffect, useState } from "react";
-
-const handleCheckUpdate = async () => {
-  try {
-    await tauriApi.openUrl("https://github.com/Xieweikang123/ReFast/releases");
-  } catch (error) {
-    console.error("Failed to open update page:", error);
-    alert("打开更新页面失败");
-  }
-};
+import { UpdateCheckDialog } from "./UpdateCheckDialog";
+import type { UpdateCheckResult } from "../types";
 
 interface OllamaSettingsProps {
   settings: {
@@ -110,6 +103,7 @@ interface SystemSettingsProps {
     startup_enabled?: boolean;
     result_style?: "compact" | "soft" | "skeuomorphic";
     close_on_blur?: boolean;
+    auto_check_update?: boolean;
   };
   onSettingsChange: (settings: any) => void;
   onOpenHotkeySettings: () => void;
@@ -227,20 +221,29 @@ export function SystemSettingsPage({
             <div className="flex items-center justify-between">
               <div className="flex-1">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  检查更新
+                  自动检查更新
                 </label>
                 <p className="text-xs text-gray-500">
-                  前往 GitHub 查看最新版本
+                  启动时自动检查是否有新版本（每 24 小时检查一次）
                 </p>
               </div>
-              <button
-                onClick={handleCheckUpdate}
-                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm"
-              >
-                检查更新
-              </button>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.auto_check_update ?? true}
+                  onChange={(e) =>
+                    onSettingsChange({
+                      ...settings,
+                      auto_check_update: e.target.checked,
+                    })
+                  }
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
             </div>
           </div>
+
         </div>
       </div>
     </div>
@@ -251,6 +254,9 @@ interface AboutSettingsProps {}
 
 export function AboutSettingsPage({}: AboutSettingsProps) {
   const [version, setVersion] = useState<string>("");
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [isUpdateDialogOpen, setIsUpdateDialogOpen] = useState(false);
+  const [isChecking, setIsChecking] = useState(false);
 
   useEffect(() => {
     const loadVersion = async () => {
@@ -274,21 +280,30 @@ export function AboutSettingsPage({}: AboutSettingsProps) {
     }
   };
 
-  const handleOpenReleases = async () => {
-    try {
-      await tauriApi.openUrl("https://github.com/Xieweikang123/ReFast/releases");
-    } catch (error) {
-      console.error("Failed to open releases page:", error);
-      alert("打开更新页面失败");
-    }
-  };
-
   const handleContactAuthor = async () => {
     try {
       await tauriApi.openUrl("https://github.com/Xieweikang123/ReFast?tab=readme-ov-file#%E4%BD%9C%E8%80%85%E5%BE%AE%E4%BF%A1");
     } catch (error) {
       console.error("Failed to open contact page:", error);
       alert("打开联系页面失败");
+    }
+  };
+
+  const handleCheckUpdate = async () => {
+    setIsChecking(true);
+    try {
+      const result = await tauriApi.checkUpdate();
+      if (result.has_update) {
+        setUpdateInfo(result);
+        setIsUpdateDialogOpen(true);
+      } else {
+        alert(`当前已是最新版本 (${result.current_version})`);
+      }
+    } catch (error) {
+      console.error("检查更新失败:", error);
+      alert("检查更新失败，请稍后重试或前往 GitHub 查看");
+    } finally {
+      setIsChecking(false);
     }
   };
 
@@ -327,10 +342,11 @@ export function AboutSettingsPage({}: AboutSettingsProps) {
                     GitHub 主页
                   </button>
                   <button
-                    onClick={handleOpenReleases}
-                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+                    onClick={handleCheckUpdate}
+                    disabled={isChecking}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm"
                   >
-                    检查更新
+                    {isChecking ? "检查中..." : "检查更新"}
                   </button>
                   <button
                     onClick={handleContactAuthor}
@@ -357,6 +373,13 @@ export function AboutSettingsPage({}: AboutSettingsProps) {
           </div>
         </div>
       </div>
+
+      {/* 更新检查弹窗 */}
+      <UpdateCheckDialog
+        isOpen={isUpdateDialogOpen}
+        onClose={() => setIsUpdateDialogOpen(false)}
+        updateInfo={updateInfo}
+      />
     </div>
   );
 }

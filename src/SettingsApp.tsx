@@ -13,6 +13,7 @@ interface Settings {
   startup_enabled?: boolean;
   result_style?: "compact" | "soft" | "skeuomorphic";
   close_on_blur?: boolean;
+  auto_check_update?: boolean;
 }
 
 type SettingsPage = "ollama" | "system" | "about";
@@ -48,6 +49,7 @@ function SettingsApp() {
         startup_enabled: startupEnabled,
         result_style: data.result_style || "skeuomorphic",
         close_on_blur: data.close_on_blur ?? true,
+        auto_check_update: data.auto_check_update ?? true,
       });
     } catch (error) {
       console.error("Failed to load settings:", error);

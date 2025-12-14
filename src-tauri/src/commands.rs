@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
+use futures_util::StreamExt;
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 use tauri::{async_runtime, Emitter, Manager};
@@ -4852,4 +4853,123 @@ pub fn sync_startup_setting(startup_enabled: bool) -> Result<(), String> {
 #[tauri::command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
+}
+
+/// GitHub Release 信息
+#[derive(Debug, Serialize, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    name: String,
+    body: String,
+    html_url: String,
+    published_at: String,
+    assets: Vec<GitHubAsset>,
+}
+
+/// GitHub Asset 信息
+#[derive(Debug, Serialize, Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+}
+
+/// 更新检查结果
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateCheckResult {
+    pub has_update: bool,
+    pub current_version: String,
+    pub latest_version: String,
+    pub release_url: String,
+    pub release_name: String,
+    pub release_notes: String,
+    pub download_url: Option<String>,
+    pub published_at: String,
+}
+
+/// 比较版本号（语义化版本比较）
+/// 返回：如果 version1 > version2 返回 1，version1 < version2 返回 -1，相等返回 0
+fn compare_versions(version1: &str, version2: &str) -> i32 {
+    // 移除 'v' 前缀（如果有）
+    let v1 = version1.trim_start_matches('v');
+    let v2 = version2.trim_start_matches('v');
+    
+    let parts1: Vec<&str> = v1.split('.').collect();
+    let parts2: Vec<&str> = v2.split('.').collect();
+    
+    let max_len = parts1.len().max(parts2.len());
+    
+    for i in 0..max_len {
+        let num1 = parts1.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        let num2 = parts2.get(i).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        
+        if num1 > num2 {
+            return 1;
+        } else if num1 < num2 {
+            return -1;
+        }
+    }
+    
+    0
+}
+
+/// 检查更新
+#[tauri::command]
+pub async fn check_update() -> Result<UpdateCheckResult, String> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    
+    // GitHub API URL
+    let api_url = "https://api.github.com/repos/Xieweikang123/ReFast/releases/latest";
+    
+    // 创建 HTTP 客户端，设置 User-Agent（GitHub API 要求）
+    let client = reqwest::Client::builder()
+        .user_agent("ReFast-Updater/1.0")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    
+    // 发送请求
+    let response = client
+        .get(api_url)
+        .send()
+        .await
+        .map_err(|e| format!("请求 GitHub API 失败: {}", e))?;
+    
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub API 返回错误: {}",
+            response.status()
+        ));
+    }
+    
+    // 解析 JSON
+    let release: GitHubRelease = response
+        .json()
+        .await
+        .map_err(|e| format!("解析 GitHub API 响应失败: {}", e))?;
+    
+    // 提取版本号（移除 'v' 前缀）
+    let latest_version = release.tag_name.trim_start_matches('v').to_string();
+    
+    // 比较版本
+    let version_comparison = compare_versions(&latest_version, current_version);
+    let has_update = version_comparison > 0;
+    
+    // 查找 Windows MSI 安装包
+    let download_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.ends_with(".msi"))
+        .map(|asset| asset.browser_download_url.clone());
+    
+    Ok(UpdateCheckResult {
+        has_update,
+        current_version: current_version.to_string(),
+        latest_version,
+        release_url: release.html_url,
+        release_name: release.name,
+        release_notes: release.body,
+        download_url,
+        published_at: release.published_at,
+    })
 }

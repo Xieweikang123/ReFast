@@ -22,6 +22,12 @@ pub struct Settings {
     pub close_on_blur: bool,
     #[serde(default = "default_result_style")]
     pub result_style: String,
+    #[serde(default = "default_auto_check_update")]
+    pub auto_check_update: bool,
+    #[serde(default)]
+    pub last_update_check_time: Option<i64>,
+    #[serde(default)]
+    pub ignored_update_version: Option<String>,
 }
 
 fn default_result_style() -> String {
@@ -29,6 +35,10 @@ fn default_result_style() -> String {
 }
 
 fn default_close_on_blur() -> bool {
+    true
+}
+
+fn default_auto_check_update() -> bool {
     true
 }
 
@@ -43,6 +53,9 @@ impl Default for Settings {
             app_hotkeys: HashMap::new(),
             close_on_blur: default_close_on_blur(),
             result_style: default_result_style(),
+            auto_check_update: default_auto_check_update(),
+            last_update_check_time: None,
+            ignored_update_version: None,
         }
     }
 }

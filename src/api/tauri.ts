@@ -12,6 +12,7 @@ import type {
   FilePreview,
   DatabaseBackupList,
   PluginUsage,
+  UpdateCheckResult,
 } from "../types";
 
 export const tauriApi = {
@@ -469,7 +470,7 @@ export const tauriApi = {
 
 
   // Settings APIs
-  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean }> {
+  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean }> {
     return invoke("get_settings");
   },
 
@@ -541,6 +542,11 @@ export const tauriApi = {
   // App version API
   async getAppVersion(): Promise<string> {
     return invoke("get_app_version");
+  },
+
+  // Update check API
+  async checkUpdate(): Promise<UpdateCheckResult> {
+    return invoke("check_update");
   },
 };
 
