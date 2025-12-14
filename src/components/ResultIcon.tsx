@@ -95,7 +95,7 @@ export function ResultIcon({
               setExtractedFileIcon(icon);
             }
           })
-          .catch((error) => {
+          .catch(() => {
             // 忽略错误，使用默认图标
           });
       }
@@ -212,7 +212,7 @@ export function ResultIcon({
               setExtractedIcon(icon);
             }
           })
-          .catch((error) => {
+          .catch(() => {
             // 忽略错误，使用默认图标
           });
       }

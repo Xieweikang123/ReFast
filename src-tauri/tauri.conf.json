@@ -1,6 +1,6 @@
 {
   "productName": "ReFast",
-  "version": "1.0.24",
+  "version": "1.0.26",
   "identifier": "com.re-fast.app",
   "build": {
     "beforeDevCommand": "npm run dev",
