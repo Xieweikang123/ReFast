@@ -60,6 +60,10 @@ export const tauriApi = {
     return invoke("rescan_applications");
   },
 
+  async testUwpAppsScan(): Promise<AppInfo[]> {
+    return invoke("test_uwp_apps_scan");
+  },
+
 
   async populateAppIcons(limit?: number): Promise<AppInfo[]> {
     return invoke("populate_app_icons", { limit });

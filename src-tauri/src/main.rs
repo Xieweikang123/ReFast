@@ -596,6 +596,7 @@ fn main() {
             get_playback_progress,
             scan_applications,
             rescan_applications,
+            test_uwp_apps_scan,
             search_applications,
             search_system_folders,
             populate_app_icons,

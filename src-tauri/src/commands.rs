@@ -533,6 +533,62 @@ pub async fn scan_applications(app: tauri::AppHandle) -> Result<Vec<app_search::
     .map_err(|e| format!("scan_applications join error: {}", e))?
 }
 
+/// 测试命令：验证 UWP 应用扫描结果，特别是中文编码
+#[tauri::command]
+pub async fn test_uwp_apps_scan() -> Result<Vec<app_search::AppInfo>, String> {
+    async_runtime::spawn_blocking(move || {
+        match app_search::windows::scan_uwp_apps_direct() {
+            Ok(apps) => {
+                eprintln!("[test_uwp_apps_scan] 扫描到 {} 个 UWP 应用", apps.len());
+                
+                // 统计中文应用
+                let chinese_apps: Vec<_> = apps.iter()
+                    .filter(|app| {
+                        app.name.chars().any(|c| {
+                            matches!(c as u32,
+                                0x4E00..=0x9FFF |  // CJK Unified Ideographs
+                                0x3400..=0x4DBF |  // CJK Extension A
+                                0x20000..=0x2A6DF | // CJK Extension B
+                                0x2A700..=0x2B73F | // CJK Extension C
+                                0x2B740..=0x2B81F | // CJK Extension D
+                                0xF900..=0xFAFF |  // CJK Compatibility Ideographs
+                                0x2F800..=0x2FA1F   // CJK Compatibility Ideographs Supplement
+                            )
+                        })
+                    })
+                    .collect();
+                
+                eprintln!("[test_uwp_apps_scan] 其中包含中文的应用: {} 个", chinese_apps.len());
+                
+                // 输出前20个应用用于验证
+                eprintln!("[test_uwp_apps_scan] 前20个应用列表:");
+                for (idx, app) in apps.iter().take(20).enumerate() {
+                    let has_chinese = chinese_apps.iter().any(|a| a.name == app.name);
+                    eprintln!("[test_uwp_apps_scan]   {}. '{}' (path: {}, has_chinese: {})", 
+                        idx + 1, app.name, app.path, has_chinese);
+                }
+                
+                // 输出所有中文应用
+                if !chinese_apps.is_empty() {
+                    eprintln!("[test_uwp_apps_scan] 所有中文应用列表:");
+                    for (idx, app) in chinese_apps.iter().enumerate() {
+                        eprintln!("[test_uwp_apps_scan]   {}. '{}' (path: {}, pinyin: {:?}, initials: {:?})", 
+                            idx + 1, app.name, app.path, app.name_pinyin, app.name_pinyin_initials);
+                    }
+                }
+                
+                Ok(apps)
+            }
+            Err(e) => {
+                eprintln!("[test_uwp_apps_scan] 扫描失败: {}", e);
+                Err(e)
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("test_uwp_apps_scan join error: {}", e))?
+}
+
 #[tauri::command]
 pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
     // 获取所有可能的窗口，应用中心可能在启动器窗口或独立窗口中

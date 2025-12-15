@@ -21,7 +21,35 @@ pub mod windows {
     use base64::Engine;
     use pinyin::ToPinyin;
     use std::env;
+    use std::io::Write;
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::process::CommandExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // #region agent log helper
+    fn agent_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let payload = serde_json::json!({
+            "sessionId": "debug-session",
+            "runId": "run1",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": timestamp
+        });
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("d:\\project\\re-fast\\.cursor\\debug.log")
+        {
+            let _ = writeln!(file, "{}", payload.to_string());
+        }
+    }
+    // #endregion agent log helper
     
     // Cache file name
     pub fn get_cache_file_path(app_data_dir: &Path) -> PathBuf {
@@ -39,8 +67,14 @@ pub mod windows {
         let content = fs::read_to_string(&cache_file)
             .map_err(|e| format!("Failed to read cache file: {}", e))?;
 
-        let apps: Vec<AppInfo> = serde_json::from_str(&content)
+        let mut apps: Vec<AppInfo> = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse cache file: {}", e))?;
+
+        // Filter out WindowsApps paths from cache (in case old cache contains them)
+        apps.retain(|app| {
+            let path_lower = app.path.to_lowercase();
+            !path_lower.contains("windowsapps")
+        });
 
         Ok(apps)
     }
@@ -53,8 +87,17 @@ pub mod windows {
                 .map_err(|e| format!("Failed to create app data directory: {}", e))?;
         }
 
+        // Filter out WindowsApps paths before saving (double check)
+        let filtered_apps: Vec<AppInfo> = apps.iter()
+            .filter(|app| {
+                let path_lower = app.path.to_lowercase();
+                !path_lower.contains("windowsapps")
+            })
+            .cloned()
+            .collect();
+
         let cache_file = get_cache_file_path(app_data_dir);
-        let json_string = serde_json::to_string_pretty(apps)
+        let json_string = serde_json::to_string_pretty(&filtered_apps)
             .map_err(|e| format!("Failed to serialize cache: {}", e))?;
 
         fs::write(&cache_file, json_string)
@@ -294,6 +337,17 @@ pub mod windows {
         
         apps = deduplicated;
         
+        // Final filter: remove any WindowsApps paths (final safety check)
+        let initial_count = apps.len();
+        apps.retain(|app| {
+            let path_lower = app.path.to_lowercase();
+            !path_lower.contains("windowsapps")
+        });
+        let filtered_count = apps.len();
+        if initial_count != filtered_count {
+            eprintln!("[scan_start_menu] Filtered out {} WindowsApps entries", initial_count - filtered_count);
+        }
+        
         if let Some(ref tx) = tx {
             let _ = tx.send((95, format!("去重完成，共 {} 个应用", apps.len())));
         }
@@ -316,6 +370,12 @@ pub mod windows {
     /// 扫描特定路径并返回找到的应用
     /// 用于在搜索时实时发现新应用
     pub fn scan_specific_path(path: &Path) -> Result<Vec<AppInfo>, String> {
+        // Skip WindowsApps directory
+        let path_str = path.to_string_lossy().to_lowercase();
+        if path_str.contains("windowsapps") {
+            return Ok(Vec::new());
+        }
+
         let mut apps = Vec::new();
         if path.exists() {
             scan_directory(path, &mut apps, 0)?;
@@ -340,55 +400,166 @@ pub mod windows {
 
     /// Public function for direct testing of UWP app scanning
     pub fn scan_uwp_apps_direct() -> Result<Vec<AppInfo>, String> {
+        fn decode_oem_bytes(bytes: &[u8]) -> Result<String, String> {
+            if bytes.is_empty() {
+                return Ok(String::new());
+            }
+
+            use ::windows::Win32::Foundation::GetLastError;
+            use ::windows::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP, MB_ERR_INVALID_CHARS};
+
+            let wide_len = unsafe {
+                MultiByteToWideChar(
+                    CP_OEMCP,
+                    MB_ERR_INVALID_CHARS,
+                    bytes,
+                    None,
+                )
+            };
+
+            if wide_len == 0 {
+                let err = unsafe { GetLastError().0 };
+                return Err(format!(
+                    "MultiByteToWideChar length failed for OEM bytes, error code: {}",
+                    err
+                ));
+            }
+
+            let mut wide_buf: Vec<u16> = vec![0; wide_len as usize];
+            let converted = unsafe {
+                MultiByteToWideChar(
+                    CP_OEMCP,
+                    MB_ERR_INVALID_CHARS,
+                    bytes,
+                    Some(&mut wide_buf),
+                )
+            };
+
+            if converted == 0 {
+                let err = unsafe { GetLastError().0 };
+                return Err(format!(
+                    "MultiByteToWideChar convert failed for OEM bytes, error code: {}",
+                    err
+                ));
+            }
+
+            wide_buf.truncate(converted as usize);
+            String::from_utf16(&wide_buf)
+                .map_err(|e| format!("Failed to build UTF-16 from OEM bytes: {}", e))
+        }
+
         fn decode_powershell_output(bytes: &[u8]) -> Result<String, String> {
             if bytes.is_empty() {
                 return Ok(String::new());
             }
 
-            // PowerShell 5 默认 UTF-16LE，无 BOM 时也尝试按 UTF-16LE 解析
-            if bytes.len() % 2 == 0 {
-                let has_bom = bytes.starts_with(&[0xFF, 0xFE]);
-                let utf16_units: Vec<u16> = bytes
-                    .chunks(2)
-                    .skip(if has_bom { 1 } else { 0 })
-                    .map(|c| u16::from_le_bytes([c[0], c.get(1).copied().unwrap_or(0)]))
-                    .collect();
+            eprintln!("[decode_powershell_output] 输入字节长度: {}", bytes.len());
 
-                if let Ok(s) = String::from_utf16(&utf16_units) {
-                    return Ok(s);
+            // 回退方案：PowerShell 直接输出 JSON（包含 \uXXXX Unicode 转义）
+            // ConvertTo-Json 会自动将非 ASCII 字符转义为 \uXXXX，serde_json 可以正确解析
+            // 我们需要正确处理 PowerShell 的输出编码（可能是 UTF-16LE 或其他）
+            
+            // 首先尝试 UTF-16LE 解码（PowerShell 默认）
+            if bytes.len() % 2 == 0 && bytes.len() >= 2 {
+                let has_bom = bytes.starts_with(&[0xFF, 0xFE]);
+                eprintln!("[decode_powershell_output] 尝试 UTF-16LE 解码 (has_bom: {})", has_bom);
+                
+                let data_start = if has_bom { 2 } else { 0 };
+                let data_len = bytes.len() - data_start;
+                let utf16_len = if data_len % 2 == 0 { data_len } else { data_len - 1 };
+                
+                if utf16_len >= 2 {
+                    let mut utf16_units = Vec::with_capacity(utf16_len / 2);
+                    for i in (0..utf16_len).step_by(2) {
+                        let idx = data_start + i;
+                        if idx + 1 < bytes.len() {
+                            let low = bytes[idx];
+                            let high = bytes[idx + 1];
+                            utf16_units.push(u16::from_le_bytes([low, high]));
+                        }
+                    }
+
+                    if let Ok(s) = String::from_utf16(&utf16_units) {
+                        eprintln!("[decode_powershell_output] UTF-16LE 解码成功，字符串长度: {}", s.len());
+                        let preview: String = s.chars().take(200).collect();
+                        eprintln!("[decode_powershell_output] 解码结果预览: {}", preview);
+                        return Ok(s);
+                    }
                 }
             }
 
-            // 尝试 UTF-8 解码
-            if let Ok(s) = String::from_utf8(bytes.to_vec()) {
-                return Ok(s);
+            // 如果 UTF-16LE 失败，尝试 UTF-8
+            eprintln!("[decode_powershell_output] 尝试 UTF-8 解码");
+            match String::from_utf8(bytes.to_vec()) {
+                Ok(s) => {
+                    eprintln!("[decode_powershell_output] UTF-8 解码成功，字符串长度: {}", s.len());
+                    let preview: String = s.chars().take(200).collect();
+                    eprintln!("[decode_powershell_output] 解码结果预览: {}", preview);
+                    Ok(s)
+                }
+                Err(e) => {
+                    eprintln!("[decode_powershell_output] UTF-8 解码失败: {}", e);
+                    // 尝试使用 OEM 代码页解码（计划 B）
+                    match decode_oem_bytes(bytes) {
+                        Ok(oem_str) => {
+                            let preview: String = oem_str.chars().take(200).collect();
+                            eprintln!("[decode_powershell_output] OEM 解码成功，预览: {}", preview);
+                            return Ok(oem_str);
+                        }
+                        Err(oem_err) => {
+                            eprintln!("[decode_powershell_output] OEM 解码失败: {}", oem_err);
+                        }
+                    }
+                    // 最后尝试 lossy 解码
+                    let lossy = String::from_utf8_lossy(bytes);
+                    let preview: String = lossy.chars().take(200).collect();
+                    eprintln!("[decode_powershell_output] 使用 UTF-8 lossy 解码，预览: {}", preview);
+                    Ok(lossy.to_string())
+                }
             }
-
-            // 如果都失败了，尝试使用 lossy 解码，至少能看到部分内容
-            let utf8_lossy = String::from_utf8_lossy(bytes);
-            Ok(utf8_lossy.to_string())
         }
 
         // PowerShell script: enumerate UWP apps using Get-StartApps
-        // 注意：约束语言模式限制：
-        // 1. 不能设置 $ErrorActionPreference
-        // 2. 不能使用 Write-Error
-        // 3. 不能使用 New-Object -ComObject（COM 对象被禁止）
-        // 4. 因此使用 Get-StartApps，它不依赖 COM 对象
-        // 5. 输出会使用 UTF-16LE（PowerShell 默认），由 decode_powershell_output 处理
+        // 受限语言模式下仅使用方法调用，不做任何属性赋值，输出 ASCII 形式的 B64JSON
         let script = r#"
-        # 使用 Get-StartApps，它不依赖 COM 对象，可以在约束语言模式下工作
-        $apps = Get-StartApps | Where-Object { $_.AppId -and $_.Name }
-        
-        if ($apps -eq $null -or $apps.Count -eq 0) {
-            Write-Output "No apps found via Get-StartApps" 2>&1
-            exit 1
+        # 受限语言模式兼容：仅调用方法，不修改 OutputEncoding
+        try {
+            $apps = Get-StartApps | Where-Object { $_.AppId -and $_.Name }
+        } catch {
+            Write-Output "RAW:Get-StartApps failed"
+            exit 0
         }
-        
-        # 转换为 JSON 格式
-        $json = $apps | Select-Object Name, AppId | ConvertTo-Json -Depth 3 -Compress
-        Write-Output $json
+
+        if ($apps -eq $null -or $apps.Count -eq 0) {
+            $emptyBytes = [System.Text.Encoding]::UTF8.GetBytes("[]")
+            $emptyB64 = [System.Convert]::ToBase64String($emptyBytes)
+            Write-Output ("B64JSON:" + $emptyB64)
+            exit 0
+        }
+
+        $json = @($apps | Select-Object Name, AppId) | ConvertTo-Json -Depth 3 -Compress
+        try {
+            $utf8Bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+            $b64 = [System.Convert]::ToBase64String($utf8Bytes)
+            Write-Output ("B64JSON:" + $b64)
+        } catch {
+            # 若方法调用在受限语言模式被阻止，直接回落 RAW，保留原始 Unicode
+            Write-Output ("RAW:" + $json)
+        }
         "#;
+
+        // 直接使用 PowerShell，PowerShell 默认输出 UTF-16LE
+        // 解码函数会正确处理 UTF-16LE 编码
+        // #region agent log - before spawn
+        agent_log(
+            "H1",
+            "app_search.rs:scan_uwp_apps_direct:spawn_before",
+            "about to run PowerShell Get-StartApps",
+            serde_json::json!({
+                "script_preview": script.lines().take(5).collect::<Vec<_>>(),
+            }),
+        );
+        // #endregion
 
         let output = Command::new("powershell")
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
@@ -400,57 +571,208 @@ pub mod windows {
             .output()
             .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
 
+        // #region agent log - after spawn
+        agent_log(
+            "H1",
+            "app_search.rs:scan_uwp_apps_direct:spawn_after",
+            "powershell finished",
+            serde_json::json!({
+                "exit_code": output.status.code(),
+                "stdout_len": output.stdout.len(),
+                "stderr_len": output.stderr.len(),
+            }),
+        );
+        // #endregion
+
+        // 如果 stderr 有内容，记录预览（即使 exit_code 成功）
+        if !output.stderr.is_empty() {
+            let stderr_preview = String::from_utf8_lossy(&output.stderr);
+            agent_log(
+                "H1",
+                "app_search.rs:scan_uwp_apps_direct:stderr_preview",
+                "powershell stderr preview",
+                serde_json::json!({
+                    "stderr": stderr_preview.chars().take(500).collect::<String>(),
+                }),
+            );
+        }
+
         eprintln!("[scan_uwp_apps] PowerShell exit code: {}", output.status.code().unwrap_or(-1));
         eprintln!("[scan_uwp_apps] stderr length: {} bytes, stdout length: {} bytes", 
                   output.stderr.len(), output.stdout.len());
 
+        // 先尝试解码 stdout（无论成功失败都先看看内容）
+        let stdout_result = decode_powershell_output(&output.stdout);
+        
         if !output.status.success() {
-            // 尝试解码 stderr 和 stdout，即使失败也显示原始信息
-            let stderr = decode_powershell_output(&output.stderr)
-                .unwrap_or_else(|_| format!("[无法解码] 原始字节: {:?}", &output.stderr[..output.stderr.len().min(200)]));
-            let stdout = decode_powershell_output(&output.stdout)
-                .unwrap_or_else(|_| format!("[无法解码] 原始字节: {:?}", &output.stdout[..output.stdout.len().min(200)]));
+            // PowerShell 执行失败
+            eprintln!("[scan_uwp_apps] ⚠ PowerShell 执行失败！");
             
-            eprintln!("[scan_uwp_apps] PowerShell failed - stderr: {}", stderr);
-            eprintln!("[scan_uwp_apps] PowerShell failed - stdout: {}", stdout);
+            // 尝试解码 stderr（可能包含错误信息）
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[scan_uwp_apps] stderr (UTF-8 lossy): {}", stderr_str);
+            
+            // 显示 stdout 的原始字节（前200字节）
+            if !output.stdout.is_empty() {
+                let stdout_preview = if output.stdout.len() > 200 {
+                    format!("{:?}...", &output.stdout[..200])
+                } else {
+                    format!("{:?}", output.stdout)
+                };
+                eprintln!("[scan_uwp_apps] stdout 原始字节: {}", stdout_preview);
+            }
+            
+            // 如果 stdout 解码成功，也显示一下
+            match &stdout_result {
+                Ok(s) => {
+                    eprintln!("[scan_uwp_apps] stdout 解码成功: {}", s);
+                }
+                Err(e) => {
+                    eprintln!("[scan_uwp_apps] stdout 解码失败: {}", e);
+                }
+            }
             
             // 如果 stderr 为空，使用 stdout 作为错误信息
-            let error_msg = if stderr.trim().is_empty() {
-                if stdout.trim().is_empty() {
-                    "PowerShell 执行失败，但未返回错误信息".to_string()
-                } else {
-                    stdout
+            let error_msg = if stderr_str.trim().is_empty() {
+                match stdout_result {
+                    Ok(s) if !s.trim().is_empty() => s,
+                    _ => "PowerShell 执行失败，但未返回错误信息".to_string()
                 }
             } else {
-                stderr
+                stderr_str.to_string()
             };
             
             return Err(format!("PowerShell shell:AppsFolder enumeration failed: {}", error_msg));
         }
 
-        let stdout = decode_powershell_output(&output.stdout)?;
+        // PowerShell 执行成功，解码 stdout
+        let stdout = stdout_result?;
         let stdout_trimmed = stdout.trim();
         eprintln!("[scan_uwp_apps] PowerShell stdout length: {} bytes", stdout_trimmed.len());
         
         if stdout_trimmed.is_empty() {
-            eprintln!("[scan_uwp_apps] PowerShell returned empty output");
-            return Ok(Vec::new());
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            eprintln!("[scan_uwp_apps] ⚠ PowerShell returned empty stdout");
+            eprintln!("[scan_uwp_apps] stderr 预览: {}", stderr_str);
+            // #region agent log - empty stdout
+            agent_log(
+                "H1",
+                "app_search.rs:scan_uwp_apps_direct:empty_stdout",
+                "powershell stdout empty",
+                serde_json::json!({
+                    "stderr_preview": stderr_str,
+                }),
+            );
+            // #endregion
+            return Err(format!("PowerShell Get-StartApps returned empty output, stderr: {}", stderr_str));
         }
 
-        // 打印前 500 个字符用于调试
-        let preview = if stdout_trimmed.len() > 500 {
-            format!("{}...", &stdout_trimmed[..500])
+        // #region agent log - stdout decoded
+        let stdout_preview: String = stdout_trimmed.chars().take(200).collect();
+        agent_log(
+            "H2",
+            "app_search.rs:scan_uwp_apps_direct:stdout_decoded",
+            "stdout decoded",
+            serde_json::json!({
+                "stdout_len": stdout_trimmed.len(),
+                "preview": stdout_preview,
+            }),
+        );
+        // #endregion
+
+        // 处理 B64JSON:/B64:/RAW: 前缀；如果没有前缀则保持原样
+        let (payload_str, mode) = if stdout_trimmed.starts_with("B64JSON:") {
+            (&stdout_trimmed["B64JSON:".len()..], "B64JSON")
+        } else if stdout_trimmed.starts_with("B64:") {
+            (&stdout_trimmed[4..], "B64")
+        } else if stdout_trimmed.starts_with("RAW:") {
+            (&stdout_trimmed[4..], "RAW")
         } else {
-            stdout_trimmed.to_string()
+            (stdout_trimmed, "UNKNOWN")
+        };
+
+        // #region agent log - stdout mode
+        agent_log(
+            "H2",
+            "app_search.rs:scan_uwp_apps_direct:stdout_mode",
+            "stdout mode detected",
+            serde_json::json!({
+                "mode": mode,
+                "payload_len": payload_str.len(),
+                "payload_preview": payload_str.chars().take(200).collect::<String>(),
+            }),
+        );
+        // #endregion
+
+        // 如果是 B64 前缀，则尝试 Base64 解码；否则使用原始字符串
+        let decoded_json = if mode == "B64JSON" || mode == "B64" {
+            match base64::engine::general_purpose::STANDARD.decode(payload_str) {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        agent_log(
+                            "H2",
+                            "app_search.rs:scan_uwp_apps_direct:b64_utf8_error",
+                            "base64 decoded but utf8 failed",
+                            serde_json::json!({"error": e.to_string()}),
+                        );
+                        return Err(format!("Failed to decode UTF-8 JSON from base64: {}", e));
+                    }
+                },
+                Err(e) => {
+                    agent_log(
+                        "H2",
+                        "app_search.rs:scan_uwp_apps_direct:b64_decode_error",
+                        "base64 decode failed",
+                        serde_json::json!({"error": e.to_string()}),
+                    );
+                    return Err(format!("Failed to decode Base64 payload: {}", e));
+                }
+            }
+        } else {
+            payload_str.to_string()
+        };
+
+        // 打印前 500 个字符用于调试
+        let preview = if decoded_json.len() > 500 {
+            format!("{}...", &decoded_json[..500])
+        } else {
+            decoded_json.clone()
         };
         eprintln!("[scan_uwp_apps] PowerShell output preview: {}", preview);
+        
+        // 检查是否包含 Unicode 转义序列（\uXXXX）
+        let unicode_escape_count = preview.matches("\\u").count();
+        if unicode_escape_count > 0 {
+            eprintln!("[scan_uwp_apps] 检测到 {} 个 Unicode 转义序列", unicode_escape_count);
+            // 提取前几个 Unicode 转义序列
+            let mut found_escapes = Vec::new();
+            for (i, _) in preview.match_indices("\\u").take(5) {
+                if i + 6 <= preview.len() {
+                    let escape = &preview[i..i+6];
+                    found_escapes.push(escape);
+                }
+            }
+            eprintln!("[scan_uwp_apps] 前几个 Unicode 转义序列: {:?}", found_escapes);
+        }
 
         // Handle both array and single-object JSON outputs
-        let entries: Vec<StartAppEntry> = match serde_json::from_str::<Vec<StartAppEntry>>(stdout_trimmed) {
+        let entries: Vec<StartAppEntry> = match serde_json::from_str::<Vec<StartAppEntry>>(&decoded_json) {
             Ok(entries) => entries,
             Err(e) => {
+                // #region agent log - json parse error
+                agent_log(
+                    "H2",
+                    "app_search.rs:scan_uwp_apps_direct:json_parse_error",
+                    "failed to parse JSON",
+                    serde_json::json!({
+                        "error": e.to_string(),
+                        "stdout_preview": preview,
+                    }),
+                );
+                // #endregion
                 // Try parsing as single object
-                match serde_json::from_str::<StartAppEntry>(stdout_trimmed) {
+                match serde_json::from_str::<StartAppEntry>(&decoded_json) {
                     Ok(entry) => vec![entry],
                     Err(e2) => {
                         eprintln!("[scan_uwp_apps] Failed to parse JSON: {} (also tried single object: {})", e, e2);
@@ -462,13 +784,68 @@ pub mod windows {
 
         eprintln!("[scan_uwp_apps] Parsed {} entries from JSON", entries.len());
 
+        // #region agent log - json parsed
+        let sample: Vec<_> = entries
+            .iter()
+            .take(5)
+            .map(|e| serde_json::json!({"name": e.name, "app_id": e.app_id}))
+            .collect();
+        agent_log(
+            "H2",
+            "app_search.rs:scan_uwp_apps_direct:json_parsed",
+            "parsed entries",
+            serde_json::json!({
+                "entries_len": entries.len(),
+                "sample": sample,
+            }),
+        );
+        // #endregion
+
         let mut apps = Vec::with_capacity(entries.len());
+        let mut chinese_app_count = 0;
         for (idx, entry) in entries.iter().enumerate() {
             let name = entry.name.trim();
             let app_id = entry.app_id.trim();
             
-            if idx < 10 {
-                eprintln!("[scan_uwp_apps] Entry {}: name='{}', app_id='{}'", idx, name, app_id);
+            // 检查是否包含替换字符（说明解码可能有问题）
+            let replacement_count = name.chars().filter(|&c| c == '\u{FFFD}').count();
+            if replacement_count > 0 {
+                eprintln!("[scan_uwp_apps] ⚠ Entry {} name contains {} replacement characters (可能解码有问题)", idx, replacement_count);
+            }
+            
+            // 检查是否包含中文
+            let has_chinese = contains_chinese(name);
+            if has_chinese {
+                chinese_app_count += 1;
+            }
+            
+            // 前10个应用或所有中文应用都输出详细信息
+            if idx < 10 || has_chinese || replacement_count > 0 {
+                eprintln!("[scan_uwp_apps] Entry {}: name='{}' (len={}, has_chinese={}, replacements={}), app_id='{}'", 
+                    idx, name, name.len(), has_chinese, replacement_count, app_id);
+                
+                // 输出原始 JSON 中的 name 字段用于调试
+                if idx < 5 {
+                    let name_chars: Vec<String> = name.chars().take(20).map(|c| {
+                        if c == '\u{FFFD}' {
+                            format!("[REPLACEMENT]")
+                        } else {
+                            format!("'{}' (U+{:04X})", c, c as u32)
+                        }
+                    }).collect();
+                    eprintln!("[scan_uwp_apps] Entry {} name chars (first 20): {:?}", idx, name_chars);
+                }
+                
+                // 如果是中文应用或包含替换字符，输出字节信息用于调试
+                if has_chinese || replacement_count > 0 {
+                    let name_bytes = name.as_bytes();
+                    let name_bytes_preview = if name_bytes.len() > 50 {
+                        format!("{:?}...", &name_bytes[..50])
+                    } else {
+                        format!("{:?}", name_bytes)
+                    };
+                    eprintln!("[scan_uwp_apps] Entry {} name bytes (first 50): {}", idx, name_bytes_preview);
+                }
             }
             
             if name.is_empty() || app_id.is_empty() {
@@ -514,7 +891,19 @@ pub mod windows {
             });
         }
 
-        eprintln!("[scan_uwp_apps] Successfully created {} apps", apps.len());
+        eprintln!("[scan_uwp_apps] Successfully created {} apps ({} with Chinese names)", 
+            apps.len(), chinese_app_count);
+        
+        // 输出所有中文应用的名称用于验证
+        if chinese_app_count > 0 {
+            eprintln!("[scan_uwp_apps] Chinese app names found:");
+            for app in &apps {
+                if contains_chinese(&app.name) {
+                    eprintln!("[scan_uwp_apps]   - '{}' (path: {})", app.name, app.path);
+                }
+            }
+        }
+        
         Ok(apps)
     }
 
@@ -528,6 +917,12 @@ pub mod windows {
         // Limit total number of apps to avoid memory issues (increased to 2000)
         const MAX_APPS: usize = 2000;
         if apps.len() >= MAX_APPS {
+            return Ok(());
+        }
+
+        // Skip WindowsApps directory - UWP apps should be scanned via Get-StartApps instead
+        let dir_str = dir.to_string_lossy().to_lowercase();
+        if dir_str.contains("windowsapps") {
             return Ok(());
         }
 
@@ -546,6 +941,12 @@ pub mod windows {
                 Err(_) => continue, // Skip entries we can't read
             };
             let path = entry.path();
+
+            // Skip files in WindowsApps directory
+            let path_str = path.to_string_lossy().to_lowercase();
+            if path_str.contains("windowsapps") {
+                continue;
+            }
 
             if path.is_dir() {
                 // Recursively scan subdirectories

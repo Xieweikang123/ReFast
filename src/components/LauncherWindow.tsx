@@ -98,6 +98,7 @@ export function LauncherWindow() {
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
+  const [isTestingUwpApps, setIsTestingUwpApps] = useState(false); // 是否正在测试 UWP 应用扫描
   const [pastedImagePath, setPastedImagePath] = useState<string | null>(null); // 粘贴的图片路径
   const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null); // 粘贴的图片 base64 data URL
   const [resultStyle, setResultStyle] = useState<ResultStyle>(() => {
@@ -137,6 +138,9 @@ export function LauncherWindow() {
   const isHorizontalNavigationRef = useRef(false); // 标记是否是横向导航切换
   const isAutoSelectingFirstHorizontalRef = useRef(false); // 标记是否正在自动选择第一个横向结果（用于防止scrollIntoView）
   const justJumpedToVerticalRef = useRef(false); // 标记是否刚刚从横向跳转到纵向（用于防止results useEffect重置selectedIndex）
+  // 所有应用列表缓存（前端搜索使用）
+  const allAppsCacheRef = useRef<AppInfo[]>([]);
+  const allAppsCacheLoadedRef = useRef<boolean>(false);
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
 
@@ -598,7 +602,8 @@ export function LauncherWindow() {
         // 静默加载，不设置 isLoading 状态
         const allApps = await tauriApi.scanApplications();
         if (isMounted) {
-          setApps(allApps);
+          const filteredApps = filterWindowsApps(allApps);
+          setApps(filteredApps);
           // 不设置 filteredApps，等待用户输入查询时再设置
           // 注意：allAppsCacheRef 在函数组件内部定义，这里无法直接访问
           // 应用列表会在 performAppSearch 首次调用时自动加载到缓存
@@ -1746,9 +1751,32 @@ export function LauncherWindow() {
         const normalizedAppPath = app.path.toLowerCase().replace(/\\/g, "/");
         const fileHistory = fileHistoryMap.get(normalizedAppPath);
         
+        // 如果应用没有图标，尝试从缓存中查找匹配的应用并获取图标
+        // 优先从 apps 状态查找，如果没有则从 allAppsCacheRef 查找
+        let appWithIcon = app;
+        if (!app.icon || app.icon.trim() === '') {
+          // 先从 apps 状态查找
+          let matchedApp = apps.find((a) => {
+            const normalizedPath = a.path.toLowerCase().replace(/\\/g, "/");
+            return normalizedPath === normalizedAppPath;
+          });
+          
+          // 如果 apps 状态中没有找到，从 allAppsCacheRef 查找
+          if (!matchedApp || !matchedApp.icon || matchedApp.icon.trim() === '') {
+            matchedApp = allAppsCacheRef.current.find((a) => {
+              const normalizedPath = a.path.toLowerCase().replace(/\\/g, "/");
+              return normalizedPath === normalizedAppPath;
+            });
+          }
+          
+          if (matchedApp && matchedApp.icon && matchedApp.icon.trim() !== '') {
+            appWithIcon = { ...app, icon: matchedApp.icon };
+          }
+        }
+        
         return {
           type: "app" as const,
-          app,
+          app: appWithIcon,
           // 如果找到对应的文件历史记录，设置 file 字段以便排序时使用 use_count 和 last_used
           file: fileHistory,
           displayName: app.name,
@@ -1759,6 +1787,10 @@ export function LauncherWindow() {
       ...filteredFiles
         .filter((file) => {
           const pathLower = file.path.toLowerCase();
+          // 过滤掉 WindowsApps 路径
+          if (pathLower.includes("windowsapps")) {
+            return false;
+          }
           return pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
         })
         .filter((file) => {
@@ -3140,8 +3172,9 @@ export function LauncherWindow() {
             // 监听扫描完成事件
             unlistenComplete = await listen<{ apps: AppInfo[] }>("app-rescan-complete", (event) => {
               const { apps } = event.payload;
-              setApps(apps);
-              setFilteredApps(apps.slice(0, 10));
+              const filteredApps = filterWindowsApps(apps);
+              setApps(filteredApps);
+              setFilteredApps(filteredApps.slice(0, 10));
               setIsLoading(false);
               // 应用列表更新，更新前端搜索缓存（通过 clearAppSearchCache 触发重新加载）
               clearAppSearchCache();
@@ -3192,10 +3225,11 @@ export function LauncherWindow() {
         // 正常扫描：直接返回结果（移除不必要的延迟包装）
         try {
           const allApps = await tauriApi.scanApplications();
-          setApps(allApps);
-          setFilteredApps(allApps.slice(0, 10));
+          const filteredApps = filterWindowsApps(allApps);
+          setApps(filteredApps);
+          setFilteredApps(filteredApps.slice(0, 10));
           // 应用列表更新，更新前端搜索缓存
-          allAppsCacheRef.current = allApps;
+          allAppsCacheRef.current = filteredApps;
           allAppsCacheLoadedRef.current = true;
         } catch (error) {
           console.error("Failed to load applications:", error);
@@ -3243,9 +3277,13 @@ export function LauncherWindow() {
     }
   };
 
-  // 所有应用列表缓存（前端搜索使用）
-  const allAppsCacheRef = useRef<AppInfo[]>([]);
-  const allAppsCacheLoadedRef = useRef<boolean>(false);
+  // 过滤掉 WindowsApps 路径的应用（前端双重保险）
+  const filterWindowsApps = useCallback((apps: AppInfo[]): AppInfo[] => {
+    return apps.filter((app) => {
+      const pathLower = app.path.toLowerCase();
+      return !pathLower.includes("windowsapps");
+    });
+  }, []);
 
   // 所有文件历史缓存（前端搜索使用）
   const allFileHistoryCacheRef = useRef<FileHistoryItem[]>([]);
@@ -3372,7 +3410,8 @@ export function LauncherWindow() {
     if (!allAppsCacheLoadedRef.current || allAppsCacheRef.current.length === 0) {
       try {
         const allApps = await tauriApi.scanApplications();
-        allAppsCacheRef.current = allApps;
+        const filteredApps = filterWindowsApps(allApps);
+        allAppsCacheRef.current = filteredApps;
         allAppsCacheLoadedRef.current = true;
       } catch (error) {
         return [];
@@ -5912,6 +5951,51 @@ export function LauncherWindow() {
                     </button>
                   </div>
                 )}
+              </div>
+              {/* UWP 应用扫描测试按钮 - 始终可见 */}
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsTestingUwpApps(true);
+                    try {
+                      console.log("[UWP测试] 开始测试 UWP 应用扫描...");
+                      const apps = await tauriApi.testUwpAppsScan();
+                      console.log("[UWP测试] 扫描完成，共找到", apps.length, "个应用");
+                      
+                      // 统计中文应用
+                      const chineseApps = apps.filter(app => {
+                        return /[\u4e00-\u9fa5]/.test(app.name);
+                      });
+                      console.log("[UWP测试] 其中包含中文的应用:", chineseApps.length, "个");
+                      
+                      // 显示前10个中文应用
+                      if (chineseApps.length > 0) {
+                        console.log("[UWP测试] 中文应用列表:");
+                        chineseApps.slice(0, 10).forEach((app, idx) => {
+                          console.log(`[UWP测试]   ${idx + 1}. "${app.name}" (path: ${app.path}, pinyin: ${app.name_pinyin || 'N/A'})`);
+                        });
+                      }
+                      
+                      setSuccessMessage(`UWP 测试完成！找到 ${apps.length} 个应用，其中 ${chineseApps.length} 个包含中文。请查看控制台日志获取详细信息。`);
+                    } catch (error: any) {
+                      console.error("[UWP测试] 测试失败:", error);
+                      setErrorMessage(`UWP 测试失败: ${error?.message || error}`);
+                    } finally {
+                      setIsTestingUwpApps(false);
+                    }
+                  }}
+                  disabled={isTestingUwpApps}
+                  className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                    isTestingUwpApps
+                      ? 'bg-gray-400 text-white cursor-not-allowed'
+                      : 'bg-purple-500 text-white hover:bg-purple-600'
+                  }`}
+                  title="测试 UWP 应用扫描（检查中文编码）"
+                >
+                  {isTestingUwpApps ? '测试中...' : 'UWP测试'}
+                </button>
               </div>
             </div>
             {!showAiAnswer && results.length > 0 && (
