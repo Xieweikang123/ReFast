@@ -706,6 +706,35 @@ pub async fn search_applications(
         let mut results = app_search::windows::search_apps(&query_clone, apps.as_slice());
         let search_time = search_start.elapsed();
         
+        // #region agent log
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"id":"log_search_apps_1","timestamp":{},"location":"commands.rs:716","message":"search_applications search completed","data":{{"query":"{}","results_count":{},"apps_total":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                query_clone, results.len(), apps.len());
+            // 记录前5个搜索结果
+            for (idx, r) in results.iter().take(5).enumerate() {
+                let _ = writeln!(file, r#"{{"id":"log_search_apps_2","timestamp":{},"location":"commands.rs:722","message":"search result","data":{{"idx":{},"name":"{}","path":"{}","has_icon":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                    idx, r.name, r.path, r.icon.is_some());
+            }
+            // 检查是否有 iTunes 相关的应用
+            let itunes_apps: Vec<_> = apps.iter().filter(|a| a.name.to_lowercase().contains("itunes")).collect();
+            if !itunes_apps.is_empty() {
+                for (idx, app) in itunes_apps.iter().enumerate() {
+                    let _ = writeln!(file, r#"{{"id":"log_search_apps_3","timestamp":{},"location":"commands.rs:730","message":"iTunes app found in cache","data":{{"idx":{},"name":"{}","path":"{}","has_icon":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                        idx, app.name, app.path, app.icon.is_some());
+                }
+            } else {
+                let _ = writeln!(file, r#"{{"id":"log_search_apps_4","timestamp":{},"location":"commands.rs:737","message":"iTunes app NOT found in cache","data":{{"query":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                    query_clone);
+            }
+        }
+        // #endregion
+        
         let total_time = std::time::Instant::now().duration_since(total_start);
         if total_time.as_millis() > 50 {
             eprintln!("[性能警告] search_applications 总耗时: {:?}", total_time);
@@ -755,22 +784,78 @@ pub async fn search_applications(
     let app_handle_for_emit = app_handle_clone.clone();
     let app_handle_for_save = app_handle_clone.clone();
     
+    // #region agent log
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"id":"log_extract_icons_1","timestamp":{},"location":"commands.rs:768","message":"extract_icons_for_results entry","data":{{"results_count":{},"results_with_icons":{},"results_without_icons":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            results.len(),
+            results.iter().filter(|r| r.icon.is_some()).count(),
+            results.iter().filter(|r| r.icon.is_none()).count());
+        // 记录前5个没有图标的应用的路径
+        for (idx, r) in results.iter().filter(|r| r.icon.is_none()).take(5).enumerate() {
+            let _ = writeln!(file, r#"{{"id":"log_extract_icons_2","timestamp":{},"location":"commands.rs:775","message":"result without icon","data":{{"idx":{},"name":"{}","path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                idx, r.name, r.path);
+        }
+    }
+    // #endregion
+    
     let results_paths: Vec<String> = results
         .iter()
         .filter(|r| r.icon.is_none())
         .map(|r| r.path.clone())
         .collect();
     
+    // #region agent log
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"id":"log_extract_icons_3","timestamp":{},"location":"commands.rs:782","message":"results_paths collected","data":{{"paths_count":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            results_paths.len());
+        for (idx, path) in results_paths.iter().take(5).enumerate() {
+            let _ = writeln!(file, r#"{{"id":"log_extract_icons_4","timestamp":{},"location":"commands.rs:786","message":"path to extract icon","data":{{"idx":{},"path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                idx, path);
+        }
+    }
+    // #endregion
+    
     if !results_paths.is_empty() {
         std::thread::spawn(move || {
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_extract_icons_5","timestamp":{},"location":"commands.rs:794","message":"icon extraction thread started","data":{{"paths_count":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+                    results_paths.len());
+            }
+            // #endregion
             // 先提取所有图标（不持有锁），避免阻塞搜索操作
             let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
             
             for path_str in results_paths {
                 let path_lower = path_str.to_lowercase();
                 let icon = if path_lower.starts_with("shell:appsfolder\\") {
+                    // #region agent log
+                    use std::fs::OpenOptions;
+                    use std::io::Write;
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                        let _ = writeln!(file, r#"{{"id":"log_uwp_icon_cmd_1","timestamp":{},"location":"commands.rs:781","message":"extracting icon for UWP app","data":{{"path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), path_str);
+                    }
+                    // #endregion
                     // UWP app - extract icon using special method
-                    app_search::windows::extract_uwp_app_icon_base64(&path_str)
+                    let icon_result = app_search::windows::extract_uwp_app_icon_base64(&path_str);
+                    // #region agent log
+                    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                        let icon_success = icon_result.is_some();
+                        let icon_len = icon_result.as_ref().map(|s| s.len()).unwrap_or(0);
+                        let _ = writeln!(file, r#"{{"id":"log_uwp_icon_cmd_2","timestamp":{},"location":"commands.rs:785","message":"icon extraction result","data":{{"path":"{}","success":{},"icon_len":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
+                            path_str, icon_success, icon_len);
+                    }
+                    // #endregion
+                    icon_result
                 } else {
                     let path = std::path::Path::new(&path_str);
                     let ext = path
@@ -1028,14 +1113,47 @@ pub async fn debug_app_icon(app_name: String, app: tauri::AppHandle) -> Result<S
 pub async fn extract_icon_from_path(file_path: String) -> Result<Option<String>, String> {
     use std::path::Path;
     
+    // #region agent log
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+        let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_1","timestamp":{},"location":"commands.rs:1118","message":"extract_icon_from_path entry","data":{{"file_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), file_path);
+    }
+    // #endregion
+    
     // 在后台线程执行耗时操作，避免阻塞 UI
     async_runtime::spawn_blocking(move || {
         let path = Path::new(&file_path);
         let path_lower = file_path.to_lowercase();
         
+        // #region agent log
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_2","timestamp":{},"location":"commands.rs:1128","message":"determining icon extraction method","data":{{"file_path":"{}","is_uwp":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
+                file_path, path_lower.starts_with("shell:appsfolder\\"));
+        }
+        // #endregion
+        
         let icon = if path_lower.starts_with("shell:appsfolder\\") {
             // UWP app - extract icon using special method
-            app_search::windows::extract_uwp_app_icon_base64(&file_path)
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_3","timestamp":{},"location":"commands.rs:1133","message":"calling extract_uwp_app_icon_base64","data":{{"file_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), file_path);
+            }
+            // #endregion
+            let icon_result = app_search::windows::extract_uwp_app_icon_base64(&file_path);
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let icon_success = icon_result.is_some();
+                let icon_len = icon_result.as_ref().map(|s| s.len()).unwrap_or(0);
+                let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_4","timestamp":{},"location":"commands.rs:1138","message":"extract_uwp_app_icon_base64 result","data":{{"file_path":"{}","success":{},"icon_len":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
+                    file_path, icon_success, icon_len);
+            }
+            // #endregion
+            icon_result
         } else {
             let ext = path
                 .extension()
@@ -1241,10 +1359,6 @@ pub fn get_all_file_history(
     // Load history into the locked state (no additional locking)
     match file_history::load_history_into(&mut state, &app_data_dir) {
         Ok(_) => {
-            println!(
-                "[后端] get_all_file_history: History loaded successfully, {} items in memory",
-                state.len()
-            );
         }
         Err(e) => {
             println!("[后端] get_all_file_history: ERROR loading history: {}", e);
@@ -1253,16 +1367,9 @@ pub fn get_all_file_history(
     }
 
     // Search within the locked state (no additional locking)
-    println!("[后端] get_all_file_history: Searching history (empty query = all items)...");
     let result = file_history::search_in_history(&state, "");
-    println!(
-        "[后端] get_all_file_history: Search completed, {} items found",
-        result.len()
-    );
 
     // Lock is automatically released when state goes out of scope
-    let elapsed = start_time.elapsed();
-    println!("[后端] get_all_file_history: END (took {:?})", elapsed);
     Ok(result)
 }
 

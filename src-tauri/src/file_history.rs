@@ -80,11 +80,6 @@ pub fn load_history_into(
         state.insert(key, item);
     }
 
-    println!(
-        "[后端] file_history.load_history_into: History loaded into state successfully ({} items)",
-        state.len()
-    );
-
     Ok(())
 }
 

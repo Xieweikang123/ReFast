@@ -60,6 +60,7 @@ export const tauriApi = {
     return invoke("rescan_applications");
   },
 
+
   async populateAppIcons(limit?: number): Promise<AppInfo[]> {
     return invoke("populate_app_icons", { limit });
   },

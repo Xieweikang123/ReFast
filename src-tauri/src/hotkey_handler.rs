@@ -1168,8 +1168,6 @@ pub mod windows {
                     *hook_guard = Some(hook);
                 }
                 
-                eprintln!("[MultiHotkey] Multi-hotkey listener started");
-                
                 // 消息循环
                 let mut msg = MSG {
                     hwnd: 0,

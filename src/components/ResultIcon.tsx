@@ -184,6 +184,7 @@ export function ResultIcon({
     const [extractedIcon, setExtractedIcon] = useState<string | null>(null);
     const pathLower = (result.path || '').toLowerCase();
     const isExeOrLnk = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
+    const isUwpApp = pathLower.startsWith('shell:appsfolder\\');
     
     useEffect(() => {
       // 在 useEffect 内部重新计算 iconToUse，因为它在渲染时计算，不应该作为依赖项
@@ -205,7 +206,8 @@ export function ResultIcon({
         }
       }
       
-      if (!currentIconToUse && !extractedIcon && result.path && isExeOrLnk) {
+      // 对于 .exe、.lnk 或 UWP 应用，如果没有图标，尝试提取
+      if (!currentIconToUse && !extractedIcon && result.path && (isExeOrLnk || isUwpApp)) {
         tauriApi.extractIconFromPath(result.path)
           .then((icon) => {
             if (icon) {
@@ -216,7 +218,7 @@ export function ResultIcon({
             // 忽略错误，使用默认图标
           });
       }
-    }, [extractedIcon, result.path, result.app?.icon, apps, filteredApps, isExeOrLnk]);
+    }, [extractedIcon, result.path, result.app?.icon, apps, filteredApps, isExeOrLnk, isUwpApp]);
 
     // 使用提取的图标（如果可用）
     if (!iconToUse && extractedIcon) {

@@ -51,7 +51,6 @@ fn get_log_file_state() -> Arc<Mutex<LogFileState>> {
                 .open(&log_path)
             {
                 Ok(f) => {
-                    eprintln!("[Logger] 日志文件已打开: {}", log_path.display());
                     Some(f)
                 }
                 Err(e) => {

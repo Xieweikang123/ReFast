@@ -335,6 +335,11 @@ pub mod windows {
     /// This method finds ALL apps in shell:AppsFolder, not just those returned by Get-StartApps.
     /// Produces shell:AppsFolder targets so they can be launched via ShellExecute.
     fn scan_uwp_apps() -> Result<Vec<AppInfo>, String> {
+        scan_uwp_apps_direct()
+    }
+
+    /// Public function for direct testing of UWP app scanning
+    pub fn scan_uwp_apps_direct() -> Result<Vec<AppInfo>, String> {
         fn decode_powershell_output(bytes: &[u8]) -> Result<String, String> {
             if bytes.is_empty() {
                 return Ok(String::new());
@@ -354,49 +359,35 @@ pub mod windows {
                 }
             }
 
-            String::from_utf8(bytes.to_vec())
-                .map_err(|e| format!("Failed to decode PowerShell output: {}", e))
+            // 尝试 UTF-8 解码
+            if let Ok(s) = String::from_utf8(bytes.to_vec()) {
+                return Ok(s);
+            }
+
+            // 如果都失败了，尝试使用 lossy 解码，至少能看到部分内容
+            let utf8_lossy = String::from_utf8_lossy(bytes);
+            Ok(utf8_lossy.to_string())
         }
 
-        // PowerShell script: directly enumerate shell:AppsFolder to get ALL apps
+        // PowerShell script: enumerate UWP apps using Get-StartApps
+        // 注意：约束语言模式限制：
+        // 1. 不能设置 $ErrorActionPreference
+        // 2. 不能使用 Write-Error
+        // 3. 不能使用 New-Object -ComObject（COM 对象被禁止）
+        // 4. 因此使用 Get-StartApps，它不依赖 COM 对象
+        // 5. 输出会使用 UTF-16LE（PowerShell 默认），由 decode_powershell_output 处理
         let script = r#"
-        try {
-            $shell = New-Object -ComObject Shell.Application
-            $appsFolder = $shell.NameSpace("shell:AppsFolder")
-            
-            if ($appsFolder -eq $null) {
-                Write-Error "Failed to open shell:AppsFolder"
-                exit 1
-            }
-            
-            $apps = @()
-            foreach ($item in $appsFolder.Items()) {
-                if ($item -ne $null -and $item.Path -and $item.Name) {
-                    # Extract AppID from path (format: shell:AppsFolder\AppID)
-                    $appId = $null
-                    if ($item.Path -match 'shell:AppsFolder\\(.+)') {
-                        $appId = $matches[1]
-                    } elseif ($item.Path -match 'shell:appsfolder\\(.+)') {
-                        $appId = $matches[1]
-                    } else {
-                        # If path doesn't match expected format, try to use the full path
-                        $appId = $item.Path -replace '^shell:AppsFolder\\', '' -replace '^shell:appsfolder\\', ''
-                    }
-                    
-                    if ($appId -and $item.Name) {
-                        $apps += @{
-                            Name = $item.Name
-                            AppId = $appId
-                        }
-                    }
-                }
-            }
-            
-            $apps | Select-Object Name, AppId | ConvertTo-Json -Depth 3
-        } catch {
-            Write-Error $_
+        # 使用 Get-StartApps，它不依赖 COM 对象，可以在约束语言模式下工作
+        $apps = Get-StartApps | Where-Object { $_.AppId -and $_.Name }
+        
+        if ($apps -eq $null -or $apps.Count -eq 0) {
+            Write-Output "No apps found via Get-StartApps" 2>&1
             exit 1
         }
+        
+        # 转换为 JSON 格式
+        $json = $apps | Select-Object Name, AppId | ConvertTo-Json -Depth 3 -Compress
+        Write-Output $json
         "#;
 
         let output = Command::new("powershell")
@@ -410,13 +401,31 @@ pub mod windows {
             .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
 
         eprintln!("[scan_uwp_apps] PowerShell exit code: {}", output.status.code().unwrap_or(-1));
+        eprintln!("[scan_uwp_apps] stderr length: {} bytes, stdout length: {} bytes", 
+                  output.stderr.len(), output.stdout.len());
 
         if !output.status.success() {
-            let stderr = decode_powershell_output(&output.stderr)?;
-            let stdout = decode_powershell_output(&output.stdout)?;
+            // 尝试解码 stderr 和 stdout，即使失败也显示原始信息
+            let stderr = decode_powershell_output(&output.stderr)
+                .unwrap_or_else(|_| format!("[无法解码] 原始字节: {:?}", &output.stderr[..output.stderr.len().min(200)]));
+            let stdout = decode_powershell_output(&output.stdout)
+                .unwrap_or_else(|_| format!("[无法解码] 原始字节: {:?}", &output.stdout[..output.stdout.len().min(200)]));
+            
             eprintln!("[scan_uwp_apps] PowerShell failed - stderr: {}", stderr);
             eprintln!("[scan_uwp_apps] PowerShell failed - stdout: {}", stdout);
-            return Err(format!("PowerShell shell:AppsFolder enumeration failed: {}", stderr));
+            
+            // 如果 stderr 为空，使用 stdout 作为错误信息
+            let error_msg = if stderr.trim().is_empty() {
+                if stdout.trim().is_empty() {
+                    "PowerShell 执行失败，但未返回错误信息".to_string()
+                } else {
+                    stdout
+                }
+            } else {
+                stderr
+            };
+            
+            return Err(format!("PowerShell shell:AppsFolder enumeration failed: {}", error_msg));
         }
 
         let stdout = decode_powershell_output(&output.stdout)?;
@@ -437,7 +446,7 @@ pub mod windows {
         eprintln!("[scan_uwp_apps] PowerShell output preview: {}", preview);
 
         // Handle both array and single-object JSON outputs
-        let entries: Vec<StartAppEntry> = match serde_json::from_str(stdout_trimmed) {
+        let entries: Vec<StartAppEntry> = match serde_json::from_str::<Vec<StartAppEntry>>(stdout_trimmed) {
             Ok(entries) => entries,
             Err(e) => {
                 // Try parsing as single object
@@ -469,7 +478,22 @@ pub mod windows {
                 continue;
             }
 
-            let path = format!("shell:AppsFolder\\{}", app_id);
+            // 判断 AppID 格式，决定使用哪种路径格式
+            // UWP AppID 格式通常是：PackageFamilyName!ApplicationId 或 PackageFamilyName_数字!ApplicationId
+            // 传统应用路径通常包含反斜杠或冒号，或者是完整路径
+            let path = if app_id.contains('\\') || app_id.contains(':') || 
+                         app_id.starts_with("http://") || app_id.starts_with("https://") ||
+                         Path::new(app_id).exists() {
+                // 传统应用路径，直接使用
+                app_id.to_string()
+            } else if app_id.contains('!') || app_id.contains('_') {
+                // 看起来是 UWP AppID 格式（包含 ! 或 _），使用 shell:AppsFolder 格式
+                format!("shell:AppsFolder\\{}", app_id)
+            } else {
+                // 其他格式，尝试作为 UWP AppID 处理
+                format!("shell:AppsFolder\\{}", app_id)
+            };
+            
             let name_string = name.to_string();
             let (name_pinyin, name_pinyin_initials) = if contains_chinese(name) {
                 (
@@ -590,106 +614,136 @@ pub mod windows {
     }
 
     // Extract icon from UWP app (shell:AppsFolder path)
-    // Uses Shell32 COM object to directly extract icon from shell:AppsFolder path
+    // 使用 Windows API 直接提取图标，避免在约束语言模式下使用 COM 对象
     pub fn extract_uwp_app_icon_base64(app_path: &str) -> Option<String> {
+        // #region agent log
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"id":"log_uwp_icon_1","timestamp":{},"location":"app_search.rs:618","message":"extract_uwp_app_icon_base64 entry","data":{{"app_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), app_path);
+        }
+        // #endregion
+        
         // Parse shell:AppsFolder\PackageFamilyName!ApplicationId format
         if !app_path.starts_with("shell:AppsFolder\\") {
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_uwp_icon_2","timestamp":{},"location":"app_search.rs:622","message":"path does not start with shell:AppsFolder","data":{{"app_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), app_path);
+            }
+            // #endregion
             return None;
         }
         
-        // Encode the full path for PowerShell parameter
-        let path_utf16: Vec<u16> = app_path.encode_utf16().collect();
-        let path_base64 = base64::engine::general_purpose::STANDARD.encode(
-            path_utf16
-                .iter()
-                .flat_map(|&u| u.to_le_bytes())
-                .collect::<Vec<u8>>(),
-        );
-        
-        // Use PowerShell with Shell32 COM object to extract icon directly from shell:AppsFolder
-        let ps_script = r#"
-param([string]$PathBase64)
-
-try {
-    # Decode UTF-16 path from base64
-    $bytes = [Convert]::FromBase64String($PathBase64)
-    $appPath = [System.Text.Encoding]::Unicode.GetString($bytes)
-    
-    # Use Shell32 to get UWP app icon directly from shell:AppsFolder
-    $shell = New-Object -ComObject Shell.Application
-    $appsFolder = $shell.NameSpace("shell:AppsFolder")
-    
-    if ($appsFolder -eq $null) {
-        exit 1
-    }
-    
-    # Find the app by path
-    $appItem = $null
-    foreach ($item in $appsFolder.Items()) {
-        if ($item.Path -eq $appPath) {
-            $appItem = $item
-            break
-        }
-    }
-    
-    if ($appItem -eq $null) {
-        exit 1
-    }
-    
-    # Extract icon using Shell32
-    $iconPath = $appItem.ExtractIcon(0)
-    if ($iconPath -eq $null) {
-        exit 1
-    }
-    
-    # Convert icon to PNG using GDI+
-    Add-Type -AssemblyName System.Drawing
-    $icon = [System.Drawing.Icon]::FromHandle($iconPath.Handle)
-    $bitmap = $icon.ToBitmap()
-    $ms = New-Object System.IO.MemoryStream
-    $bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-    $bytes = $ms.ToArray()
-    $ms.Close()
-    $icon.Dispose()
-    $bitmap.Dispose()
-    
-    [Convert]::ToBase64String($bytes)
-} catch {
-    exit 1
-}
-"#;
-        
-        // Write script to temp file to avoid command-line length limits
-        let temp_script =
-            std::env::temp_dir().join(format!("uwp_icon_extract_{}.ps1", std::process::id()));
-        std::fs::write(&temp_script, ps_script).ok()?;
-        
-        let output = std::process::Command::new("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
-            .args(&[
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                temp_script.to_str()?,
-                "-PathBase64",
-                &path_base64,
-            ])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .ok()?;
-        
-        // Clean up temp script
-        let _ = std::fs::remove_file(&temp_script);
-        
-        if output.status.success() {
-            let base64_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !base64_str.is_empty() && base64_str.len() > 100 {
-                return Some(format!("data:image/png;base64,{}", base64_str));
+        // 使用纯 Rust 实现，调用 Native Windows API
+        if let Some(icon) = extract_uwp_app_icon_base64_native(app_path) {
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_uwp_icon_3","timestamp":{},"location":"app_search.rs:641","message":"native API succeeded","data":{{"app_path":"{}","icon_len":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), app_path, icon.len());
             }
+            // #endregion
+            return Some(icon);
         }
+        
+        // #region agent log
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+            let _ = writeln!(file, r#"{{"id":"log_uwp_icon_12","timestamp":{},"location":"app_search.rs:650","message":"extract_uwp_app_icon_base64 returning None","data":{{"app_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), app_path);
+        }
+        // #endregion
         None
+    }
+    
+    // 使用 Native Windows API 提取 UWP 应用图标
+    // 注意：SHGetFileInfoW 对于 UWP 应用可能返回默认图标，但这是目前最可行的方法
+    fn extract_uwp_app_icon_base64_native(app_path: &str) -> Option<String> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
+        
+        // 将路径转换为 UTF-16
+        let path_wide: Vec<u16> = OsStr::new(app_path)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        
+        unsafe {
+            // 定义 SHFILEINFOW 结构体
+            #[repr(C)]
+            struct SHFILEINFOW {
+                h_icon: isize,
+                i_icon: i32,
+                dw_attributes: u32,
+                sz_display_name: [u16; 260],
+                sz_type_name: [u16; 80],
+            }
+            
+            // 定义 SHGetFileInfoW 函数签名
+            #[link(name = "shell32")]
+            extern "system" {
+                fn SHGetFileInfoW(
+                    psz_path: *const u16,
+                    dw_file_attributes: u32,
+                    psfi: *mut SHFILEINFOW,
+                    cb_size_file_info: u32,
+                    u_flags: u32,
+                ) -> isize;
+            }
+            
+            // 标志常量
+            const SHGFI_ICON: u32 = 0x100;
+            const SHGFI_LARGEICON: u32 = 0x0;
+            const SHGFI_USEFILEATTRIBUTES: u32 = 0x10;
+            
+            let mut shfi = SHFILEINFOW {
+                h_icon: 0,
+                i_icon: 0,
+                dw_attributes: 0,
+                sz_display_name: [0; 260],
+                sz_type_name: [0; 80],
+            };
+            
+            // 调用 SHGetFileInfoW 获取图标
+            let result = SHGetFileInfoW(
+                path_wide.as_ptr(),
+                0,
+                &mut shfi,
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_ICON | SHGFI_LARGEICON | SHGFI_USEFILEATTRIBUTES,
+            );
+            
+            // #region agent log
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_uwp_icon_native_1","timestamp":{},"location":"app_search.rs:680","message":"SHGetFileInfoW called","data":{{"app_path":"{}","result":{},"h_icon":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A,B"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
+                    app_path, result, shfi.h_icon);
+            }
+            // #endregion
+            
+            if result == 0 || shfi.h_icon == 0 {
+                return None;
+            }
+            
+            // 使用现有的 icon_to_png 函数转换图标
+            let icon_result = icon_to_png(shfi.h_icon);
+            
+            // #region agent log
+            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
+                let _ = writeln!(file, r#"{{"id":"log_uwp_icon_native_2","timestamp":{},"location":"app_search.rs:700","message":"icon_to_png result","data":{{"app_path":"{}","success":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"C"}}"#, 
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
+                    app_path, icon_result.is_some());
+            }
+            // #endregion
+            
+            // 清理图标句柄
+            DestroyIcon(shfi.h_icon);
+            
+            icon_result.map(|png_base64| format!("data:image/png;base64,{}", png_base64))
+        }
     }
     
     // Extract icon from .exe file using Native Windows API
@@ -940,6 +994,8 @@ try {
         result
     }
 
+    // 辅助函数：将位图句柄转换为 PNG base64 字符串（暂时未使用）
+    #[allow(dead_code)]
     // 辅助函数：将图标句柄转换为 PNG base64 字符串
     fn icon_to_png(icon_handle: isize) -> Option<String> {
         use windows_sys::Win32::Graphics::Gdi::{
