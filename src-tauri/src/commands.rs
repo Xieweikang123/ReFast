@@ -706,6 +706,7 @@ pub async fn search_applications(
     query: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<app_search::AppInfo>, String> {
+    eprintln!("[搜索应用] 函数被调用: query={}", query);
     let cache = APP_CACHE.clone();
     let app_handle_clone = app.clone();
     let query_clone = query.clone();
@@ -830,6 +831,8 @@ pub async fn search_applications(
     .await
     .map_err(|e| format!("搜索任务失败: {}", e))??;
     
+    eprintln!("[搜索应用] 搜索完成: 结果数量={}", results.len());
+    
     // 在后台异步提取图标，提取完成后通过事件通知前端刷新
     let cache_clone = cache.clone();
     let app_handle_for_emit = app_handle_clone.clone();
@@ -853,11 +856,50 @@ pub async fn search_applications(
     }
     // #endregion
     
-    let results_paths: Vec<String> = results
+    // 筛选出缺少图标的应用，并去重
+    eprintln!("[图标提取] 开始筛选缺少图标的应用: 搜索结果总数={}", results.len());
+    let results_with_icons = results.iter().filter(|r| r.icon.is_some()).count();
+    let results_without_icons = results.iter().filter(|r| r.icon.is_none()).count();
+    eprintln!("[图标提取] 搜索结果统计: 有图标={}, 缺少图标={}", results_with_icons, results_without_icons);
+    
+    let mut results_paths: Vec<String> = results
         .iter()
-        .filter(|r| r.icon.is_none())
+        .filter(|r| {
+            let missing_icon = r.icon.is_none();
+            if missing_icon {
+                eprintln!("[图标提取] 搜索结果缺少图标: name={}, path={}", r.name, r.path);
+            }
+            missing_icon
+        })
         .map(|r| r.path.clone())
         .collect();
+    
+    eprintln!("[图标提取] 筛选完成: 缺少图标的应用数量={}", results_paths.len());
+    
+    // 去重：移除重复的路径
+    let before_dedup_count = results_paths.len();
+    eprintln!("[图标提取] 开始去重: 去重前路径数量={}", before_dedup_count);
+    
+    if before_dedup_count > 0 {
+        eprintln!("[图标提取] 去重前的路径列表:");
+        for (idx, path) in results_paths.iter().enumerate() {
+            eprintln!("[图标提取]   [{}/{}] {}", idx + 1, before_dedup_count, path);
+        }
+    }
+    
+    results_paths.sort();
+    results_paths.dedup();
+    let after_dedup_count = results_paths.len();
+    
+    eprintln!("[图标提取] 去重完成: 去重前={}, 去重后={}, 移除重复={}", 
+        before_dedup_count, after_dedup_count, before_dedup_count - after_dedup_count);
+    
+    if after_dedup_count > 0 {
+        eprintln!("[图标提取] 去重后的路径列表:");
+        for (idx, path) in results_paths.iter().enumerate() {
+            eprintln!("[图标提取]   [{}/{}] {}", idx + 1, after_dedup_count, path);
+        }
+    }
     
     // #region agent log
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
@@ -883,37 +925,64 @@ pub async fn search_applications(
             // #endregion
             
             // 先检查缓存中是否已有图标，避免重复提取
-            let paths_to_extract: Vec<String> = {
+            let mut paths_to_extract: Vec<String> = {
                 let cache_guard = cache_clone.lock().ok();
                 if let Some(guard) = cache_guard {
                     if let Some(ref apps_arc) = *guard {
                         // 过滤出缓存中确实没有图标的应用
                         results_paths.iter()
                             .filter(|path_str| {
-                                apps_arc.iter()
+                                let need_extract = apps_arc.iter()
                                     .find(|a| a.path == **path_str)
-                                    .map(|a| a.icon.is_none())
-                                    .unwrap_or(true) // 如果找不到应用，需要提取
+                                    .map(|a| {
+                                        let missing = a.icon.is_none();
+                                        if missing {
+                                            eprintln!("[图标提取] 缓存中缺少图标: path={}", path_str);
+                                        } else {
+                                            eprintln!("[图标提取] 缓存中已有图标，跳过: path={}", path_str);
+                                        }
+                                        missing
+                                    })
+                                    .unwrap_or_else(|| {
+                                        eprintln!("[图标提取] 缓存中未找到应用，需要提取: path={}", path_str);
+                                        true // 如果找不到应用，需要提取
+                                    });
+                                need_extract
                             })
                             .cloned()
                             .collect()
                     } else {
+                        eprintln!("[图标提取] 缓存为空，需要提取所有图标: paths_count={}", results_paths.len());
                         results_paths
                     }
                 } else {
+                    eprintln!("[图标提取] 无法获取缓存锁，需要提取所有图标: paths_count={}", results_paths.len());
                     results_paths
                 }
             };
             
+            // 再次去重，确保没有重复路径（防止并发情况下的重复提取）
+            let before_final_dedup = paths_to_extract.len();
+            paths_to_extract.sort();
+            paths_to_extract.dedup();
+            let after_final_dedup = paths_to_extract.len();
+            if before_final_dedup != after_final_dedup {
+                eprintln!("[图标提取] 最终去重：去重前: {}, 去重后: {}, 移除重复: {}", 
+                    before_final_dedup, after_final_dedup, before_final_dedup - after_final_dedup);
+            }
+            
             if paths_to_extract.is_empty() {
-                // 所有应用的图标都在缓存中，无需提取
+                eprintln!("[图标提取] 所有应用的图标都在缓存中，无需提取");
                 return;
             }
+            
+            eprintln!("[图标提取] 需要提取图标的应用数量: {}", paths_to_extract.len());
             
             // 先提取所有图标（不持有锁），避免阻塞搜索操作
             let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
             
-            for path_str in paths_to_extract {
+            for (idx, path_str) in paths_to_extract.iter().enumerate() {
+                eprintln!("[图标提取] 开始提取图标 [{}/{}]: path={}", idx + 1, paths_to_extract.len(), path_str);
                 let path_lower = path_str.to_lowercase();
                 let icon = if path_lower.starts_with("shell:appsfolder\\") {
                     // #region agent log
@@ -1029,7 +1098,14 @@ pub async fn populate_app_icons(
                 break;
             }
 
-            // 为了测试，每次应用都重新提取图标（即使已经有图标）
+            // 如果应用已经有图标，跳过提取
+            if app_info.icon.is_some() {
+                processed += 1;
+                continue;
+            }else{
+                eprintln!("[图标提取] 应用无图标: name={}, path={}", app_info.name, app_info.path);
+            }
+
             let path = Path::new(&app_info.path);
             let path_str = app_info.path.to_lowercase();
             
@@ -1063,7 +1139,7 @@ pub async fn populate_app_icons(
                 app_info.name, app_info.path, icon_extracted, icon_len);
             // #endregion
 
-            // 无论是否成功提取，都更新图标（如果提取失败，保留原有图标）
+            // 如果成功提取到图标，更新应用信息
             if let Some(icon_data) = icon {
                 app_info.icon = Some(icon_data);
                 updated = true;
@@ -1126,7 +1202,7 @@ pub async fn remove_app_from_index(app_path: String, app: tauri::AppHandle) -> R
 
 /// 调试命令：查找指定名称的应用并尝试提取图标，返回详细信息
 #[tauri::command]
-pub async fn debug_app_icon(app_name: String, app: tauri::AppHandle) -> Result<String, String> {
+pub async fn debug_app_icon(app_name: String, _app: tauri::AppHandle) -> Result<String, String> {
     use std::path::Path;
     
     // 在后台线程执行耗时操作，避免阻塞 UI
@@ -1199,8 +1275,9 @@ pub async fn debug_app_icon(app_name: String, app: tauri::AppHandle) -> Result<S
 }
 
 /// 从文件路径提取图标（用于动态提取不在应用列表中的应用图标）
+/// 如果成功提取到图标，会自动将应用添加到应用列表中
 #[tauri::command]
-pub async fn extract_icon_from_path(file_path: String) -> Result<Option<String>, String> {
+pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
     use std::path::Path;
     
     // #region agent log
@@ -1212,8 +1289,11 @@ pub async fn extract_icon_from_path(file_path: String) -> Result<Option<String>,
     }
     // #endregion
     
+    let app_clone = app.clone();
+    let file_path_clone = file_path.clone();
+    
     // 在后台线程执行耗时操作，避免阻塞 UI
-    async_runtime::spawn_blocking(move || {
+    let icon_result = async_runtime::spawn_blocking(move || {
         let path = Path::new(&file_path);
         let path_lower = file_path.to_lowercase();
         
@@ -1259,10 +1339,158 @@ pub async fn extract_icon_from_path(file_path: String) -> Result<Option<String>,
             }
         };
         
-        Ok(icon)
+        Ok::<Option<String>, String>(icon)
     })
     .await
-    .map_err(|e| format!("extract_icon_from_path join error: {}", e))?
+    .map_err(|e| format!("extract_icon_from_path join error: {}", e))??;
+    
+    // 如果成功提取到图标，将应用添加到应用列表中
+    if let Some(icon_data) = &icon_result {
+        let app_clone_for_add = app_clone.clone();
+        let file_path_for_add = file_path_clone.clone();
+        let icon_data_for_add = icon_data.clone();
+        
+        // 在后台线程执行添加操作
+        async_runtime::spawn_blocking(move || {
+            let cache = APP_CACHE.clone();
+            let mut cache_guard = match cache.lock() {
+                Ok(guard) => guard,
+                Err(e) => {
+                    eprintln!("[添加应用到列表] 获取锁失败: {}", e);
+                    return;
+                }
+            };
+            
+            // 确保缓存已初始化
+            if cache_guard.is_none() {
+                let app_data_dir = match get_app_data_dir(&app_clone_for_add) {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        eprintln!("[添加应用到列表] 获取应用数据目录失败: {}", e);
+                        return;
+                    }
+                };
+                if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
+                    if !disk_cache.is_empty() {
+                        *cache_guard = Some(Arc::new(disk_cache));
+                    }
+                }
+            }
+            
+            let mut apps: Vec<app_search::AppInfo> = if let Some(ref apps_arc) = *cache_guard {
+                (**apps_arc).clone()
+            } else {
+                Vec::new()
+            };
+            
+            // 检查应用是否已存在（通过路径比较，不区分大小写）
+            let path_lower = file_path_for_add.to_lowercase();
+            let existing_index = apps.iter().position(|a| a.path.to_lowercase() == path_lower);
+            
+            if let Some(index) = existing_index {
+                // 应用已存在，更新图标
+                apps[index].icon = Some(icon_data_for_add.clone());
+                eprintln!("[添加应用到列表] 更新已存在应用的图标: path={}", file_path_for_add);
+            } else {
+                // 应用不存在，创建新的 AppInfo
+                let path = Path::new(&file_path_for_add);
+                let ext = path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase());
+                
+                // 获取应用名称
+                let name = if ext == Some("lnk".to_string()) {
+                    // 对于 .lnk 文件，尝试解析快捷方式获取名称
+                    match app_search::windows::parse_lnk_file(path) {
+                        Ok(lnk_info) => lnk_info.name,
+                        Err(_) => path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unknown")
+                            .to_string(),
+                    }
+                } else {
+                    // 对于 .exe 文件，使用文件名（不含扩展名）
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string()
+                };
+                
+                // 计算拼音（如果需要）
+                let contains_chinese = |text: &str| -> bool {
+                    text.chars().any(|c| {
+                        matches!(c as u32,
+                            0x4E00..=0x9FFF |  // CJK Unified Ideographs
+                            0x3400..=0x4DBF |  // CJK Extension A
+                            0x20000..=0x2A6DF | // CJK Extension B
+                            0x2A700..=0x2B73F | // CJK Extension C
+                            0x2B740..=0x2B81F | // CJK Extension D
+                            0xF900..=0xFAFF |  // CJK Compatibility Ideographs
+                            0x2F800..=0x2FA1F   // CJK Compatibility Ideographs Supplement
+                        )
+                    })
+                };
+                
+                let to_pinyin = |text: &str| -> String {
+                    use pinyin::ToPinyin;
+                    text.to_pinyin()
+                        .filter_map(|p| p.map(|p| p.plain()))
+                        .collect::<Vec<_>>()
+                        .join("")
+                };
+                
+                let to_pinyin_initials = |text: &str| -> String {
+                    use pinyin::ToPinyin;
+                    text.to_pinyin()
+                        .filter_map(|p| p.map(|p| p.plain().chars().next()))
+                        .flatten()
+                        .collect::<String>()
+                };
+                
+                let (name_pinyin, name_pinyin_initials) = if contains_chinese(&name) {
+                    (
+                        Some(to_pinyin(&name).to_lowercase()),
+                        Some(to_pinyin_initials(&name).to_lowercase()),
+                    )
+                } else {
+                    (None, None)
+                };
+                
+                // 创建新的 AppInfo
+                let new_app = app_search::AppInfo {
+                    name,
+                    path: file_path_for_add.clone(),
+                    icon: Some(icon_data_for_add.clone()),
+                    description: None,
+                    name_pinyin,
+                    name_pinyin_initials,
+                };
+                
+                apps.push(new_app);
+                eprintln!("[添加应用到列表] 添加新应用: path={}", file_path_for_add);
+            }
+            
+            // 更新缓存
+            *cache_guard = Some(Arc::new(apps.clone()));
+            
+            // 保存到磁盘
+            if let Ok(app_data_dir) = get_app_data_dir(&app_clone_for_add) {
+                if let Err(e) = app_search::windows::save_cache(&app_data_dir, &apps) {
+                    eprintln!("[添加应用到列表] 保存缓存失败: {}", e);
+                }
+            }
+            
+            // 发送事件通知前端图标已更新
+            let icon_updates = vec![(file_path_for_add.clone(), icon_data_for_add.clone())];
+            if let Err(e) = app_clone_for_add.emit("app-icons-updated", icon_updates) {
+                eprintln!("[添加应用到列表] 发送事件失败: {}", e);
+            }
+        });
+    }
+    
+    Ok(icon_result)
 }
 
 /// 设置 launcher 窗口位置（居中但稍微偏上）

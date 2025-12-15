@@ -140,6 +140,9 @@ export function LauncherWindow() {
   // 所有应用列表缓存（前端搜索使用）
   const allAppsCacheRef = useRef<AppInfo[]>([]);
   const allAppsCacheLoadedRef = useRef<boolean>(false);
+  
+  // 存储从文件历史记录中提取的图标（路径 -> 图标数据）
+  const extractedFileIconsRef = useRef<Map<string, string>>(new Map());
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
 
@@ -1434,7 +1437,10 @@ export function LauncherWindow() {
       //   });
       // }, 51000);
       
-      searchApplications(trimmedQuery);
+      console.log(`[搜索流程] 准备调用 searchApplications: query="${trimmedQuery}"`);
+      searchApplications(trimmedQuery).catch((error) => {
+        console.error("[搜索错误] searchApplications 调用失败:", error);
+      });
       
       // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞）
       const memosPluginsStart = performance.now();
@@ -1806,19 +1812,23 @@ export function LauncherWindow() {
           normalizedAppNameSet.add(normalizedName);
           return true;
         })
-        .map((file): SearchResult => ({
-          type: "app" as const,
-          app: {
-            name: file.name,
+        .map((file): SearchResult => {
+          // 尝试从提取的图标缓存中获取图标
+          const extractedIcon = extractedFileIconsRef.current.get(file.path);
+          return {
+            type: "app" as const,
+            app: {
+              name: file.name,
+              path: file.path,
+              icon: extractedIcon, // 优先使用提取的图标，如果没有则尝试从应用列表获取
+              description: undefined,
+              name_pinyin: undefined,
+              name_pinyin_initials: undefined,
+            },
+            displayName: file.name,
             path: file.path,
-            icon: undefined, // 图标将在渲染时尝试从应用列表获取
-            description: undefined,
-            name_pinyin: undefined,
-            name_pinyin_initials: undefined,
-          },
-          displayName: file.name,
-          path: file.path,
-        }))),
+          };
+        })),
       // 普通文件（非可执行文件）
       ...filteredFiles
         .filter((file) => {
@@ -1969,9 +1979,18 @@ export function LauncherWindow() {
     console.log("[启动器搜索] 最终结果列表中的应用统计:", {
       搜索词: query,
       来自filteredApps: filteredApps.length,
+      filteredApps详情: filteredApps.map(app => ({ name: app.name, path: app.path, hasIcon: !!app.icon })),
       来自filteredFiles的可执行文件: appsFromFilteredFiles.length,
+      filteredFiles详情: appsFromFilteredFiles.map(f => ({ name: f.name, path: f.path })),
       最终应用结果总数: finalAppResults.length,
-      最终应用结果: finalAppResults.map(r => ({ name: r.displayName, path: r.path }))
+      最终应用结果: finalAppResults.map(r => ({ 
+        name: r.displayName, 
+        path: r.path, 
+        type: r.type,
+        source: r.type === "app" && filteredApps.some(app => app.path === r.path) ? "filteredApps" : 
+                r.type === "app" && appsFromFilteredFiles.some(f => f.path === r.path) ? "filteredFiles" : 
+                "other"
+      }))
     });
     
     // 使用相关性评分系统对所有结果进行排序
@@ -3444,20 +3463,32 @@ export function LauncherWindow() {
 
   // 执行应用搜索（前端搜索，使用缓存的应用列表）
   const performAppSearch = async (searchQuery: string): Promise<AppInfo[]> => {
+    console.log(`[performAppSearch] 开始搜索: query="${searchQuery}"`);
+    console.log(`[performAppSearch] 缓存状态: loaded=${allAppsCacheLoadedRef.current}, cachedAppsCount=${allAppsCacheRef.current.length}`);
+    
     // 如果缓存未加载，先加载所有应用
     if (!allAppsCacheLoadedRef.current || allAppsCacheRef.current.length === 0) {
+      console.log(`[performAppSearch] 缓存未加载或为空，开始加载应用列表...`);
       try {
         const allApps = await tauriApi.scanApplications();
+        console.log(`[performAppSearch] scanApplications 返回: ${allApps.length} 个应用`);
         const filteredApps = filterWindowsApps(allApps);
+        console.log(`[performAppSearch] filterWindowsApps 后: ${filteredApps.length} 个应用`);
         allAppsCacheRef.current = filteredApps;
         allAppsCacheLoadedRef.current = true;
       } catch (error) {
+        console.error(`[performAppSearch] 加载应用列表失败:`, error);
         return [];
       }
     }
 
+    console.log(`[performAppSearch] 使用缓存的应用列表进行搜索: ${allAppsCacheRef.current.length} 个应用`);
     // 使用前端搜索
     const results = searchAppsFrontend(searchQuery, allAppsCacheRef.current);
+    console.log(`[performAppSearch] 搜索完成: 返回 ${results.length} 个结果`);
+    if (results.length > 0) {
+      console.log(`[performAppSearch] 前3个结果:`, results.slice(0, 3).map(app => ({ name: app.name, path: app.path, hasIcon: !!app.icon })));
+    }
     return results;
   };
   
@@ -3606,6 +3637,7 @@ export function LauncherWindow() {
 
   // 主搜索函数：协调各个子功能
   const searchApplications = async (searchQuery: string) => {
+    console.log(`[searchApplications] 函数被调用: query="${searchQuery}"`);
     
     // 立即清空旧结果，避免显示上一个搜索的结果
     if (APP_SEARCH_DEBUG_CONFIG.enableClearResults) {
@@ -3617,6 +3649,7 @@ export function LauncherWindow() {
       if (APP_SEARCH_DEBUG_CONFIG.enableQueryValidation) {
         const isValid = validateSearchQuery(searchQuery);
         if (!isValid) {
+          console.log(`[searchApplications] 查询验证失败: query="${searchQuery}"`);
           if (APP_SEARCH_DEBUG_CONFIG.enableClearResults) {
             clearAppSearchResults();
           }
@@ -3632,8 +3665,37 @@ export function LauncherWindow() {
       // 执行搜索
       let results: AppInfo[] = [];
       if (APP_SEARCH_DEBUG_CONFIG.enablePerformSearch) {
+        console.log(`[searchApplications] 开始执行前端搜索: query="${searchQuery}"`);
         results = await performAppSearch(searchQuery);
+        console.log(`[searchApplications] 前端搜索完成: 结果数量=${results.length}, results=`, results);
+        console.log(`[searchApplications] results 是否为数组:`, Array.isArray(results));
+        console.log(`[searchApplications] results 的详细信息:`, JSON.stringify(results.map(r => ({ name: r.name, path: r.path, hasIcon: !!r.icon })), null, 2));
+      } else {
+        console.log(`[searchApplications] 前端搜索已禁用 (enablePerformSearch=false)`);
       }
+      
+      // 触发后端图标提取：调用后端搜索以触发图标提取逻辑（即使不使用返回结果）
+      // 后端会在后台提取缺少图标的应用图标，并通过事件通知前端更新
+      console.log(`[searchApplications] 检查是否需要触发图标提取: results.length=${results.length}, results=`, results);
+      
+      // 总是调用后端搜索以触发图标提取（后端会自己检查哪些应用缺少图标）
+      // 即使前端搜索结果为空或所有应用都有图标，后端也可能需要更新某些应用的图标
+      // 因为前端搜索可能因为缓存问题没有返回完整结果，而后端搜索会返回完整结果
+      console.log(`[图标提取触发] 调用后端 searchApplications: query=${searchQuery}`);
+      tauriApi.searchApplications(searchQuery)
+        .then((backendResults) => {
+          console.log(`[图标提取触发] 后端 searchApplications 调用成功，返回 ${backendResults.length} 个结果`);
+          if (results.length > 0) {
+            const appsWithoutIcons = results.filter(app => !app.icon || app.icon.trim() === '');
+            console.log(`[图标提取触发] 前端搜索结果: ${results.length} 个，缺少图标: ${appsWithoutIcons.length} 个`);
+            if (appsWithoutIcons.length > 0) {
+              console.log(`[图标提取触发] 缺少图标的应用列表:`, appsWithoutIcons.map(app => ({ name: app.name, path: app.path })));
+            }
+          }
+        })
+        .catch((error) => {
+          console.error(`[图标提取触发] 后端 searchApplications 调用失败:`, error);
+        });
       
       // 更新搜索结果（带查询验证）
       if (APP_SEARCH_DEBUG_CONFIG.enableUpdateResults) {
@@ -3823,6 +3885,45 @@ export function LauncherWindow() {
       const searchQueryTrimmed = searchQuery.trim();
       if (currentQueryTrimmed === searchQueryTrimmed) {
         setFilteredFiles(results);
+        
+        // 检查 filteredFiles 中是否有可执行文件（.exe/.lnk），如果有，触发图标提取
+        const executableFiles = results.filter(file => {
+          const pathLower = file.path.toLowerCase();
+          return (pathLower.endsWith('.exe') || pathLower.endsWith('.lnk')) && 
+                 !pathLower.includes("windowsapps");
+        });
+        
+        if (executableFiles.length > 0) {
+          console.log(`[文件历史图标提取] 发现 ${executableFiles.length} 个可执行文件，触发图标提取:`, executableFiles.map(f => ({ name: f.name, path: f.path })));
+          
+          // 直接为每个文件路径调用图标提取API（因为这些文件可能不在应用列表中）
+          // 限制最多提取前10个文件，避免过多请求
+          const filesToExtract = executableFiles.slice(0, 10);
+          filesToExtract.forEach((file, index) => {
+            console.log(`[文件历史图标提取] [${index + 1}/${filesToExtract.length}] 提取图标: path=${file.path}`);
+            tauriApi.extractIconFromPath(file.path)
+              .then((icon) => {
+                if (icon) {
+                  console.log(`[文件历史图标提取] ✓ 图标提取成功: path=${file.path}, iconLength=${icon.length}`);
+                  // 将提取的图标保存到缓存中
+                  extractedFileIconsRef.current.set(file.path, icon);
+                  // 更新 filteredFiles 中对应文件的显示（通过重新设置 filteredFiles 触发重新渲染）
+                  setFilteredFiles((prevFiles) => {
+                    // 返回相同的数组，但会触发重新渲染，SearchResult 构建时会使用新的图标
+                    return [...prevFiles];
+                  });
+                } else {
+                  console.log(`[文件历史图标提取] ✗ 图标提取失败: path=${file.path}`);
+                }
+              })
+              .catch((error) => {
+                console.error(`[文件历史图标提取] ✗ 图标提取错误: path=${file.path}, error=`, error);
+              });
+          });
+          
+          // 注意：不再调用后端搜索，避免重复调用
+          // 后端搜索会在 searchApplications 函数中统一调用
+        }
       } else {
         setFilteredFiles([]);
       }

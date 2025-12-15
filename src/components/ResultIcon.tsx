@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem } from "../types";
 import type { ThemeConfig, ResultStyle } from "../utils/themeConfig";
 import { isFolderLikePath } from "../utils/launcherUtils";
-import { tauriApi } from "../api/tauri";
+// import { tauriApi } from "../api/tauri"; // 已禁用前端图标提取
 
 // 规范化路径用于比较（大小写不敏感，统一路径分隔符）
 const normalizePathForComparison = (path: string): string => {
@@ -64,43 +64,42 @@ export function ResultIcon({
   const iconSize = getIconSize();
   
   // 用于存储动态提取的图标（适用于 file、everything 类型的 .lnk/.exe 文件）
-  const [extractedFileIcon, setExtractedFileIcon] = useState<string | null>(null);
+  // 已禁用前端图标提取，但保留状态以保持代码兼容性
+  const [extractedFileIcon] = useState<string | null>(null);
   const previousFilePathRef = useRef<string>("");
   
-  // 检查是否是 .lnk 或 .exe 文件，且需要提取图标
+  // 检查是否是 .lnk 或 .exe 文件
   const filePath = result.path || "";
-  const isLnkOrExe = filePath.toLowerCase().endsWith(".lnk") || filePath.toLowerCase().endsWith(".exe");
-  const isFileTypeNeedingIcon = (result.type === "file" || result.type === "everything") && isLnkOrExe;
   
-  // 当 filePath 改变时，重置提取的图标
+  // 当 filePath 改变时，重置提取的图标（已禁用提取，但保留逻辑）
   useEffect(() => {
     if (previousFilePathRef.current !== filePath) {
       previousFilePathRef.current = filePath;
-      setExtractedFileIcon(null);
     }
   }, [filePath]);
   
   // 对于 file、everything 类型的 .lnk/.exe 文件，如果没有图标，尝试动态提取
-  useEffect(() => {
-    if (isFileTypeNeedingIcon && !extractedFileIcon && filePath) {
-      // 先检查是否在应用列表中有图标（使用规范化路径比较）
-      const normalizedFilePath = normalizePathForComparison(filePath);
-      const matchedApp = filteredApps.find((app) => normalizePathForComparison(app.path) === normalizedFilePath) || 
-                         apps.find((app) => normalizePathForComparison(app.path) === normalizedFilePath);
-      if (!matchedApp || !matchedApp.icon) {
-        // 如果应用列表中没有图标，尝试动态提取
-        tauriApi.extractIconFromPath(filePath)
-          .then((icon) => {
-            if (icon) {
-              setExtractedFileIcon(icon);
-            }
-          })
-          .catch(() => {
-            // 忽略错误，使用默认图标
-          });
-      }
-    }
-  }, [isFileTypeNeedingIcon, extractedFileIcon, filePath, filteredApps, apps]);
+  // 已禁用：后端已经在后台处理图标提取，避免重复提取
+  // useEffect(() => {
+  //   if (isFileTypeNeedingIcon && !extractedFileIcon && filePath) {
+  //     // 先检查是否在应用列表中有图标（使用规范化路径比较）
+  //     const normalizedFilePath = normalizePathForComparison(filePath);
+  //     const matchedApp = filteredApps.find((app) => normalizePathForComparison(app.path) === normalizedFilePath) || 
+  //                        apps.find((app) => normalizePathForComparison(app.path) === normalizedFilePath);
+  //     if (!matchedApp || !matchedApp.icon) {
+  //       // 如果应用列表中没有图标，尝试动态提取
+  //       tauriApi.extractIconFromPath(filePath)
+  //         .then((icon) => {
+  //           if (icon) {
+  //             setExtractedFileIcon(icon);
+  //           }
+  //         })
+  //         .catch(() => {
+  //           // 忽略错误，使用默认图标
+  //         });
+  //     }
+  //   }
+  // }, [isFileTypeNeedingIcon, extractedFileIcon, filePath, filteredApps, apps]);
 
   // 处理应用图标
   if (result.type === "app") {
@@ -181,44 +180,43 @@ export function ResultIcon({
     }
 
     // 如果仍然找不到图标，且路径是 .exe 或 .lnk 文件，尝试动态提取图标
-    const [extractedIcon, setExtractedIcon] = useState<string | null>(null);
-    const pathLower = (result.path || '').toLowerCase();
-    const isExeOrLnk = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-    const isUwpApp = pathLower.startsWith('shell:appsfolder\\');
+    // 已禁用前端图标提取，但保留状态以保持代码兼容性
+    const [extractedIcon] = useState<string | null>(null);
     
-    useEffect(() => {
-      // 在 useEffect 内部重新计算 iconToUse，因为它在渲染时计算，不应该作为依赖项
-      let currentIconToUse = result.app?.icon;
-      // 检查图标数据是否有效（不是空字符串）
-      if (currentIconToUse && currentIconToUse.trim() === '') {
-        currentIconToUse = undefined;
-      }
-      if (!currentIconToUse && result.path) {
-        const normalizedResultPath = normalizePathForComparison(result.path);
-        const matchedApp = apps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
-        if (matchedApp && matchedApp.icon) {
-          currentIconToUse = matchedApp.icon;
-        } else {
-          const matchedFilteredApp = filteredApps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
-          if (matchedFilteredApp && matchedFilteredApp.icon) {
-            currentIconToUse = matchedFilteredApp.icon;
-          }
-        }
-      }
-      
-      // 对于 .exe、.lnk 或 UWP 应用，如果没有图标，尝试提取
-      if (!currentIconToUse && !extractedIcon && result.path && (isExeOrLnk || isUwpApp)) {
-        tauriApi.extractIconFromPath(result.path)
-          .then((icon) => {
-            if (icon) {
-              setExtractedIcon(icon);
-            }
-          })
-          .catch(() => {
-            // 忽略错误，使用默认图标
-          });
-      }
-    }, [extractedIcon, result.path, result.app?.icon, apps, filteredApps, isExeOrLnk, isUwpApp]);
+    // 已禁用：后端已经在后台处理图标提取，避免重复提取
+    // useEffect(() => {
+    //   // 在 useEffect 内部重新计算 iconToUse，因为它在渲染时计算，不应该作为依赖项
+    //   let currentIconToUse = result.app?.icon;
+    //   // 检查图标数据是否有效（不是空字符串）
+    //   if (currentIconToUse && currentIconToUse.trim() === '') {
+    //     currentIconToUse = undefined;
+    //   }
+    //   if (!currentIconToUse && result.path) {
+    //     const normalizedResultPath = normalizePathForComparison(result.path);
+    //     const matchedApp = apps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
+    //     if (matchedApp && matchedApp.icon) {
+    //       currentIconToUse = matchedApp.icon;
+    //     } else {
+    //       const matchedFilteredApp = filteredApps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
+    //       if (matchedFilteredApp && matchedFilteredApp.icon) {
+    //         currentIconToUse = matchedFilteredApp.icon;
+    //       }
+    //     }
+    //   }
+    //   
+    //   // 对于 .exe、.lnk 或 UWP 应用，如果没有图标，尝试提取
+    //   if (!currentIconToUse && !extractedIcon && result.path && (isExeOrLnk || isUwpApp)) {
+    //     tauriApi.extractIconFromPath(result.path)
+    //       .then((icon) => {
+    //         if (icon) {
+    //           setExtractedIcon(icon);
+    //         }
+    //       })
+    //       .catch(() => {
+    //         // 忽略错误，使用默认图标
+    //       });
+    //   }
+    // }, [extractedIcon, result.path, result.app?.icon, apps, filteredApps, isExeOrLnk, isUwpApp]);
 
     // 使用提取的图标（如果可用）
     if (!iconToUse && extractedIcon) {

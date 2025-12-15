@@ -2499,7 +2499,7 @@ public class IconExtractor {
         None
     }
 
-    fn parse_lnk_file(lnk_path: &Path) -> Result<AppInfo, String> {
+    pub fn parse_lnk_file(lnk_path: &Path) -> Result<AppInfo, String> {
         // Use PowerShell to resolve .lnk file target
         let path_str = lnk_path.to_string_lossy().replace('\'', "''"); // Escape single quotes for PowerShell
         let ps_command = format!(
