@@ -98,7 +98,6 @@ export function LauncherWindow() {
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
-  const [isTestingUwpApps, setIsTestingUwpApps] = useState(false); // 是否正在测试 UWP 应用扫描
   const [pastedImagePath, setPastedImagePath] = useState<string | null>(null); // 粘贴的图片路径
   const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null); // 粘贴的图片 base64 data URL
   const [resultStyle, setResultStyle] = useState<ResultStyle>(() => {
@@ -1732,7 +1731,7 @@ export function LauncherWindow() {
         displayName: "系统启动设置",
         path: "ms-settings:startupapps",
       }] : []),
-      // 系统文件夹结果（包括控制面板），优先显示
+      // 系统文件夹结果，优先显示
       ...systemFolders.map((folder) => ({
         type: "file" as const,
         file: {
@@ -2267,16 +2266,14 @@ export function LauncherWindow() {
     
     const deduplicatedExecutableResults = Array.from(normalizedPathMap.values());
     
-    // 系统文件夹（如控制面板、回收站、设置等）也应该显示在横向列表中
+    // 系统文件夹（如回收站、设置等）也应该显示在横向列表中
     const systemFolderResults = allResults.filter(result => {
       if (result.type === "file" && result.file) {
         const pathLower = result.path.toLowerCase();
-        // 识别系统文件夹：控制面板、回收站、设置等特殊路径
-        // 控制面板路径是 "control"
+        // 识别系统文件夹：回收站、设置等特殊路径
         // 设置路径是 "ms-settings:"
         // 回收站路径是 "::{645FF040-5081-101B-9F08-00AA002F954E}"（不区分大小写）
-        return pathLower === "control" || 
-               pathLower === "ms-settings:" ||
+        return pathLower === "ms-settings:" ||
                pathLower.startsWith("::{") || // CLSID 路径（如回收站）
                (result.file.is_folder === true && result.file.path.toLowerCase().startsWith("::{"));
       }
@@ -5951,51 +5948,6 @@ export function LauncherWindow() {
                     </button>
                   </div>
                 )}
-              </div>
-              {/* UWP 应用扫描测试按钮 - 始终可见 */}
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={async (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsTestingUwpApps(true);
-                    try {
-                      console.log("[UWP测试] 开始测试 UWP 应用扫描...");
-                      const apps = await tauriApi.testUwpAppsScan();
-                      console.log("[UWP测试] 扫描完成，共找到", apps.length, "个应用");
-                      
-                      // 统计中文应用
-                      const chineseApps = apps.filter(app => {
-                        return /[\u4e00-\u9fa5]/.test(app.name);
-                      });
-                      console.log("[UWP测试] 其中包含中文的应用:", chineseApps.length, "个");
-                      
-                      // 显示前10个中文应用
-                      if (chineseApps.length > 0) {
-                        console.log("[UWP测试] 中文应用列表:");
-                        chineseApps.slice(0, 10).forEach((app, idx) => {
-                          console.log(`[UWP测试]   ${idx + 1}. "${app.name}" (path: ${app.path}, pinyin: ${app.name_pinyin || 'N/A'})`);
-                        });
-                      }
-                      
-                      setSuccessMessage(`UWP 测试完成！找到 ${apps.length} 个应用，其中 ${chineseApps.length} 个包含中文。请查看控制台日志获取详细信息。`);
-                    } catch (error: any) {
-                      console.error("[UWP测试] 测试失败:", error);
-                      setErrorMessage(`UWP 测试失败: ${error?.message || error}`);
-                    } finally {
-                      setIsTestingUwpApps(false);
-                    }
-                  }}
-                  disabled={isTestingUwpApps}
-                  className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
-                    isTestingUwpApps
-                      ? 'bg-gray-400 text-white cursor-not-allowed'
-                      : 'bg-purple-500 text-white hover:bg-purple-600'
-                  }`}
-                  title="测试 UWP 应用扫描（检查中文编码）"
-                >
-                  {isTestingUwpApps ? '测试中...' : 'UWP测试'}
-                </button>
               </div>
             </div>
             {!showAiAnswer && results.length > 0 && (

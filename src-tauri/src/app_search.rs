@@ -870,6 +870,7 @@ pub mod windows {
                 // 其他格式，尝试作为 UWP AppID 处理
                 format!("shell:AppsFolder\\{}", app_id)
             };
+            let path = expand_known_folder_guid(&path);
             
             let name_string = name.to_string();
             let (name_pinyin, name_pinyin_initials) = if contains_chinese(name) {
@@ -1916,6 +1917,38 @@ try {
         // 尝试展开其他环境变量（使用正则表达式匹配 %VAR% 格式）
         // 这里使用简单的字符串替换，对于复杂情况可能需要更完整的实现
         result
+    }
+
+    // 辅助函数：将 Known Folder GUID 前缀展开为物理路径（解决 {GUID}\xxx 形式）
+    fn expand_known_folder_guid(path: &str) -> String {
+        use std::env;
+
+        // 常见 ProgramFiles/Windows GUID 映射
+        let mappings = [
+            (
+                "{6d809377-6af0-444b-8957-a3773f02200e}", // FOLDERID_ProgramFiles (64-bit)
+                env::var("ProgramFiles").unwrap_or_else(|_| "C:\\Program Files".to_string()),
+            ),
+            (
+                "{7c5a40ef-a0fb-4bfc-874a-c0f2e0b9fa8e}", // FOLDERID_ProgramFilesX86
+                env::var("ProgramFiles(x86)").unwrap_or_else(|_| "C:\\Program Files (x86)".to_string()),
+            ),
+            (
+                "{f38bf404-1d43-42f2-9305-67de0b28fc23}", // FOLDERID_Windows
+                env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string()),
+            ),
+        ];
+
+        let lower = path.to_ascii_lowercase();
+        for (guid, physical) in mappings {
+            if lower.starts_with(guid) {
+                // 去掉 GUID 前缀，保留后续子路径
+                let suffix = &path[guid.len()..];
+                return format!("{}{}", physical, suffix);
+            }
+        }
+
+        path.to_string()
     }
 
     // 辅助函数：直接解析 .lnk 文件二进制格式获取 IconLocation 和 TargetPath

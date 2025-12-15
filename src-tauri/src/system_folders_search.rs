@@ -21,7 +21,6 @@ pub mod windows {
     // Windows 特殊文件夹列表（仅支持特殊处理的文件夹）
     const SPECIAL_FOLDERS: &[(&str, &str)] = &[
         ("回收站", "Recycle Bin"),
-        ("控制面板", "Control Panel"),
         ("设置", "Settings"),
         ("下载", "Downloads"),
     ];
@@ -34,12 +33,6 @@ pub mod windows {
         // 回收站的 CLSID: {645FF040-5081-101B-9F08-00AA002F954E}
         // 使用 ::{CLSID} 格式访问虚拟文件夹
         Some("::{645FF040-5081-101B-9F08-00AA002F954E}".to_string())
-    }
-
-    /// 获取控制面板路径（使用 control.exe 命令打开传统控制面板）
-    fn get_control_panel_path() -> Option<String> {
-        // 使用 control 命令打开传统控制面板（分类视图）
-        Some("control".to_string())
     }
 
     /// 获取系统设置路径（使用 ms-settings: URI 打开 Windows 设置）
@@ -97,15 +90,12 @@ pub mod windows {
             let mut folders = Vec::new();
 
             for (name_cn, name_en) in SPECIAL_FOLDERS {
-                // 特殊处理下载文件夹、回收站、控制面板和设置
+                // 特殊处理下载文件夹、回收站和设置
                 let path = if *name_cn == "下载" {
                     get_downloads_folder()
                 } else if *name_cn == "回收站" {
                     // 回收站使用 CLSID 路径
                     get_recycle_bin_path()
-                } else if *name_cn == "控制面板" {
-                    // 控制面板使用 control 命令
-                    get_control_panel_path()
                 } else if *name_cn == "设置" {
                     // 设置使用 ms-settings: URI
                     get_settings_path()

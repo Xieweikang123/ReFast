@@ -792,11 +792,6 @@ pub async fn search_applications(
         // #endregion
         
         let total_time = std::time::Instant::now().duration_since(total_start);
-        if total_time.as_millis() > 50 {
-            eprintln!("[性能警告] search_applications 总耗时: {:?}", total_time);
-            eprintln!("[性能警告] - 锁操作总耗时: {:?}", lock_total_time);
-            eprintln!("[性能警告] - 搜索耗时: {:?}", search_time);
-        }
         
         // 步骤3: 如果查询非空，检查是否需要添加内置计算器
         if !query_clone.trim().is_empty() {
@@ -2804,53 +2799,38 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
         use std::fs::File;
         use std::io::{Write, BufWriter};
 
-        eprintln!("[Everything下载] 开始下载...");
-        
         // Get temp directory
         let temp_dir = std::env::temp_dir();
         let installer_path = temp_dir.join("Everything-Setup.exe");
-        
-        eprintln!("[Everything下载] 安装程序将保存到: {:?}", installer_path);
 
         // Determine download URL based on system architecture
         // For now, use 64-bit version (most common)
         let download_url = "https://www.voidtools.com/Everything-1.4.1.1024.x64-Setup.exe";
-        
-        eprintln!("[Everything下载] 下载URL: {}", download_url);
 
         // Create HTTP client with timeout
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300)) // 5分钟超时
             .build()
             .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
-        
-        eprintln!("[Everything下载] 发送HTTP请求...");
         let response = client
             .get(download_url)
             .send()
             .await
             .map_err(|e| {
                 let err_msg = format!("下载请求失败: {}", e);
-                eprintln!("[Everything下载] 错误: {}", err_msg);
                 err_msg
             })?;
-
-        eprintln!("[Everything下载] HTTP响应状态: {:?}", response.status());
         
         let total_size = response
             .content_length()
             .ok_or_else(|| {
                 let err = "无法获取文件大小".to_string();
-                eprintln!("[Everything下载] 错误: {}", err);
                 err
             })?;
-        
-        eprintln!("[Everything下载] 文件大小: {} 字节", total_size);
 
         // Create file with buffered writer for better performance
         let file = File::create(&installer_path).map_err(|e| {
             let err_msg = format!("创建文件失败: {}", e);
-            eprintln!("[Everything下载] 错误: {}", err_msg);
             err_msg
         })?;
         let mut writer = BufWriter::new(file);
@@ -2860,16 +2840,13 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
 
         // Use tokio stream to read chunks
         use futures_util::StreamExt;
-        eprintln!("[Everything下载] 开始下载数据流...");
         while let Some(item) = stream.next().await {
             let chunk = item.map_err(|e| {
                 let err_msg = format!("读取数据块失败: {}", e);
-                eprintln!("[Everything下载] 错误: {}", err_msg);
                 err_msg
             })?;
             writer.write_all(&chunk).map_err(|e| {
                 let err_msg = format!("写入文件失败: {}", e);
-                eprintln!("[Everything下载] 错误: {}", err_msg);
                 err_msg
             })?;
 
@@ -2879,7 +2856,7 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
             let progress = (downloaded as f64 / total_size as f64 * 100.0) as u32;
             if let Some(window) = app.get_webview_window("launcher") {
                 if let Err(e) = window.emit("everything-download-progress", progress) {
-                    eprintln!("[Everything下载] 发送进度事件失败: {}", e);
+                    let _ = e;
                 }
             }
         }
@@ -2887,26 +2864,20 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
         // 确保所有数据都写入磁盘
         writer.flush().map_err(|e| {
             let err_msg = format!("刷新文件缓冲区失败: {}", e);
-            eprintln!("[Everything下载] 错误: {}", err_msg);
             err_msg
         })?;
-        
-        eprintln!("[Everything下载] 下载完成，已下载 {} 字节", downloaded);
         
         // 验证文件是否存在
         if !installer_path.exists() {
             let err = format!("下载的文件不存在: {:?}", installer_path);
-            eprintln!("[Everything下载] 错误: {}", err);
             return Err(err);
         }
         
         let file_size = std::fs::metadata(&installer_path)
             .map_err(|e| format!("无法获取文件信息: {}", e))?
             .len();
-        eprintln!("[Everything下载] 文件大小验证: {} 字节", file_size);
 
         let path_str = installer_path.to_string_lossy().to_string();
-        eprintln!("[Everything下载] 返回安装程序路径: {}", path_str);
         Ok(path_str)
     }
     #[cfg(not(target_os = "windows"))]
