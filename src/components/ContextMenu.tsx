@@ -1,6 +1,5 @@
 import { useRef, useEffect } from "react";
 import type { SearchResult } from "../utils/resultUtils";
-import { tauriApi } from "../api/tauri";
 
 interface ContextMenuProps {
   menu: { x: number; y: number; result: SearchResult } | null;
@@ -15,7 +14,6 @@ interface ContextMenuProps {
   selectedMemoId: string | null;
   onRefreshMemos: () => Promise<void>;
   onCloseMemoModal: () => void;
-  tauriApi: typeof tauriApi;
 }
 
 export function ContextMenu({
@@ -31,7 +29,6 @@ export function ContextMenu({
   selectedMemoId,
   onRefreshMemos,
   onCloseMemoModal,
-  tauriApi,
 }: ContextMenuProps) {
   const contextMenuRef = useRef<HTMLDivElement>(null);
 

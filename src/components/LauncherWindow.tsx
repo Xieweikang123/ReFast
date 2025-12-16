@@ -6158,7 +6158,6 @@ export function LauncherWindow() {
           setIsMemoModalOpen(false);
           setSelectedMemo(null);
         }}
-        tauriApi={tauriApi}
       />
 
       {/* Memo Detail Modal */}
