@@ -1,7 +1,7 @@
 {
   "name": "re-fast",
   "private": false,
-  "version": "1.0.32",
+  "version": "1.0.33",
   "description": "基于 Tauri 2 的 Windows 快速启动器",
   "type": "module",
   "scripts": {
