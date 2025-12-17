@@ -4,6 +4,14 @@ import type { ThemeConfig, ResultStyle } from "../utils/themeConfig";
 import { isFolderLikePath } from "../utils/launcherUtils";
 // import { tauriApi } from "../api/tauri"; // 已禁用前端图标提取
 
+// Icon extraction failure marker (must match backend constant)
+const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
+
+// Check if an icon value represents a failed extraction
+const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
+  return icon === ICON_EXTRACTION_FAILED_MARKER;
+};
+
 // 规范化路径用于比较（大小写不敏感，统一路径分隔符）
 const normalizePathForComparison = (path: string): string => {
   return path.toLowerCase().replace(/\\/g, "/");
@@ -161,19 +169,19 @@ export function ResultIcon({
     }
     
     let iconToUse = result.app?.icon;
-    // 检查图标数据是否有效（不是空字符串）
-    if (iconToUse && iconToUse.trim() === '') {
+    // 检查图标数据是否有效（不是空字符串，也不是失败标记）
+    if (iconToUse && (iconToUse.trim() === '' || isIconExtractionFailed(iconToUse))) {
       iconToUse = undefined;
     }
     if (!iconToUse && result.path) {
       const normalizedResultPath = normalizePathForComparison(result.path);
       const matchedApp = apps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
-      if (matchedApp && matchedApp.icon) {
+      if (matchedApp && matchedApp.icon && !isIconExtractionFailed(matchedApp.icon)) {
         iconToUse = matchedApp.icon;
       } else {
         // 如果 apps 中找不到，尝试从 filteredApps 中查找
         const matchedFilteredApp = filteredApps.find((app) => normalizePathForComparison(app.path) === normalizedResultPath);
-        if (matchedFilteredApp && matchedFilteredApp.icon) {
+        if (matchedFilteredApp && matchedFilteredApp.icon && !isIconExtractionFailed(matchedFilteredApp.icon)) {
           iconToUse = matchedFilteredApp.icon;
         }
       }
@@ -218,9 +226,14 @@ export function ResultIcon({
     //   }
     // }, [extractedIcon, result.path, result.app?.icon, apps, filteredApps, isExeOrLnk, isUwpApp]);
 
-    // 使用提取的图标（如果可用）
-    if (!iconToUse && extractedIcon) {
+    // 使用提取的图标（如果可用且不是失败标记）
+    if (!iconToUse && extractedIcon && !isIconExtractionFailed(extractedIcon)) {
       iconToUse = extractedIcon;
+    }
+
+    // 如果图标是失败标记，不显示图标
+    if (iconToUse && isIconExtractionFailed(iconToUse)) {
+      iconToUse = undefined;
     }
 
     if (iconToUse) {

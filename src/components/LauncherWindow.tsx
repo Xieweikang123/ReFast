@@ -46,6 +46,19 @@ import { plugins, searchPlugins, executePlugin } from "../plugins";
 import { AppCenterContent } from "./AppCenterContent";
 import { MemoModal } from "./MemoModal";
 import { ContextMenu } from "./ContextMenu";
+
+// Icon extraction failure marker (must match backend constant)
+const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
+
+// Check if an icon value represents a failed extraction
+const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
+  return icon === ICON_EXTRACTION_FAILED_MARKER;
+};
+
+// Check if an icon is valid (not empty and not failed)
+const isValidIcon = (icon: string | null | undefined): boolean => {
+  return icon !== null && icon !== undefined && icon.trim() !== '' && !isIconExtractionFailed(icon);
+};
 import { ResultIcon } from "./ResultIcon";
 import { ErrorDialog } from "./ErrorDialog";
 import {
@@ -1744,7 +1757,7 @@ export function LauncherWindow() {
         // 如果应用没有图标，尝试从缓存中查找匹配的应用并获取图标
         // 优先从 apps 状态查找，如果没有则从 allAppsCacheRef 查找
         let appWithIcon = app;
-        if (!app.icon || app.icon.trim() === '') {
+        if (!isValidIcon(app.icon)) {
           // 先从 apps 状态查找
           let matchedApp = apps.find((a) => {
             const normalizedPath = a.path.toLowerCase().replace(/\\/g, "/");
@@ -1752,15 +1765,15 @@ export function LauncherWindow() {
           });
           
           // 如果 apps 状态中没有找到，从 allAppsCacheRef 查找
-          if (!matchedApp || !matchedApp.icon || matchedApp.icon.trim() === '') {
+          if (!matchedApp || !isValidIcon(matchedApp.icon)) {
             matchedApp = allAppsCacheRef.current.find((a) => {
               const normalizedPath = a.path.toLowerCase().replace(/\\/g, "/");
               return normalizedPath === normalizedAppPath;
             });
           }
           
-          if (matchedApp && matchedApp.icon && matchedApp.icon.trim() !== '') {
-            appWithIcon = { ...app, icon: matchedApp.icon };
+          if (matchedApp && isValidIcon(matchedApp.icon)) {
+            appWithIcon = { ...app, icon: matchedApp.icon! };
           }
         }
         
@@ -3863,7 +3876,7 @@ export function LauncherWindow() {
         .then((backendResults) => {
           console.log(`[图标提取触发] 后端 searchApplications 调用成功，返回 ${backendResults.length} 个结果`);
           if (results.length > 0) {
-            const appsWithoutIcons = results.filter(app => !app.icon || app.icon.trim() === '');
+            const appsWithoutIcons = results.filter(app => !isValidIcon(app.icon));
             console.log(`[图标提取触发] 前端搜索结果: ${results.length} 个，缺少图标: ${appsWithoutIcons.length} 个`);
             if (appsWithoutIcons.length > 0) {
               console.log(`[图标提取触发] 缺少图标的应用列表:`, appsWithoutIcons.map(app => ({ name: app.name, path: app.path })));

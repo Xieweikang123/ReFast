@@ -7,6 +7,14 @@ import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./Set
 import { fetchUsersCount } from "../api/events";
 import { ConfirmDialog } from "./ConfirmDialog";
 
+// Icon extraction failure marker (must match backend constant)
+const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
+
+// Check if an icon value represents a failed extraction
+const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
+  return icon === ICON_EXTRACTION_FAILED_MARKER;
+};
+
 // 菜单分类类型
 type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
 
@@ -1290,7 +1298,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
 
   // 渲染应用图标，加载失败时显示占位图标
   const renderAppIcon = (app: AppInfo) => {
-    const showFallbackIcon = !app.icon || appIconErrorMap[app.path];
+    const showFallbackIcon = !app.icon || isIconExtractionFailed(app.icon) || appIconErrorMap[app.path];
 
     return (
       <div className="w-10 h-10 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center overflow-hidden flex-shrink-0">

@@ -51,6 +51,25 @@ pub mod windows {
     }
     // #endregion agent log helper
     
+    // Icon extraction failure marker
+    // Use a special marker string to indicate that icon extraction was attempted but failed
+    // This prevents repeated extraction attempts for files that consistently fail
+    pub const ICON_EXTRACTION_FAILED_MARKER: &str = "__ICON_EXTRACTION_FAILED__";
+    
+    // Check if an icon value represents a failed extraction
+    pub fn is_icon_extraction_failed(icon: &Option<String>) -> bool {
+        icon.as_ref().map(|s| s == ICON_EXTRACTION_FAILED_MARKER).unwrap_or(false)
+    }
+    
+    // Check if an icon needs extraction (not present and not marked as failed)
+    pub fn needs_icon_extraction(icon: &Option<String>) -> bool {
+        match icon {
+            None => true,  // No icon, needs extraction
+            Some(s) if s == ICON_EXTRACTION_FAILED_MARKER => false,  // Already marked as failed, skip
+            Some(_) => false,  // Has valid icon, no extraction needed
+        }
+    }
+    
     // Cache file name
     pub fn get_cache_file_path(app_data_dir: &Path) -> PathBuf {
         app_data_dir.join("app_cache.json")

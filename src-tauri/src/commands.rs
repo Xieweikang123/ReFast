@@ -953,19 +953,21 @@ pub async fn search_applications(
                 let cache_guard = cache_clone.lock().ok();
                 if let Some(guard) = cache_guard {
                     if let Some(ref apps_arc) = *guard {
-                        // 过滤出缓存中确实没有图标的应用
+                        // 过滤出缓存中确实没有图标的应用（排除已标记为失败的应用）
                         results_paths.iter()
                             .filter(|path_str| {
                                 let need_extract: bool = apps_arc.iter()
                                     .find(|a| a.path == **path_str)
                                     .map(|a| {
-                                        let missing = a.icon.is_none();
-                                        if missing {
+                                        let needs_extract = app_search::windows::needs_icon_extraction(&a.icon);
+                                        if needs_extract {
                                             eprintln!("[图标提取] 缓存中缺少图标: path={}", path_str);
+                                        } else if app_search::windows::is_icon_extraction_failed(&a.icon) {
+                                            eprintln!("[图标提取] 缓存中已标记为提取失败，跳过: path={}", path_str);
                                         } else {
                                             eprintln!("[图标提取] 缓存中已有图标，跳过: path={}", path_str);
                                         }
-                                        missing
+                                        needs_extract
                                     })
                                     .unwrap_or_else(|| {
                                         eprintln!("[图标提取] 缓存中未找到应用，需要提取: path={}", path_str);
@@ -1004,6 +1006,7 @@ pub async fn search_applications(
             
             // 先提取所有图标（不持有锁），避免阻塞搜索操作
             let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
+            let mut failed_paths: Vec<String> = Vec::new(); // 记录提取失败的路径
             
             for (idx, path_str) in paths_to_extract.iter().enumerate() {
                 eprintln!("[图标提取] 开始提取图标 [{}/{}]: path={}", idx + 1, paths_to_extract.len(), path_str);
@@ -1046,11 +1049,15 @@ pub async fn search_applications(
 
                 if let Some(icon_data) = icon {
                     icon_updates.push((path_str.clone(), icon_data));
+                    eprintln!("[图标提取] 提取成功: path={}", path_str);
+                } else {
+                    failed_paths.push(path_str.clone());
+                    eprintln!("[图标提取] 提取失败，将标记为失败: path={}", path_str);
                 }
             }
 
-            // 只有在有图标更新时才获取锁并更新缓存
-            if !icon_updates.is_empty() {
+            // 更新缓存：成功提取的图标和失败标记
+            if !icon_updates.is_empty() || !failed_paths.is_empty() {
                 let mut updated = false;
                 // Get current cache - 只在更新时持有锁，时间尽可能短
                 if let Ok(mut guard) = cache_clone.lock() {
@@ -1058,11 +1065,20 @@ pub async fn search_applications(
                         // 克隆 Vec 以便修改
                         let mut apps: Vec<app_search::AppInfo> = (**apps_arc).clone();
                         
-                        // 更新缓存中的图标
+                        // 更新缓存中的图标（成功提取的）
                         for (path_str, icon_data) in &icon_updates {
                             if let Some(app) = apps.iter_mut().find(|a| a.path == *path_str) {
                                 app.icon = Some(icon_data.clone());
                                 updated = true;
+                            }
+                        }
+                        
+                        // 标记提取失败的路径
+                        for path_str in &failed_paths {
+                            if let Some(app) = apps.iter_mut().find(|a| a.path == *path_str) {
+                                app.icon = Some(app_search::windows::ICON_EXTRACTION_FAILED_MARKER.to_string());
+                                updated = true;
+                                eprintln!("[图标提取] 已标记为提取失败: path={}", path_str);
                             }
                         }
 
@@ -1077,9 +1093,11 @@ pub async fn search_applications(
                     }
                 }
 
-                // 发送事件通知前端图标已更新
-                if let Err(e) = app_handle_for_emit.emit("app-icons-updated", icon_updates) {
-                    eprintln!("Failed to emit app-icons-updated event: {}", e);
+                // 发送事件通知前端图标已更新（只发送成功提取的图标）
+                if !icon_updates.is_empty() {
+                    if let Err(e) = app_handle_for_emit.emit("app-icons-updated", icon_updates) {
+                        eprintln!("Failed to emit app-icons-updated event: {}", e);
+                    }
                 }
             }
         });
@@ -1122,11 +1140,11 @@ pub async fn populate_app_icons(
                 break;
             }
 
-            // 如果应用已经有图标，跳过提取
-            if app_info.icon.is_some() {
+            // 如果应用已经有图标或已标记为失败，跳过提取
+            if !app_search::windows::needs_icon_extraction(&app_info.icon) {
                 processed += 1;
                 continue;
-            }else{
+            } else {
                 eprintln!("[图标提取] 应用无图标: name={}, path={}", app_info.name, app_info.path);
             }
 
@@ -1163,10 +1181,15 @@ pub async fn populate_app_icons(
                 app_info.name, app_info.path, icon_extracted, icon_len);
             // #endregion
 
-            // 如果成功提取到图标，更新应用信息
+            // 更新应用信息：成功提取图标或标记为失败
             if let Some(icon_data) = icon {
                 app_info.icon = Some(icon_data);
                 updated = true;
+            } else {
+                // 提取失败，标记为失败以避免重复尝试
+                app_info.icon = Some(app_search::windows::ICON_EXTRACTION_FAILED_MARKER.to_string());
+                updated = true;
+                eprintln!("[图标提取] 已标记为提取失败: name={}, path={}", app_info.name, app_info.path);
             }
 
             processed += 1;
