@@ -1045,6 +1045,9 @@ pub async fn search_applications(
                     } else if ext == Some("msc".to_string()) {
                         // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
                         app_search::windows::extract_icon_png_via_shell(path, 32)
+                    } else if ext == Some("url".to_string()) {
+                        // .url 文件（Internet Shortcut）使用专门的解析和提取方法
+                        app_search::windows::extract_url_icon_base64(path)
                     } else {
                         None
                     }
@@ -1175,6 +1178,9 @@ pub async fn populate_app_icons(
                 } else if ext == Some("msc".to_string()) {
                     // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
                     app_search::windows::extract_icon_png_via_shell(path, 32)
+                } else if ext == Some("url".to_string()) {
+                    // .url 文件（Internet Shortcut）使用专门的解析和提取方法
+                    app_search::windows::extract_url_icon_base64(path)
                 } else {
                     None
                 }
@@ -1305,6 +1311,9 @@ pub async fn debug_app_icon(app_name: String, _app: tauri::AppHandle) -> Result<
                 } else if ext == Some("msc".to_string()) {
                     // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
                     app_search::windows::extract_icon_png_via_shell(path, 32)
+                } else if ext == Some("url".to_string()) {
+                    // .url 文件（Internet Shortcut）使用专门的解析和提取方法
+                    app_search::windows::extract_url_icon_base64(path)
                 } else {
                     None
                 };
@@ -1393,6 +1402,9 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
             } else if ext == Some("msc".to_string()) {
                 // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
                 app_search::windows::extract_icon_png_via_shell(path, 32)
+            } else if ext == Some("url".to_string()) {
+                // .url 文件（Internet Shortcut）使用专门的解析和提取方法
+                app_search::windows::extract_url_icon_base64(path)
             } else {
                 None
             }

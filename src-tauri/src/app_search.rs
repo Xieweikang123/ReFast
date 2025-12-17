@@ -3242,6 +3242,114 @@ try {
     // Uses PowerShell with parameter passing to avoid encoding issues
     // Tries IconLocation first, then falls back to TargetPath
     // This is the fallback method - kept for compatibility
+    // 提取 .url 文件的图标
+    pub fn extract_url_icon_base64(url_path: &Path) -> Option<String> {
+        let url_path_str = url_path.to_string_lossy().to_string();
+        
+        eprintln!("[URL图标] 开始提取: url_path={}", url_path_str);
+        
+        // 解析 .url 文件
+        let (target_path, icon_file, icon_index) = match parse_url_file(url_path) {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("[URL图标] 解析 .url 文件失败: url_path={}, error={}", url_path_str, e);
+                return None;
+            }
+        };
+        
+        eprintln!("[URL图标] 解析结果: target_path={:?}, icon_file={:?}, icon_index={}", 
+            target_path, icon_file, icon_index);
+        
+        // 优先使用 IconFile（如果存在且有效）
+        if let Some(icon_path) = &icon_file {
+            if icon_path.exists() {
+                eprintln!("[URL图标] 使用 IconFile: {:?}", icon_path);
+                // 尝试使用 Shell API 提取图标
+                if let Some(result) = extract_icon_png_via_shell(icon_path, 32) {
+                    eprintln!("[URL图标] Shell API 成功 (IconFile): icon_path={:?}, icon_len={}", 
+                        icon_path, result.len());
+                    return Some(result);
+                }
+                
+                // 回退：使用 ExtractIconExW
+                use std::ffi::OsStr;
+                use std::os::windows::ffi::OsStrExt;
+                use windows_sys::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+                use windows_sys::Win32::UI::Shell::ExtractIconExW;
+                use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
+                
+                unsafe {
+                    let hr = CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED as u32);
+                    if hr < 0 && hr != 0x00000001 {
+                        eprintln!("[URL图标] CoInitializeEx 失败: hr=0x{:08X}", hr);
+                        return None;
+                    }
+                }
+                
+                let icon_path_wide: Vec<u16> = OsStr::new(icon_path)
+                    .encode_wide()
+                    .chain(Some(0))
+                    .collect();
+                
+                unsafe {
+                    let mut large_icons: [isize; 1] = [0; 1];
+                    let count = ExtractIconExW(
+                        icon_path_wide.as_ptr(),
+                        icon_index,
+                        large_icons.as_mut_ptr(),
+                        std::ptr::null_mut(),
+                        1,
+                    );
+                    
+                    if count > 0 && large_icons[0] != 0 {
+                        if let Some(png_data) = icon_to_png(large_icons[0]) {
+                            DestroyIcon(large_icons[0]);
+                            CoUninitialize();
+                            eprintln!("[URL图标] ExtractIconExW 成功 (IconFile): icon_path={:?}, png_len={}", 
+                                icon_path, png_data.len());
+                            return Some(png_data);
+                        }
+                        DestroyIcon(large_icons[0]);
+                    }
+                    CoUninitialize();
+                }
+            }
+        }
+        
+        // 回退：从目标路径提取图标
+        if target_path.exists() {
+            eprintln!("[URL图标] 使用目标路径提取图标: {:?}", target_path);
+            
+            // 尝试使用 Shell API
+            if let Some(result) = extract_icon_png_via_shell(&target_path, 32) {
+                eprintln!("[URL图标] Shell API 成功 (目标路径): target_path={:?}, icon_len={}", 
+                    target_path, result.len());
+                return Some(result);
+            }
+            
+            // 回退：根据文件类型使用相应的提取方法
+            if let Some(ext) = target_path.extension().and_then(|s| s.to_str()) {
+                let ext_lower = ext.to_lowercase();
+                if ext_lower == "exe" {
+                    if let Some(result) = extract_icon_base64(&target_path) {
+                        eprintln!("[URL图标] extract_icon_base64 成功: target_path={:?}, icon_len={}", 
+                            target_path, result.len());
+                        return Some(result);
+                    }
+                } else if ext_lower == "lnk" {
+                    if let Some(result) = extract_lnk_icon_base64(&target_path) {
+                        eprintln!("[URL图标] extract_lnk_icon_base64 成功: target_path={:?}, icon_len={}", 
+                            target_path, result.len());
+                        return Some(result);
+                    }
+                }
+            }
+        }
+        
+        eprintln!("[URL图标] 所有方法都失败: url_path={}", url_path_str);
+        None
+    }
+
     pub fn extract_lnk_icon_base64(lnk_path: &Path) -> Option<String> {
         let lnk_path_str = lnk_path.to_string_lossy().to_string();
         
@@ -3444,6 +3552,96 @@ public class IconExtractor {
             }
         }
         None
+    }
+
+    // 解析 .url 文件（Internet Shortcut）
+    // .url 文件格式类似 INI 文件：
+    // [InternetShortcut]
+    // URL=file:///C:/path/to/file
+    // IconFile=C:\path\to\icon.ico
+    // IconIndex=0
+    pub fn parse_url_file(url_path: &Path) -> Result<(PathBuf, Option<PathBuf>, i32), String> {
+        use std::fs;
+        use std::io::BufRead;
+        
+        let content = fs::read_to_string(url_path)
+            .map_err(|e| format!("无法读取 .url 文件: {}", e))?;
+        
+        let mut url: Option<String> = None;
+        let mut icon_file: Option<String> = None;
+        let mut icon_index: i32 = 0;
+        let mut in_internet_shortcut = false;
+        
+        for line in content.lines() {
+            let line = line.trim();
+            
+            // 检查是否进入 [InternetShortcut] 部分
+            if line == "[InternetShortcut]" {
+                in_internet_shortcut = true;
+                continue;
+            }
+            
+            // 如果遇到新的部分，停止解析
+            if line.starts_with('[') && line.ends_with(']') {
+                if in_internet_shortcut {
+                    break;
+                }
+                continue;
+            }
+            
+            if !in_internet_shortcut {
+                continue;
+            }
+            
+            // 解析键值对
+            if let Some(equal_pos) = line.find('=') {
+                let key = line[..equal_pos].trim();
+                let value = line[equal_pos + 1..].trim();
+                
+                match key {
+                    "URL" => {
+                        url = Some(value.to_string());
+                    }
+                    "IconFile" => {
+                        icon_file = Some(value.to_string());
+                    }
+                    "IconIndex" => {
+                        icon_index = value.parse::<i32>().unwrap_or(0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // 解析 URL 字段，提取目标路径
+        let target_path = if let Some(url_str) = url {
+            // 处理 file:/// 协议
+            if url_str.starts_with("file:///") {
+                // file:///C:/path/to/file -> C:\path\to\file
+                let path_part = &url_str[8..]; // 跳过 "file:///"
+                let path = path_part.replace('/', "\\");
+                PathBuf::from(path)
+            } else if url_str.starts_with("file://") {
+                // file://C:/path/to/file -> C:\path\to\file
+                let path_part = &url_str[7..]; // 跳过 "file://"
+                let path = path_part.replace('/', "\\");
+                PathBuf::from(path)
+            } else {
+                // 直接路径
+                PathBuf::from(url_str)
+            }
+        } else {
+            return Err("未找到 URL 字段".to_string());
+        };
+        
+        // 解析图标文件路径
+        let icon_path = icon_file.map(|p| {
+            // 展开环境变量
+            let expanded = expand_env_path(&p);
+            PathBuf::from(expanded)
+        });
+        
+        Ok((target_path, icon_path, icon_index))
     }
 
     pub fn parse_lnk_file(lnk_path: &Path) -> Result<AppInfo, String> {

@@ -4483,11 +4483,18 @@ export function LauncherWindow() {
           [pathToUpdate]: timestampToUpdate,
         }));
       }
+
+      // 对所有结果统一提前处理 http/https 链接，避免走文件/应用启动流程
+      const pathLower = result.path?.toLowerCase() || "";
+      if (/^https?:\/\//.test(pathLower)) {
+        await tauriApi.openUrl(result.path);
+        await hideLauncherAndResetState();
+        return;
+      }
       
       // 对于应用类型，同时更新 file_history 表（用于使用频率统计）
       // 注意：只对实际文件路径（.exe, .lnk）更新，UWP 应用路径（shell:AppsFolder, ms-settings:）跳过
       if (result.type === "app" && result.path) {
-        const pathLower = result.path.toLowerCase();
         const isRealFilePath = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
         if (isRealFilePath) {
           try {
@@ -4710,10 +4717,19 @@ export function LauncherWindow() {
       } else if (result.type === "everything" && result.everything) {
         // Launch Everything result and add to file history
         try {
-          await tauriApi.launchFile(result.everything.path);
+          const everythingPath = result.everything.path;
+
+          // 如果 Everything 返回的是以 http/https 开头的链接，作为 URL 处理，走浏览器打开
+          if (everythingPath && /^https?:\/\//i.test(everythingPath)) {
+            await tauriApi.openUrl(everythingPath);
+            // 打开链接后直接隐藏启动器，不再走后续文件历史逻辑
+            await hideLauncherAndResetState();
+            return;
+          }
+
+          await tauriApi.launchFile(everythingPath);
           
           // 立即更新前端文件历史缓存（乐观更新）
-          const everythingPath = result.everything.path;
           const normalizedPath = everythingPath.trim().replace(/[\\/]+$/, '');
           const existingItem = allFileHistoryCacheRef.current.find(item => item.path === normalizedPath);
           if (existingItem) {
