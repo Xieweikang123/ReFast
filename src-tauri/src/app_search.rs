@@ -1654,14 +1654,15 @@ try {
         exit 1
     }
     
-    # Convert icon to PNG using GDI+ with white background
+    # Convert icon to PNG using GDI+ with transparency preserved
     Add-Type -AssemblyName System.Drawing
     $icon = [System.Drawing.Icon]::FromHandle($iconPath.Handle)
     $bitmap = $icon.ToBitmap()
-    # 创建带白色背景的新位图
-    $resized = New-Object System.Drawing.Bitmap(32, 32)
+    # 创建支持透明度的位图（Format32bppArgb 支持 alpha 通道）
+    $resized = New-Object System.Drawing.Bitmap(32, 32, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $graphics = [System.Drawing.Graphics]::FromImage($resized)
-    $graphics.Clear([System.Drawing.Color]::White)
+    # 不填充白色背景，保持图标的透明度
+    # $graphics.Clear([System.Drawing.Color]::White)
     $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
     $graphics.DrawImage($bitmap, 0, 0, 32, 32)
     $ms = New-Object System.IO.MemoryStream
@@ -1932,9 +1933,10 @@ try {
 
             let old_bitmap = SelectObject(hdc, hbitmap);
 
-            // 先填充白色背景，避免透明图标在某些背景下不可见
-            use windows_sys::Win32::Graphics::Gdi::{PatBlt, WHITENESS};
-            PatBlt(hdc, 0, 0, icon_size as i32, icon_size as i32, WHITENESS);
+            // 不填充背景，保持图标的透明度
+            // 注释掉白色背景填充，让图标保持原始透明度
+            // use windows_sys::Win32::Graphics::Gdi::{PatBlt, WHITENESS};
+            // PatBlt(hdc, 0, 0, icon_size as i32, icon_size as i32, WHITENESS);
 
             // 绘制图标到位图
             DrawIconEx(
@@ -1980,11 +1982,11 @@ try {
                 return None;
             }
 
-            // 将 BGRA 转换为 RGBA，并强制设置 alpha 通道为 255（完全不透明）
-            // 这样可以确保即使图标本身有透明区域，也会显示为不透明（白色背景已填充）
+            // 将 BGRA 转换为 RGBA，保持透明度
+            // 不再强制设置 alpha 通道，保持图标的原始透明度
             for chunk in dib_bits.chunks_exact_mut(4) {
                 chunk.swap(0, 2); // B <-> R
-                chunk[3] = 255; // 强制设置 alpha 通道为 255（完全不透明）
+                // 保持原始的 alpha 通道值，不强制设置为 255
             }
 
             // 使用 png crate 编码为 PNG
@@ -2545,10 +2547,11 @@ public class IconExtractor {
         try {
             Icon icon = Icon.FromHandle(largeIcons[0]);
             Bitmap bitmap = icon.ToBitmap();
-            Bitmap resized = new Bitmap(32, 32);
+            // 创建支持透明度的位图（Format32bppArgb 支持 alpha 通道）
+            Bitmap resized = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             using (Graphics g = Graphics.FromImage(resized)) {
-                // 先填充白色背景，避免透明图标在某些背景下不可见
-                g.Clear(Color.White);
+                // 不填充背景，保持图标的透明度
+                // g.Clear(Color.White); // 注释掉白色背景填充
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.DrawImage(bitmap, 0, 0, 32, 32);
             }

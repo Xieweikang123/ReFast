@@ -109,6 +109,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const [appIconErrorMap, setAppIconErrorMap] = useState<Record<string, boolean>>({});
   const [appIndexSearch, setAppIndexSearch] = useState("");
   const [appIndexProgress, setAppIndexProgress] = useState<{ progress: number; message: string } | null>(null);
+  const [extractingIcons, setExtractingIcons] = useState<Set<string>>(new Set());
   const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState<string>("");
@@ -685,6 +686,64 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     return `${mods} + ${config.key}`;
   };
 
+  // 提取应用图标
+  const handleExtractIcon = async (appPath: string) => {
+    // 如果正在提取，直接返回
+    if (extractingIcons.has(appPath)) {
+      return;
+    }
+
+    // 添加到正在提取的集合
+    setExtractingIcons((prev) => new Set(prev).add(appPath));
+
+    try {
+      console.log("[应用索引列表] 开始提取图标:", appPath);
+      const icon = await tauriApi.extractIconFromPath(appPath);
+      
+      if (icon) {
+        console.log("[应用索引列表] 图标提取成功:", appPath);
+        // 更新应用列表中的图标
+        setAppIndexList((prevList) => {
+          return prevList.map((app) => {
+            if (app.path === appPath) {
+              return { ...app, icon };
+            }
+            return app;
+          });
+        });
+      } else {
+        console.log("[应用索引列表] 图标提取失败:", appPath);
+        // 标记为提取失败
+        setAppIndexList((prevList) => {
+          return prevList.map((app) => {
+            if (app.path === appPath) {
+              return { ...app, icon: ICON_EXTRACTION_FAILED_MARKER };
+            }
+            return app;
+          });
+        });
+      }
+    } catch (error) {
+      console.error("[应用索引列表] 图标提取错误:", appPath, error);
+      // 标记为提取失败
+      setAppIndexList((prevList) => {
+        return prevList.map((app) => {
+          if (app.path === appPath) {
+            return { ...app, icon: ICON_EXTRACTION_FAILED_MARKER };
+          }
+          return app;
+        });
+      });
+    } finally {
+      // 从正在提取的集合中移除
+      setExtractingIcons((prev) => {
+        const newSet = new Set(prev);
+        newSet.delete(appPath);
+        return newSet;
+      });
+    }
+  };
+
   // 保存应用快捷键
   const saveAppHotkey = async (appPath: string, config: { modifiers: string[]; key: string } | null) => {
     try {
@@ -1145,6 +1204,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     let unlistenComplete: (() => void) | null = null;
     let unlistenError: (() => void) | null = null;
     let unlistenProgress: (() => void) | null = null;
+    let unlistenIconsUpdated: (() => void) | null = null;
 
     const setupListeners = async () => {
       // 监听扫描进度事件
@@ -1173,6 +1233,29 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
         setAppIndexLoading(false);
         setAppIndexProgress(null);
       });
+
+      // 监听图标更新事件
+      unlistenIconsUpdated = await listen<Array<[string, string]>>("app-icons-updated", (event) => {
+        const iconUpdates = event.payload;
+        console.log("[应用结果列表] 图标已更新:", iconUpdates);
+        // 更新应用列表中的图标
+        setAppIndexList((prevList) => {
+          const updatedList = prevList.map((app) => {
+            const update = iconUpdates.find(([path]) => path === app.path);
+            if (update) {
+              return { ...app, icon: update[1] };
+            }
+            return app;
+          });
+          return updatedList;
+        });
+        // 移除正在提取的状态
+        setExtractingIcons((prev) => {
+          const newSet = new Set(prev);
+          iconUpdates.forEach(([path]) => newSet.delete(path));
+          return newSet;
+        });
+      });
     };
 
     setupListeners();
@@ -1186,6 +1269,9 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       }
       if (unlistenProgress) {
         unlistenProgress();
+      }
+      if (unlistenIconsUpdated) {
+        unlistenIconsUpdated();
       }
     };
   }, []);
@@ -2271,6 +2357,17 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                         <div className="flex items-center gap-2">
                           {!isRecordingThis ? (
                             <>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleExtractIcon(item.path);
+                                }}
+                                disabled={extractingIcons.has(item.path)}
+                                className="opacity-0 group-hover:opacity-100 px-2 py-1 text-xs rounded border border-purple-300 text-purple-600 hover:bg-purple-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="提取图标"
+                              >
+                                {extractingIcons.has(item.path) ? "提取中..." : "提取图标"}
+                              </button>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
