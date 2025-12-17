@@ -15,6 +15,11 @@ const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
   return icon === ICON_EXTRACTION_FAILED_MARKER;
 };
 
+// Check if an icon is valid (not empty and not failed)
+const isValidIcon = (icon: string | null | undefined): boolean => {
+  return icon !== null && icon !== undefined && icon.trim() !== '' && !isIconExtractionFailed(icon);
+};
+
 // 菜单分类类型
 type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
 
@@ -870,6 +875,13 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     console.log("[应用结果列表] 筛选后的应用:", filtered);
     return filtered;
   }, [appIndexList, appIndexSearch]);
+
+  // 计算图标统计信息
+  const iconStats = useMemo(() => {
+    const withIcon = filteredAppIndexList.filter(item => isValidIcon(item.icon)).length;
+    const withoutIcon = filteredAppIndexList.length - withIcon;
+    return { withIcon, withoutIcon };
+  }, [filteredAppIndexList]);
 
   const handleQueryDaysAgo = () => {
     const days = parseInt(historyDaysAgo, 10);
@@ -2143,6 +2155,12 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                 <div className="text-lg font-semibold text-gray-900">应用索引列表</div>
                 <div className="text-sm text-gray-500">
                   共 {appIndexList.length} 条{appIndexSearch ? `，筛选后 ${filteredAppIndexList.length} 条` : ""}
+                  {filteredAppIndexList.length > 0 && (
+                    <span className="ml-2">
+                      · 有图标: <span className="text-green-600 font-medium">{iconStats.withIcon}</span>
+                      · 无图标: <span className="text-orange-600 font-medium">{iconStats.withoutIcon}</span>
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex items-center gap-2">

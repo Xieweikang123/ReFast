@@ -4054,30 +4054,60 @@ export function LauncherWindow() {
         if (executableFiles.length > 0) {
           console.log(`[文件历史图标提取] 发现 ${executableFiles.length} 个可执行文件，触发图标提取:`, executableFiles.map(f => ({ name: f.name, path: f.path })));
           
-          // 直接为每个文件路径调用图标提取API（因为这些文件可能不在应用列表中）
-          // 限制最多提取前10个文件，避免过多请求
-          const filesToExtract = executableFiles.slice(0, 10);
-          filesToExtract.forEach((file, index) => {
-            console.log(`[文件历史图标提取] [${index + 1}/${filesToExtract.length}] 提取图标: path=${file.path}`);
-            tauriApi.extractIconFromPath(file.path)
-              .then((icon) => {
-                if (icon) {
-                  console.log(`[文件历史图标提取] ✓ 图标提取成功: path=${file.path}, iconLength=${icon.length}`);
-                  // 将提取的图标保存到缓存中
-                  extractedFileIconsRef.current.set(file.path, icon);
-                  // 更新 filteredFiles 中对应文件的显示（通过重新设置 filteredFiles 触发重新渲染）
-                  setFilteredFiles((prevFiles) => {
-                    // 返回相同的数组，但会触发重新渲染，SearchResult 构建时会使用新的图标
-                    return [...prevFiles];
-                  });
-                } else {
-                  console.log(`[文件历史图标提取] ✗ 图标提取失败: path=${file.path}`);
-                }
-              })
-              .catch((error) => {
-                console.error(`[文件历史图标提取] ✗ 图标提取错误: path=${file.path}, error=`, error);
+          // 过滤出需要提取图标的文件（没有图标或图标无效的文件）
+          const filesToExtract = executableFiles
+            .slice(0, 10) // 限制最多提取前10个文件，避免过多请求
+            .filter((file) => {
+              // 检查 extractedFileIconsRef 中是否已有图标
+              const extractedIcon = extractedFileIconsRef.current.get(file.path);
+              if (isValidIcon(extractedIcon)) {
+                console.log(`[文件历史图标提取] 跳过（已有提取的图标）: path=${file.path}`);
+                return false;
+              }
+              
+              // 检查应用列表中是否已有该路径的应用及其有效图标
+              const normalizedPath = file.path.toLowerCase().replace(/\\/g, "/");
+              const matchedApp = allAppsCacheRef.current.find((app) => {
+                const appPath = app.path.toLowerCase().replace(/\\/g, "/");
+                return appPath === normalizedPath;
               });
-          });
+              
+              if (matchedApp && isValidIcon(matchedApp.icon)) {
+                console.log(`[文件历史图标提取] 跳过（应用列表中已有图标）: path=${file.path}`);
+                // 将应用列表中的图标也保存到 extractedFileIconsRef，避免重复检查
+                extractedFileIconsRef.current.set(file.path, matchedApp.icon!);
+                return false;
+              }
+              
+              return true; // 需要提取图标
+            });
+          
+          if (filesToExtract.length > 0) {
+            console.log(`[文件历史图标提取] 需要提取图标的文件数量: ${filesToExtract.length}`);
+            filesToExtract.forEach((file, index) => {
+              console.log(`[文件历史图标提取] [${index + 1}/${filesToExtract.length}] 提取图标: path=${file.path}`);
+              tauriApi.extractIconFromPath(file.path)
+                .then((icon) => {
+                  if (icon) {
+                    console.log(`[文件历史图标提取] ✓ 图标提取成功: path=${file.path}, iconLength=${icon.length}`);
+                    // 将提取的图标保存到缓存中
+                    extractedFileIconsRef.current.set(file.path, icon);
+                    // 更新 filteredFiles 中对应文件的显示（通过重新设置 filteredFiles 触发重新渲染）
+                    setFilteredFiles((prevFiles) => {
+                      // 返回相同的数组，但会触发重新渲染，SearchResult 构建时会使用新的图标
+                      return [...prevFiles];
+                    });
+                  } else {
+                    console.log(`[文件历史图标提取] ✗ 图标提取失败: path=${file.path}`);
+                  }
+                })
+                .catch((error) => {
+                  console.error(`[文件历史图标提取] ✗ 图标提取错误: path=${file.path}, error=`, error);
+                });
+            });
+          } else {
+            console.log(`[文件历史图标提取] 所有文件都已存在图标，无需提取`);
+          }
           
           // 注意：不再调用后端搜索，避免重复调用
           // 后端搜索会在 searchApplications 函数中统一调用

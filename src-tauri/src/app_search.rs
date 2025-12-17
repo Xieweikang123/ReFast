@@ -2053,14 +2053,20 @@ try {
                 "{f38bf404-1d43-42f2-9305-67de0b28fc23}", // FOLDERID_Windows
                 env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string()),
             ),
+            (
+                "{1ac14e77-02e7-4e5d-b744-2eb1ae5198b7}", // FOLDERID_System (System32)
+                env::var("WINDIR").map(|w| format!("{}\\System32", w)).unwrap_or_else(|_| "C:\\Windows\\System32".to_string()),
+            ),
         ];
 
         let lower = path.to_ascii_lowercase();
         for (guid, physical) in mappings {
             if lower.starts_with(guid) {
-                // 去掉 GUID 前缀，保留后续子路径
+                // 去掉 GUID 前缀，保留后续子路径（通常是 \filename.exe 格式）
                 let suffix = &path[guid.len()..];
-                return format!("{}{}", physical, suffix);
+                // 规范化路径分隔符并拼接
+                let suffix = suffix.trim_start_matches('\\').trim_start_matches('/');
+                return format!("{}\\{}", physical.trim_end_matches('\\'), suffix);
             }
         }
 
