@@ -1,24 +1,14 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { plugins, executePlugin } from "../plugins";
-import type { PluginContext, IndexStatus, FileHistoryItem, AppInfo, DatabaseBackupInfo, PluginUsage } from "../types";
+import type { PluginContext, IndexStatus, FileHistoryItem, DatabaseBackupInfo, PluginUsage } from "../types";
 import { tauriApi } from "../api/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
 import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./SettingsPages";
 import { fetchUsersCount } from "../api/events";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { AppIndexList } from "./AppIndexList";
 
-// Icon extraction failure marker (must match backend constant)
-const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
-
-// Check if an icon value represents a failed extraction
-const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
-  return icon === ICON_EXTRACTION_FAILED_MARKER;
-};
-
-// Check if an icon is valid (not empty and not failed)
-const isValidIcon = (icon: string | null | undefined): boolean => {
-  return icon !== null && icon !== undefined && icon.trim() !== '' && !isIconExtractionFailed(icon);
-};
+// Icon extraction failure marker 和相关函数已移至 AppIndexList 组件
 
 // 菜单分类类型
 type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
@@ -103,13 +93,6 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const [isLoadingIndex, setIsLoadingIndex] = useState(false);
   const [indexError, setIndexError] = useState<string | null>(null);
   const [isAppIndexModalOpen, setIsAppIndexModalOpen] = useState(false);
-  const [appIndexLoading, setAppIndexLoading] = useState(false);
-  const [appIndexError, setAppIndexError] = useState<string | null>(null);
-  const [appIndexList, setAppIndexList] = useState<AppInfo[]>([]);
-  const [appIconErrorMap, setAppIconErrorMap] = useState<Record<string, boolean>>({});
-  const [appIndexSearch, setAppIndexSearch] = useState("");
-  const [appIndexProgress, setAppIndexProgress] = useState<{ progress: number; message: string } | null>(null);
-  const [extractingIcons, setExtractingIcons] = useState<Set<string>>(new Set());
   const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState<string>("");
@@ -130,15 +113,8 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteCount, setPendingDeleteCount] = useState(0);
   
-  // 应用快捷键相关状态
+  // 应用快捷键相关状态（需要在父组件管理，以便在其他地方使用）
   const [appHotkeys, setAppHotkeys] = useState<Record<string, { modifiers: string[]; key: string }>>({});
-  const [recordingAppPath, setRecordingAppPath] = useState<string | null>(null);
-  const [appRecordingKeys, setAppRecordingKeys] = useState<string[]>([]);
-  const appRecordingRef = useRef(false);
-  const appLastModifierRef = useRef<string | null>(null);
-  const appLastModifierTimeRef = useRef<number>(0);
-  const appIsCompletingRef = useRef(false);
-  const appFinalKeysRef = useRef<string[] | null>(null);
   
   // 设置相关状态
   const [activeSettingsPage, setActiveSettingsPage] = useState<SettingsPage>("system");
@@ -632,321 +608,13 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     setIsDeleteConfirmOpen(false);
   };
 
-  const loadAppIndexList = async (forceRescan = false) => {
-    if (appIndexLoading) return;
-    try {
-      setAppIndexLoading(true);
-      setAppIndexError(null);
-
-      // Yield to UI so loading状态能先渲染，避免感觉"卡住"
-      await new Promise((resolve) => setTimeout(resolve, 0));
-
-      if (forceRescan) {
-        // 重新扫描：立即返回，通过事件通知结果，避免阻塞 UI
-        // 初始化进度状态
-        setAppIndexProgress({ progress: 0, message: "准备开始扫描..." });
-        await tauriApi.rescanApplications();
-        // 不在这里等待结果，事件监听器会处理
-      } else {
-        // 普通扫描：等待结果
-        const data = await tauriApi.scanApplications();
-        console.log("[应用结果列表] 加载完成，总数:", data.length);
-        console.log("[应用结果列表] 应用数据:", data);
-        setAppIndexList(data);
-        setAppIndexLoading(false);
-        // 不再自动提取图标，避免打开列表时的延迟
-      }
-    } catch (error: any) {
-      console.error("获取应用索引列表失败:", error);
-      setAppIndexError(error?.message || "获取应用索引列表失败");
-      setAppIndexLoading(false);
-    }
-  };
-
-  const handleOpenAppIndexModal = async () => {
+  const handleOpenAppIndexModal = () => {
     setIsAppIndexModalOpen(true);
-    if (appIndexList.length === 0 && !appIndexLoading) {
-      await loadAppIndexList();
-    }
   };
 
   const handleCloseAppIndexModal = () => {
     setIsAppIndexModalOpen(false);
-    setAppIndexSearch("");
   };
-
-  // 格式化快捷键显示
-  const formatHotkey = (config: { modifiers: string[]; key: string }): string => {
-    const mods = config.modifiers.join(" + ");
-    if (config.modifiers.length === 2 && 
-        config.modifiers[0] === config.modifiers[1] && 
-        config.modifiers[0] === config.key) {
-      return mods;
-    }
-    return `${mods} + ${config.key}`;
-  };
-
-  // 提取应用图标
-  const handleExtractIcon = async (appPath: string) => {
-    // 如果正在提取，直接返回
-    if (extractingIcons.has(appPath)) {
-      return;
-    }
-
-    // 添加到正在提取的集合
-    setExtractingIcons((prev) => new Set(prev).add(appPath));
-
-    try {
-      console.log("[应用索引列表] 开始提取图标:", appPath);
-      const icon = await tauriApi.extractIconFromPath(appPath);
-      
-      if (icon) {
-        console.log("[应用索引列表] 图标提取成功:", appPath);
-        // 清除之前的错误标记（如果有）
-        setAppIconErrorMap((prev) => {
-          const newMap = { ...prev };
-          delete newMap[appPath];
-          return newMap;
-        });
-        // 更新应用列表中的图标
-        setAppIndexList((prevList) => {
-          return prevList.map((app) => {
-            if (app.path === appPath) {
-              return { ...app, icon };
-            }
-            return app;
-          });
-        });
-      } else {
-        console.log("[应用索引列表] 图标提取失败:", appPath);
-        // 标记为提取失败
-        setAppIndexList((prevList) => {
-          return prevList.map((app) => {
-            if (app.path === appPath) {
-              return { ...app, icon: ICON_EXTRACTION_FAILED_MARKER };
-            }
-            return app;
-          });
-        });
-      }
-    } catch (error) {
-      console.error("[应用索引列表] 图标提取错误:", appPath, error);
-      // 标记为提取失败
-      setAppIndexList((prevList) => {
-        return prevList.map((app) => {
-          if (app.path === appPath) {
-            return { ...app, icon: ICON_EXTRACTION_FAILED_MARKER };
-          }
-          return app;
-        });
-      });
-    } finally {
-      // 从正在提取的集合中移除
-      setExtractingIcons((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(appPath);
-        return newSet;
-      });
-    }
-  };
-
-  // 保存应用快捷键
-  const saveAppHotkey = async (appPath: string, config: { modifiers: string[]; key: string } | null) => {
-    try {
-      await tauriApi.saveAppHotkey(appPath, config);
-      if (config) {
-        setAppHotkeys((prev) => ({ ...prev, [appPath]: config }));
-      } else {
-        setAppHotkeys((prev) => {
-          const newHotkeys = { ...prev };
-          delete newHotkeys[appPath];
-          return newHotkeys;
-        });
-      }
-    } catch (error) {
-      console.error("Failed to save app hotkey:", error);
-      alert("保存应用快捷键失败");
-    }
-  };
-
-  // 应用快捷键录制逻辑
-  useEffect(() => {
-    if (!recordingAppPath) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!appRecordingRef.current || appIsCompletingRef.current || e.repeat) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        return;
-      }
-
-      if (appFinalKeysRef.current) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        return;
-      }
-
-      const keyMap: Record<string, string> = {
-        "Control": "Ctrl",
-        "Alt": "Alt",
-        "Shift": "Shift",
-        "Meta": "Meta",
-      };
-
-      let key = e.key;
-
-      if (keyMap[key]) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
-        const mappedKey = keyMap[key];
-        const now = Date.now();
-
-        const isSameModifier = appLastModifierRef.current === mappedKey;
-        const hasPreviousPress = appLastModifierTimeRef.current > 0;
-        const timeSinceLastPress = hasPreviousPress ? now - appLastModifierTimeRef.current : Infinity;
-        const isDoubleTapTime = timeSinceLastPress < 500;
-
-        if (isSameModifier && hasPreviousPress && isDoubleTapTime) {
-          appIsCompletingRef.current = true;
-          appRecordingRef.current = false;
-
-          const finalModifiers: string[] = [mappedKey, mappedKey];
-          appFinalKeysRef.current = finalModifiers;
-
-          const newHotkey: { modifiers: string[]; key: string } = {
-            modifiers: finalModifiers,
-            key: mappedKey,
-          };
-
-          appLastModifierRef.current = null;
-          appLastModifierTimeRef.current = 0;
-
-          setAppRecordingKeys(finalModifiers);
-          saveAppHotkey(recordingAppPath, newHotkey);
-          setRecordingAppPath(null);
-
-          window.removeEventListener("keydown", handleKeyDown, true);
-          window.removeEventListener("keyup", handleKeyUp, true);
-
-          setTimeout(() => {
-            appIsCompletingRef.current = false;
-          }, 300);
-
-          return;
-        }
-
-        if (appFinalKeysRef.current) {
-          return;
-        }
-
-        if (!hasPreviousPress || !isSameModifier || timeSinceLastPress >= 500) {
-          appLastModifierRef.current = mappedKey;
-          appLastModifierTimeRef.current = now;
-          setAppRecordingKeys([mappedKey]);
-        }
-
-        return;
-      }
-
-      appLastModifierRef.current = null;
-      appLastModifierTimeRef.current = 0;
-
-      e.preventDefault();
-      e.stopPropagation();
-
-      const modifiers: string[] = [];
-      if (e.ctrlKey) modifiers.push("Ctrl");
-      if (e.altKey) modifiers.push("Alt");
-      if (e.shiftKey) modifiers.push("Shift");
-      if (e.metaKey) modifiers.push("Meta");
-
-      if (key === " ") key = "Space";
-      if (key.length === 1) key = key.toUpperCase();
-
-      if (modifiers.length === 0) {
-        setAppRecordingKeys([key]);
-        return;
-      }
-
-      const newHotkey: { modifiers: string[]; key: string } = {
-        modifiers: modifiers,
-        key: key,
-      };
-
-      setAppRecordingKeys([...modifiers, key]);
-      saveAppHotkey(recordingAppPath, newHotkey);
-      setRecordingAppPath(null);
-      appRecordingRef.current = false;
-    };
-
-    const handleKeyUp = () => {
-      if (!appRecordingRef.current) return;
-    };
-
-    window.addEventListener("keydown", handleKeyDown, true);
-    window.addEventListener("keyup", handleKeyUp, true);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown, true);
-      window.removeEventListener("keyup", handleKeyUp, true);
-    };
-  }, [recordingAppPath]);
-
-  // ESC 键处理（取消应用快捷键录制 或 关闭应用索引模态框）
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        // 优先处理快捷键录制
-        if (recordingAppPath) {
-          e.preventDefault();
-          e.stopPropagation();
-          setRecordingAppPath(null);
-          appRecordingRef.current = false;
-          setAppRecordingKeys([]);
-          appLastModifierRef.current = null;
-          appLastModifierTimeRef.current = 0;
-          appIsCompletingRef.current = false;
-          appFinalKeysRef.current = null;
-        }
-        // 如果应用索引模态框打开，关闭它（阻止事件冒泡，避免关闭应用中心窗口）
-        else if (isAppIndexModalOpen) {
-          e.preventDefault();
-          e.stopPropagation();
-          handleCloseAppIndexModal();
-        }
-      }
-    };
-    // 使用 capture 阶段捕获事件，确保在父组件之前处理
-    window.addEventListener("keydown", handleEscape, true);
-    return () => window.removeEventListener("keydown", handleEscape, true);
-  }, [recordingAppPath, isAppIndexModalOpen]);
-
-  const filteredAppIndexList = useMemo(() => {
-    if (!appIndexSearch.trim()) {
-      console.log("[应用结果列表] 无搜索条件，返回全部列表，数量:", appIndexList.length);
-      return appIndexList;
-    }
-    const query = appIndexSearch.toLowerCase();
-    const filtered = appIndexList.filter(
-      (item) =>
-        item.name.toLowerCase().includes(query) ||
-        item.path.toLowerCase().includes(query)
-    );
-    console.log("[应用结果列表] 筛选结果 - 搜索词:", appIndexSearch, "原始数量:", appIndexList.length, "筛选后数量:", filtered.length);
-    console.log("[应用结果列表] 筛选后的应用:", filtered);
-    return filtered;
-  }, [appIndexList, appIndexSearch]);
-
-  // 计算图标统计信息
-  const iconStats = useMemo(() => {
-    const withIcon = filteredAppIndexList.filter(item => isValidIcon(item.icon)).length;
-    const withoutIcon = filteredAppIndexList.length - withIcon;
-    return { withIcon, withoutIcon };
-  }, [filteredAppIndexList]);
 
   const handleQueryDaysAgo = () => {
     const days = parseInt(historyDaysAgo, 10);
@@ -1205,89 +873,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
     }
   }, [activeCategory, loadAppHotkeys]);
 
-  // 监听应用重新扫描事件
-  useEffect(() => {
-    let unlistenComplete: (() => void) | null = null;
-    let unlistenError: (() => void) | null = null;
-    let unlistenProgress: (() => void) | null = null;
-    let unlistenIconsUpdated: (() => void) | null = null;
-
-    const setupListeners = async () => {
-      // 监听扫描进度事件
-      unlistenProgress = await listen<{ progress: number; message: string }>("app-rescan-progress", (event) => {
-        const { progress, message } = event.payload;
-        setAppIndexProgress({ progress, message });
-      });
-
-      // 监听扫描完成事件
-      unlistenComplete = await listen<{ apps: AppInfo[] }>("app-rescan-complete", (event) => {
-        const { apps } = event.payload;
-        console.log("[应用结果列表] 重新扫描完成，总数:", apps.length);
-        console.log("[应用结果列表] 重新扫描后的应用数据:", apps);
-        setAppIndexList(apps);
-        setAppIndexLoading(false);
-        setAppIndexError(null);
-        setAppIndexProgress(null);
-        // 不再自动提取图标，避免扫描完成后的延迟
-      });
-
-      // 监听扫描错误事件
-      unlistenError = await listen<{ error: string }>("app-rescan-error", (event) => {
-        const { error } = event.payload;
-        console.error("应用重新扫描失败:", error);
-        setAppIndexError(error);
-        setAppIndexLoading(false);
-        setAppIndexProgress(null);
-      });
-
-      // 监听图标更新事件
-      unlistenIconsUpdated = await listen<Array<[string, string]>>("app-icons-updated", (event) => {
-        const iconUpdates = event.payload;
-        console.log("[应用结果列表] 图标已更新:", iconUpdates);
-        // 清除错误标记并更新应用列表中的图标
-        setAppIconErrorMap((prev) => {
-          const newMap = { ...prev };
-          iconUpdates.forEach(([path]) => {
-            delete newMap[path];
-          });
-          return newMap;
-        });
-        setAppIndexList((prevList) => {
-          const updatedList = prevList.map((app) => {
-            const update = iconUpdates.find(([path]) => path === app.path);
-            if (update) {
-              return { ...app, icon: update[1] };
-            }
-            return app;
-          });
-          return updatedList;
-        });
-        // 移除正在提取的状态
-        setExtractingIcons((prev) => {
-          const newSet = new Set(prev);
-          iconUpdates.forEach(([path]) => newSet.delete(path));
-          return newSet;
-        });
-      });
-    };
-
-    setupListeners();
-
-    return () => {
-      if (unlistenComplete) {
-        unlistenComplete();
-      }
-      if (unlistenError) {
-        unlistenError();
-      }
-      if (unlistenProgress) {
-        unlistenProgress();
-      }
-      if (unlistenIconsUpdated) {
-        unlistenIconsUpdated();
-      }
-    };
-  }, []);
+  // 事件监听器已移至 AppIndexList 组件
 
   // 所有可用插件（排除 show_plugin_list，因为它就是用来显示插件列表的，不应该出现在列表里）
   const availablePlugins = useMemo(() => {
@@ -1405,57 +991,6 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       default:
         return "text-gray-600";
     }
-  };
-
-  // 渲染应用图标，加载失败时显示占位图标
-  const renderAppIcon = (app: AppInfo) => {
-    const showFallbackIcon = !app.icon || isIconExtractionFailed(app.icon) || appIconErrorMap[app.path];
-    
-    // 处理图标格式：如果是纯 base64 字符串，添加 data:image/png;base64, 前缀
-    // 如果已经包含前缀，保持不变
-    const iconSrc = app.icon && !showFallbackIcon
-      ? (app.icon.startsWith('data:image') 
-          ? app.icon 
-          : `data:image/png;base64,${app.icon}`)
-      : undefined;
-
-    return (
-      <div className="w-10 h-10 rounded-lg bg-gray-50 border border-gray-200 flex items-center justify-center overflow-hidden flex-shrink-0">
-        {!showFallbackIcon && iconSrc ? (
-          <img
-            src={iconSrc}
-            alt={app.name}
-            className="w-8 h-8 object-contain"
-            onError={() =>
-              setAppIconErrorMap((prev) => ({
-                ...prev,
-                [app.path]: true,
-              }))
-            }
-          />
-        ) : (
-          <svg
-            className="w-5 h-5 text-gray-500"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6a2 2 0 012-2h12a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V6z"
-            />
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M8 10h8m-8 4h5m-5-7h.01"
-            />
-          </svg>
-        )}
-      </div>
-    );
   };
 
   // 渲染当前分类的内容
@@ -1667,7 +1202,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                     <button
                       onClick={handleOpenAppIndexModal}
                       className="mt-3 px-3 py-2 text-xs rounded-lg bg-white text-gray-700 border border-gray-200 hover:border-gray-300 hover:shadow-sm transition w-full text-left flex items-center justify-between"
-                      disabled={isLoadingIndex || appIndexLoading}
+                      disabled={isLoadingIndex}
                     >
                       <span>查看索引列表</span>
                       <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2254,204 +1789,12 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
         onCancel={handleCancelDeleteBackup}
       />
 
-      {isAppIndexModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col border border-gray-200">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-              <div>
-                <div className="text-lg font-semibold text-gray-900">应用索引列表</div>
-                <div className="text-sm text-gray-500">
-                  共 {appIndexList.length} 条{appIndexSearch ? `，筛选后 ${filteredAppIndexList.length} 条` : ""}
-                  {filteredAppIndexList.length > 0 && (
-                    <span className="ml-2">
-                      · 有图标: <span className="text-green-600 font-medium">{iconStats.withIcon}</span>
-                      · 无图标: <span className="text-orange-600 font-medium">{iconStats.withoutIcon}</span>
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => loadAppIndexList(true)}
-                  className="px-3 py-2 text-xs rounded-lg bg-green-50 text-green-700 border border-green-200 hover:border-green-300 hover:shadow-sm transition"
-                  disabled={appIndexLoading}
-                >
-                  {appIndexLoading ? "扫描中..." : "重新扫描"}
-                </button>
-                <button
-                  onClick={handleCloseAppIndexModal}
-                  className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 text-gray-500 transition"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            <div className="px-6 py-3 border-b border-gray-100">
-              <div className="flex items-center gap-3">
-                <div className="relative flex-1">
-                  <input
-                    value={appIndexSearch}
-                    onChange={(e) => setAppIndexSearch(e.target.value)}
-                    placeholder="按名称或路径过滤..."
-                    className="w-full px-4 py-2.5 pl-10 pr-3 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-green-400 bg-white text-sm text-gray-900 placeholder-gray-400"
-                  />
-                  <svg
-                    className="absolute left-3 top-2.5 w-4 h-4 text-gray-400 pointer-events-none"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                </div>
-                {appIndexSearch && (
-                  <button
-                    onClick={() => setAppIndexSearch("")}
-                    className="px-3 py-2 text-xs rounded-lg bg-white border border-gray-200 hover:border-gray-300 transition"
-                  >
-                    清空
-                  </button>
-                )}
-              </div>
-              {appIndexProgress && (
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between text-xs text-gray-600">
-                    <span>{appIndexProgress.message}</span>
-                    <span>{appIndexProgress.progress}%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-green-500 h-2 rounded-full transition-all duration-300 ease-out"
-                      style={{ width: `${appIndexProgress.progress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-              {appIndexError && (
-                <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-                  {appIndexError}
-                </div>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto">
-              {appIndexLoading && !appIndexProgress ? (
-                <div className="flex items-center justify-center py-12 text-gray-600 text-sm">加载中...</div>
-              ) : appIndexLoading && appIndexProgress ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="text-center space-y-3 w-full px-6">
-                    <div className="text-sm text-gray-600">{appIndexProgress.message}</div>
-                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden max-w-md mx-auto">
-                      <div
-                        className="bg-green-500 h-3 rounded-full transition-all duration-300 ease-out"
-                        style={{ width: `${appIndexProgress.progress}%` }}
-                      />
-                    </div>
-                    <div className="text-xs text-gray-500">{appIndexProgress.progress}%</div>
-                  </div>
-                </div>
-              ) : filteredAppIndexList.length === 0 ? (
-                <div className="flex items-center justify-center py-12 text-gray-500 text-sm">暂无索引数据</div>
-              ) : (
-                <div className="divide-y divide-gray-100">
-                  {filteredAppIndexList.map((item, idx) => {
-                    const appHotkey = appHotkeys[item.path];
-                    const isRecordingThis = recordingAppPath === item.path;
-                    return (
-                      <div key={`${item.path}-${idx}`} className="px-6 py-3 flex items-center gap-4 hover:bg-gray-50 group relative">
-                        <div className="w-6 h-6 rounded bg-green-50 text-green-700 flex items-center justify-center text-xs flex-shrink-0">
-                          {idx + 1}
-                        </div>
-                        {renderAppIcon(item)}
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-gray-900">{item.name}</div>
-                          <div className="text-xs text-gray-500 break-all mt-1">{item.path}</div>
-                          {appHotkey && (
-                            <div className="text-xs font-mono text-blue-600 mt-1">
-                              {formatHotkey(appHotkey)}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {!isRecordingThis ? (
-                            <>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleExtractIcon(item.path);
-                                }}
-                                disabled={extractingIcons.has(item.path)}
-                                className="opacity-0 group-hover:opacity-100 px-2 py-1 text-xs rounded border border-purple-300 text-purple-600 hover:bg-purple-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
-                                title="提取图标"
-                              >
-                                {extractingIcons.has(item.path) ? "提取中..." : "提取图标"}
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRecordingAppPath(item.path);
-                                  appRecordingRef.current = true;
-                                  setAppRecordingKeys([]);
-                                  appFinalKeysRef.current = null;
-                                }}
-                                className="opacity-0 group-hover:opacity-100 px-2 py-1 text-xs rounded border border-blue-300 text-blue-600 hover:bg-blue-50 transition"
-                                title="设置快捷键"
-                              >
-                                {appHotkey ? "修改" : "设置"}
-                              </button>
-                              {appHotkey && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    saveAppHotkey(item.path, null);
-                                  }}
-                                  className="opacity-0 group-hover:opacity-100 px-2 py-1 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-100 transition"
-                                  title="清除快捷键"
-                                >
-                                  清除
-                                </button>
-                              )}
-                            </>
-                          ) : (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setRecordingAppPath(null);
-                                appRecordingRef.current = false;
-                                setAppRecordingKeys([]);
-                                appLastModifierRef.current = null;
-                                appLastModifierTimeRef.current = 0;
-                                appIsCompletingRef.current = false;
-                                appFinalKeysRef.current = null;
-                              }}
-                              className="px-2 py-1 text-xs rounded border border-gray-500 text-gray-700 hover:bg-gray-100 transition"
-                            >
-                              取消
-                            </button>
-                          )}
-                        </div>
-                        {isRecordingThis && (
-                          <div className="absolute left-0 right-0 top-full mt-1 px-6 py-2 bg-yellow-50 border border-yellow-200 rounded-md text-xs text-yellow-800 z-10">
-                            正在录制... 请按下您想要设置的快捷键组合
-                            {appRecordingKeys.length > 0 && (
-                              <div className="mt-1 text-yellow-600">
-                                已按下: {appRecordingKeys.join(" + ")}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <AppIndexList
+        isOpen={isAppIndexModalOpen}
+        onClose={handleCloseAppIndexModal}
+        appHotkeys={appHotkeys}
+        onHotkeysChange={setAppHotkeys}
+      />
     </>
   );
 }
