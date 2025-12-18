@@ -142,6 +142,16 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
             last_opened INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_plugin_usage_last_opened ON plugin_usage(last_opened);
+
+        CREATE TABLE IF NOT EXISTS clipboard_history (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            is_favorite INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_clipboard_history_created_at ON clipboard_history(created_at);
+        CREATE INDEX IF NOT EXISTS idx_clipboard_history_is_favorite ON clipboard_history(is_favorite);
     "#,
     )
     .map_err(|e| format!("Failed to run database migrations: {}", e))?;

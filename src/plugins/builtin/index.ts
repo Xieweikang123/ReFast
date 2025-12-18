@@ -121,26 +121,29 @@ export function createBuiltinPlugins(): Plugin[] {
       },
     },
     {
-      id: "show_main_window",
-      name: "录制动作",
-      description: "打开主程序窗口",
+      id: "recording",
+      name: "录制回放工具",
+      description: "录制鼠标键盘操作并回放，支持变速播放",
       keywords: [
-        "录制动作",
         "录制",
-        "主窗口",
-        "主程序",
-        "窗口",
-        "luzhidongzuo",
-        "lzdz",
+        "回放",
+        "宏",
+        "自动化",
+        "录制回放",
         "luzhi",
         "lz",
-        "zhuchuangkou",
-        "zck",
-        "zhuchengxu",
-        "zcx",
-        "chuangkou",
-        "ck",
-        "main",
+        "huifang",
+        "hf",
+        "hong",
+        "zidonghua",
+        "zdh",
+        "recording",
+        "playback",
+        "macro",
+        "automation",
+        "录制动作",
+        "luzhidongzuo",
+        "lzdz",
       ],
       execute: async (context) => {
         await tauriApi.showMainWindow();
@@ -263,6 +266,85 @@ export function createBuiltinPlugins(): Plugin[] {
         // 打开独立的 ASCII 十六进制转换器窗口
         if (context.tauriApi) {
           await context.tauriApi.showHexConverterWindow();
+          // 关闭启动器
+          await context.hideLauncher();
+        }
+      },
+    },
+    {
+      id: "color_picker",
+      name: "拾色器",
+      description: "颜色选择、格式转换、屏幕取色工具",
+      keywords: [
+        "拾色器",
+        "颜色",
+        "取色",
+        "颜色选择",
+        "color",
+        "picker",
+        "shiseqi",
+        "ssq",
+        "yanse",
+        "ys",
+        "quse",
+        "qs",
+        "yansexuanze",
+        "ysxz",
+        "取色器",
+        "quseqi",
+        "屏幕取色",
+        "pingmuquse",
+        "pmqs",
+        "色彩",
+        "secai",
+        "sc",
+        "color picker",
+        "eyedropper",
+        "颜色工具",
+        "yansegongju",
+        "ysgj",
+      ],
+      execute: async (context) => {
+        // 打开独立的拾色器窗口
+        if (context.tauriApi) {
+          await context.tauriApi.showColorPickerWindow();
+          // 关闭启动器
+          await context.hideLauncher();
+        }
+      },
+    },
+    {
+      id: "clipboard",
+      name: "剪切板历史",
+      description: "查看、搜索和管理剪切板历史记录",
+      keywords: [
+        "剪切板",
+        "clipboard",
+        "剪贴板",
+        "历史",
+        "jianqieban",
+        "jqb",
+        "jiantieban",
+        "jtb",
+        "lishi",
+        "ls",
+        "剪切板历史",
+        "剪贴板历史",
+        "jianqiebanlishi",
+        "jqbls",
+        "复制",
+        "fuzhi",
+        "fz",
+        "粘贴",
+        "zhantie",
+        "zt",
+        "copy",
+        "paste",
+      ],
+      execute: async (context) => {
+        // 打开独立的剪切板窗口
+        if (context.tauriApi) {
+          await context.tauriApi.showClipboardWindow();
           // 关闭启动器
           await context.hideLauncher();
         }

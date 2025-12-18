@@ -108,11 +108,25 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
       // 调用后端下载
       const filePath = await tauriApi.downloadUpdate(updateInfo.download_url);
       
-      // 下载完成
-      alert(`下载完成！\n文件保存在：${filePath}\n\n请手动运行安装程序完成更新。`);
+      // 下载完成，询问用户是否立即安装
+      const userChoice = window.confirm(
+        `下载完成！\n文件保存在：${filePath}\n\n是否立即安装更新？\n\n点击"确定"将启动安装程序并关闭当前应用。\n点击"取消"可稍后手动安装。`
+      );
       
-      // 打开文件所在目录
-      await tauriApi.revealInFolder(filePath);
+      if (userChoice) {
+        // 用户选择立即安装
+        try {
+          await tauriApi.installUpdate(filePath);
+          // 应用将自动退出，这里的代码可能不会执行
+        } catch (error) {
+          console.error("启动安装程序失败:", error);
+          alert(`启动安装程序失败: ${error}\n\n已为您打开文件所在目录，请手动运行安装程序。`);
+          await tauriApi.revealInFolder(filePath);
+        }
+      } else {
+        // 用户选择稍后安装，打开文件所在目录
+        await tauriApi.revealInFolder(filePath);
+      }
     } catch (error) {
       console.error("下载失败:", error);
       alert(`下载失败: ${error}\n\n请尝试使用浏览器下载或前往 GitHub 手动下载。`);

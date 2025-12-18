@@ -14,6 +14,7 @@ import type {
   PluginUsage,
   UpdateCheckResult,
   DatabaseHealthStatus,
+  ClipboardItem,
 } from "../types";
 
 export const tauriApi = {
@@ -399,6 +400,14 @@ export const tauriApi = {
     return invoke("show_hex_converter_window");
   },
 
+  async showColorPickerWindow(): Promise<void> {
+    return invoke("show_color_picker_window");
+  },
+
+  async pickColorFromScreen(): Promise<string | null> {
+    return invoke("pick_color_from_screen");
+  },
+
   async previewFileReplace(params: {
     folderPath: string;
     searchText: string;
@@ -570,6 +579,44 @@ export const tauriApi = {
   // Download update API
   async downloadUpdate(downloadUrl: string): Promise<string> {
     return invoke("download_update", { downloadUrl });
+  },
+
+  // Install update API
+  async installUpdate(installerPath: string): Promise<void> {
+    return invoke("install_update", { installerPath });
+  },
+
+  // Clipboard APIs
+  async getAllClipboardItems(): Promise<ClipboardItem[]> {
+    return invoke("get_all_clipboard_items");
+  },
+
+  async addClipboardItem(content: string, contentType: string): Promise<ClipboardItem> {
+    return invoke("add_clipboard_item", { content, contentType });
+  },
+
+  async updateClipboardItem(id: string, content: string): Promise<ClipboardItem> {
+    return invoke("update_clipboard_item", { id, content });
+  },
+
+  async toggleFavoriteClipboardItem(id: string): Promise<ClipboardItem> {
+    return invoke("toggle_favorite_clipboard_item", { id });
+  },
+
+  async deleteClipboardItem(id: string): Promise<void> {
+    return invoke("delete_clipboard_item", { id });
+  },
+
+  async clearClipboardHistory(): Promise<void> {
+    return invoke("clear_clipboard_history");
+  },
+
+  async searchClipboardItems(query: string): Promise<ClipboardItem[]> {
+    return invoke("search_clipboard_items", { query });
+  },
+
+  async showClipboardWindow(): Promise<void> {
+    return invoke("show_clipboard_window");
   },
 };
 

@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import App from "./App";
+import RecordingApp from "./RecordingApp";
 import LauncherApp from "./LauncherApp";
 import ShortcutsConfigApp from "./ShortcutsConfigApp";
 import MemoApp from "./MemoApp";
@@ -14,6 +14,8 @@ import CalculatorPadApp from "./CalculatorPadApp";
 import EverythingSearchApp from "./EverythingSearchApp";
 import TranslationApp from "./TranslationApp";
 import { HexConverterApp } from "./HexConverterApp";
+import { ColorPickerApp } from "./ColorPickerApp";
+import ClipboardApp from "./ClipboardApp";
 import { initializePlugins } from "./plugins";
 import { trackEvent } from "./api/events";
 import "./styles.css";
@@ -142,13 +144,42 @@ async function initApp() {
         </StrictMode>
       );
       console.log("[初始化] HexConverterApp 已渲染");
-    } else {
+    } else if (label === "color-picker-window") {
       ReactDOM.createRoot(root).render(
         <StrictMode>
-          <App />
+          <ColorPickerApp />
         </StrictMode>
       );
-      console.log("[初始化] App 已渲染 (默认)");
+      console.log("[初始化] ColorPickerApp 已渲染");
+    } else if (label === "clipboard") {
+      ReactDOM.createRoot(root).render(
+        <StrictMode>
+          <ClipboardApp />
+        </StrictMode>
+      );
+      console.log("[初始化] ClipboardApp 已渲染");
+    } else if (label === "recording-window" || label === "main") {
+      ReactDOM.createRoot(root).render(
+        <StrictMode>
+          <RecordingApp />
+        </StrictMode>
+      );
+      console.log("[初始化] RecordingApp 已渲染");
+    } else {
+      // 未知的窗口标签，显示错误信息
+      console.error(`[初始化] 未知的窗口标签: ${label}`);
+      ReactDOM.createRoot(root).render(
+        <StrictMode>
+          <div className="flex flex-col items-center justify-center h-screen bg-gray-50">
+            <div className="text-center p-8 bg-white rounded-lg shadow-lg max-w-md">
+              <div className="text-6xl mb-4">⚠️</div>
+              <h1 className="text-xl font-bold text-red-600 mb-2">窗口加载失败</h1>
+              <p className="text-gray-600 mb-4">未知的窗口标签: <code className="bg-gray-100 px-2 py-1 rounded">{label}</code></p>
+              <p className="text-sm text-gray-500">请检查控制台获取更多信息</p>
+            </div>
+          </div>
+        </StrictMode>
+      );
     }
   } catch (error: unknown) {
     console.error("[初始化] 渲染应用失败:", error);

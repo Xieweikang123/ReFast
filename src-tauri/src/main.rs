@@ -22,6 +22,7 @@ mod settings;
 mod shortcuts;
 mod system_folders_search;
 mod window_config;
+mod clipboard;
 
 use crate::commands::get_app_data_dir;
 use commands::*;
@@ -582,6 +583,17 @@ fn main() {
                 }
             });
 
+            // Start clipboard monitor on Windows
+            #[cfg(target_os = "windows")]
+            {
+                let app_data_dir_clipboard = app_data_dir.clone();
+                if let Err(e) = clipboard::monitor::start_clipboard_monitor(app_data_dir_clipboard) {
+                    eprintln!("[Main] Failed to start clipboard monitor: {}", e);
+                } else {
+                    eprintln!("[Main] Clipboard monitor started");
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -695,6 +707,15 @@ fn main() {
             get_app_version,
             check_update,
             download_update,
+            install_update,
+            get_all_clipboard_items,
+            add_clipboard_item,
+            update_clipboard_item,
+            toggle_favorite_clipboard_item,
+            delete_clipboard_item,
+            clear_clipboard_history,
+            search_clipboard_items,
+            show_clipboard_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

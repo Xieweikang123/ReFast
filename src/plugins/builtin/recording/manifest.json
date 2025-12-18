@@ -1,0 +1,27 @@
+{
+  "id": "recording",
+  "name": "录制回放工具",
+  "description": "录制鼠标键盘操作并回放，支持变速播放",
+  "version": "1.0.0",
+  "keywords": [
+    "录制",
+    "回放",
+    "宏",
+    "自动化",
+    "录制回放",
+    "luzhi",
+    "lz",
+    "huifang",
+    "hf",
+    "hong",
+    "zidonghua",
+    "zdh",
+    "recording",
+    "playback",
+    "macro",
+    "automation",
+    "录制动作",
+    "luzhidongzuo",
+    "lzdz"
+  ]
+}

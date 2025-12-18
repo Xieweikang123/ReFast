@@ -219,3 +219,11 @@ export interface DatabaseHealthStatus {
   memos_count?: number | null;
 }
 
+export interface ClipboardItem {
+  id: string;
+  content: string;
+  content_type: string; // "text", "image", "file"
+  created_at: number;
+  is_favorite: boolean;
+}
+

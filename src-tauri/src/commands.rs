@@ -3383,9 +3383,6 @@ pub async fn start_everything() -> Result<(), String> {
 pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::fs::File;
-        use std::io::{Write, BufWriter};
-
         // Get temp directory
         let temp_dir = std::env::temp_dir();
         let installer_path = temp_dir.join("Everything-Setup.exe");
@@ -3394,78 +3391,59 @@ pub async fn download_everything(app: tauri::AppHandle) -> Result<String, String
         // For now, use 64-bit version (most common)
         let download_url = "https://www.voidtools.com/Everything-1.4.1.1024.x64-Setup.exe";
 
-        // Create HTTP client with timeout
+        // 使用通用下载函数，但需要自定义进度报告（发送到 launcher 窗口）
+        // 由于 everything-download-progress 事件格式不同（只发送百分比），暂时不使用通用函数
+        // 可以后续统一进度事件格式
+        use std::io::Write;
+        use std::time::Instant;
+        
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(300)) // 5分钟超时
+            .timeout(Duration::from_secs(300))
             .build()
             .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
+        
         let response = client
             .get(download_url)
             .send()
             .await
-            .map_err(|e| {
-                let err_msg = format!("下载请求失败: {}", e);
-                err_msg
-            })?;
+            .map_err(|e| format!("下载请求失败: {}", e))?;
         
         let total_size = response
             .content_length()
-            .ok_or_else(|| {
-                let err = "无法获取文件大小".to_string();
-                err
-            })?;
+            .ok_or_else(|| "无法获取文件大小".to_string())?;
 
-        // Create file with buffered writer for better performance
-        let file = File::create(&installer_path).map_err(|e| {
-            let err_msg = format!("创建文件失败: {}", e);
-            err_msg
-        })?;
-        let mut writer = BufWriter::new(file);
+        let mut file = std::fs::File::create(&installer_path)
+            .map_err(|e| format!("创建文件失败: {}", e))?;
 
         let mut downloaded: u64 = 0;
         let mut stream = response.bytes_stream();
+        let mut last_update_time = Instant::now();
 
-        // Use tokio stream to read chunks
-        use futures_util::StreamExt;
         while let Some(item) = stream.next().await {
-            let chunk = item.map_err(|e| {
-                let err_msg = format!("读取数据块失败: {}", e);
-                err_msg
-            })?;
-            writer.write_all(&chunk).map_err(|e| {
-                let err_msg = format!("写入文件失败: {}", e);
-                err_msg
-            })?;
+            let chunk = item.map_err(|e| format!("读取数据块失败: {}", e))?;
+            file.write_all(&chunk).map_err(|e| format!("写入文件失败: {}", e))?;
 
             downloaded += chunk.len() as u64;
 
-            // Emit progress event to launcher window
-            let progress = (downloaded as f64 / total_size as f64 * 100.0) as u32;
-            if let Some(window) = app.get_webview_window("launcher") {
-                if let Err(e) = window.emit("everything-download-progress", progress) {
-                    let _ = e;
+            // 每 100ms 更新一次进度
+            if last_update_time.elapsed().as_millis() > 100 {
+                let progress = (downloaded as f64 / total_size as f64 * 100.0) as u32;
+                if let Some(window) = app.get_webview_window("launcher") {
+                    let _ = window.emit("everything-download-progress", progress);
                 }
+                last_update_time = Instant::now();
             }
         }
         
-        // 确保所有数据都写入磁盘
-        writer.flush().map_err(|e| {
-            let err_msg = format!("刷新文件缓冲区失败: {}", e);
-            err_msg
-        })?;
+        // 刷新文件缓冲区
+        file.flush().map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
         
         // 验证文件是否存在
         if !installer_path.exists() {
-            let err = format!("下载的文件不存在: {:?}", installer_path);
-            return Err(err);
+            return Err(format!("下载的文件不存在: {:?}", installer_path));
         }
-        
-        let file_size = std::fs::metadata(&installer_path)
-            .map_err(|e| format!("无法获取文件信息: {}", e))?
-            .len();
 
-        let path_str = installer_path.to_string_lossy().to_string();
-        Ok(path_str)
+        Ok(installer_path.to_string_lossy().to_string())
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -4439,9 +4417,15 @@ pub async fn show_shortcuts_config(app: tauri::AppHandle) -> Result<(), String> 
 
 #[tauri::command]
 pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
+    // 尝试新的窗口标签 "recording-window"，如果不存在则尝试旧标签 "main"（向后兼容）
+    let window = app.get_webview_window("recording-window")
+        .or_else(|| app.get_webview_window("main"));
+    
+    if let Some(window) = window {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        return Err("Recording window not found".to_string());
     }
     Ok(())
 }
@@ -5904,33 +5888,34 @@ pub struct DownloadProgress {
     pub speed: String, // 下载速度（如 "2.5 MB/s"）
 }
 
-/// 下载更新文件
-#[tauri::command]
-pub async fn download_update(
-    app_handle: tauri::AppHandle,
-    download_url: String,
-) -> Result<String, String> {
+/// 通用下载函数
+/// 
+/// # 参数
+/// - `app_handle`: Tauri 应用句柄
+/// - `download_url`: 下载链接
+/// - `save_path`: 保存路径
+/// - `progress_event`: 进度事件名称（可选）
+/// - `user_agent`: User-Agent（可选，默认为 "ReFast-Downloader/1.0"）
+async fn download_file(
+    app_handle: &tauri::AppHandle,
+    download_url: &str,
+    save_path: &std::path::Path,
+    progress_event: Option<&str>,
+    user_agent: Option<&str>,
+) -> Result<(), String> {
     use std::io::Write;
     use std::time::Instant;
     
-    // 获取临时目录
-    let temp_dir = std::env::temp_dir();
-    let file_name = download_url
-        .split('/')
-        .last()
-        .unwrap_or("ReFast-update.msi");
-    let file_path = temp_dir.join(file_name);
-    
     // 创建 HTTP 客户端
     let client = reqwest::Client::builder()
-        .user_agent("ReFast-Updater/1.0")
+        .user_agent(user_agent.unwrap_or("ReFast-Downloader/1.0"))
         .timeout(Duration::from_secs(300)) // 5分钟超时
         .build()
         .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
     
     // 发送请求
     let response = client
-        .get(&download_url)
+        .get(download_url)
         .send()
         .await
         .map_err(|e| format!("请求下载链接失败: {}", e))?;
@@ -5945,7 +5930,7 @@ pub async fn download_update(
         .ok_or_else(|| "无法获取文件大小".to_string())?;
     
     // 创建文件
-    let mut file = std::fs::File::create(&file_path)
+    let mut file = std::fs::File::create(save_path)
         .map_err(|e| format!("创建文件失败: {}", e))?;
     
     // 下载文件并报告进度
@@ -5962,46 +5947,467 @@ pub async fn download_update(
         downloaded += chunk.len() as u64;
         
         // 每 100ms 更新一次进度
-        if last_update_time.elapsed().as_millis() > 100 {
-            let elapsed_secs = start_time.elapsed().as_secs_f64();
-            let speed_bytes_per_sec = if elapsed_secs > 0.0 {
-                downloaded as f64 / elapsed_secs
-            } else {
-                0.0
-            };
-            
-            let speed_str = if speed_bytes_per_sec > 1024.0 * 1024.0 {
-                format!("{:.2} MB/s", speed_bytes_per_sec / (1024.0 * 1024.0))
-            } else if speed_bytes_per_sec > 1024.0 {
-                format!("{:.2} KB/s", speed_bytes_per_sec / 1024.0)
-            } else {
-                format!("{:.0} B/s", speed_bytes_per_sec)
-            };
-            
-            let percentage = (downloaded as f64 / total_size as f64) * 100.0;
-            
-            let progress = DownloadProgress {
-                downloaded,
-                total: total_size,
-                percentage,
-                speed: speed_str,
-            };
-            
-            // 发送进度事件
-            let _ = app_handle.emit("download-progress", progress);
-            last_update_time = Instant::now();
+        if let Some(event_name) = progress_event {
+            if last_update_time.elapsed().as_millis() > 100 {
+                let elapsed_secs = start_time.elapsed().as_secs_f64();
+                let speed_bytes_per_sec = if elapsed_secs > 0.0 {
+                    downloaded as f64 / elapsed_secs
+                } else {
+                    0.0
+                };
+                
+                let speed_str = if speed_bytes_per_sec > 1024.0 * 1024.0 {
+                    format!("{:.2} MB/s", speed_bytes_per_sec / (1024.0 * 1024.0))
+                } else if speed_bytes_per_sec > 1024.0 {
+                    format!("{:.2} KB/s", speed_bytes_per_sec / 1024.0)
+                } else {
+                    format!("{:.0} B/s", speed_bytes_per_sec)
+                };
+                
+                let percentage = (downloaded as f64 / total_size as f64) * 100.0;
+                
+                let progress = DownloadProgress {
+                    downloaded,
+                    total: total_size,
+                    percentage,
+                    speed: speed_str,
+                };
+                
+                // 发送进度事件
+                let _ = app_handle.emit(event_name, progress);
+                last_update_time = Instant::now();
+            }
         }
     }
     
     // 发送完成事件（100%）
-    let progress = DownloadProgress {
-        downloaded: total_size,
-        total: total_size,
-        percentage: 100.0,
-        speed: "完成".to_string(),
-    };
-    let _ = app_handle.emit("download-progress", progress);
+    if let Some(event_name) = progress_event {
+        let progress = DownloadProgress {
+            downloaded: total_size,
+            total: total_size,
+            percentage: 100.0,
+            speed: "完成".to_string(),
+        };
+        let _ = app_handle.emit(event_name, progress);
+    }
+    
+    // 刷新文件缓冲区
+    file.flush().map_err(|e| format!("刷新文件缓冲区失败: {}", e))?;
+    
+    Ok(())
+}
+
+/// 下载更新文件
+#[tauri::command]
+pub async fn download_update(
+    app_handle: tauri::AppHandle,
+    download_url: String,
+) -> Result<String, String> {
+    // 获取临时目录
+    let temp_dir = std::env::temp_dir();
+    let file_name = download_url
+        .split('/')
+        .last()
+        .unwrap_or("ReFast-update.msi");
+    let file_path = temp_dir.join(file_name);
+    
+    // 使用通用下载函数
+    download_file(
+        &app_handle,
+        &download_url,
+        &file_path,
+        Some("download-progress"),
+        Some("ReFast-Updater/1.0"),
+    ).await?;
     
     // 返回文件路径
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// 安装更新（启动安装程序并退出应用）
+#[tauri::command]
+pub async fn install_update(
+    app_handle: tauri::AppHandle,
+    installer_path: String,
+) -> Result<(), String> {
+    use std::path::Path;
+    use std::process::Command;
+    
+    let path = Path::new(&installer_path);
+    
+    // 检查文件是否存在
+    if !path.exists() {
+        return Err("安装程序文件不存在".to_string());
+    }
+    
+    // 根据操作系统启动安装程序
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: 启动 MSI/EXE 安装程序
+        Command::new("cmd")
+            .args(&["/C", "start", "", &installer_path])
+            .spawn()
+            .map_err(|e| format!("启动安装程序失败: {}", e))?;
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: 打开 DMG 或执行安装脚本
+        Command::new("open")
+            .arg(&installer_path)
+            .spawn()
+            .map_err(|e| format!("启动安装程序失败: {}", e))?;
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: 根据文件类型执行不同的安装命令
+        if installer_path.ends_with(".AppImage") {
+            Command::new("chmod")
+                .args(&["+x", &installer_path])
+                .output()
+                .map_err(|e| format!("设置执行权限失败: {}", e))?;
+            
+            Command::new(&installer_path)
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        } else if installer_path.ends_with(".deb") {
+            Command::new("xdg-open")
+                .arg(&installer_path)
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        } else {
+            Command::new("xdg-open")
+                .arg(&installer_path)
+                .spawn()
+                .map_err(|e| format!("启动安装程序失败: {}", e))?;
+        }
+    }
+    
+    // 延迟 1 秒后退出应用，给安装程序启动的时间
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    app_handle.exit(0);
+    
+    Ok(())
+}
+
+// ==================== 拾色器功能 ====================
+
+/// 显示拾色器窗口
+#[tauri::command]
+pub async fn show_color_picker_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+
+    // 尝试获取现有窗口
+    if let Some(window) = app.get_webview_window("color-picker-window") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    } else {
+        // 动态创建窗口
+        let _window = tauri::WebviewWindowBuilder::new(
+            &app,
+            "color-picker-window",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("拾色器")
+        .inner_size(1000.0, 900.0)
+        .resizable(true)
+        .min_inner_size(800.0, 700.0)
+        .center()
+        .build()
+        .map_err(|e| format!("创建拾色器窗口失败: {}", e))?;
+    }
+
+    Ok(())
+}
+
+/// 从屏幕取色（Windows 实现）
+#[tauri::command]
+pub async fn pick_color_from_screen() -> Result<Option<String>, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::time::{sleep, Duration};
+        
+        // 创建取消标志
+        let picking = Arc::new(AtomicBool::new(true));
+        let picking_clone = picking.clone();
+        
+        // 在后台线程中执行取色操作
+        let result = tokio::task::spawn_blocking(move || {
+            windows_pick_color(picking_clone)
+        }).await.map_err(|e| format!("取色任务失败: {}", e))?;
+        
+        result
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("屏幕取色功能目前仅支持 Windows".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_pick_color(picking: Arc<AtomicBool>) -> Result<Option<String>, String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos,
+    };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_LBUTTON, VK_ESCAPE,
+    };
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, GetPixel, ReleaseDC,
+    };
+    use windows_sys::Win32::Foundation::POINT;
+    use std::thread;
+    use std::time::Duration;
+    
+    unsafe {
+        // 等待用户点击鼠标或按下 ESC
+        loop {
+            if !picking.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            
+            // 检查是否按下 ESC 键
+            if GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000 != 0 {
+                return Ok(None);
+            }
+            
+            // 检查是否按下鼠标左键
+            if GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000 != 0 {
+                // 获取鼠标位置
+                let mut point = POINT { x: 0, y: 0 };
+                if GetCursorPos(&mut point) == 0 {
+                    return Err("获取鼠标位置失败".to_string());
+                }
+                
+                // 获取屏幕 DC
+                let hdc = GetDC(0);
+                if hdc == 0 {
+                    return Err("获取屏幕 DC 失败".to_string());
+                }
+                
+                // 获取指定位置的像素颜色
+                let color = GetPixel(hdc, point.x, point.y);
+                ReleaseDC(0, hdc);
+                
+                if color == 0xFFFFFFFF {
+                    return Err("获取像素颜色失败".to_string());
+                }
+                
+                // 提取 RGB 值
+                let r = color & 0xFF;
+                let g = (color >> 8) & 0xFF;
+                let b = (color >> 16) & 0xFF;
+                
+                // 转换为 HEX 字符串
+                let hex_color = format!("#{:02x}{:02x}{:02x}", r, g, b);
+                
+                // 等待鼠标释放
+                while GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000 != 0 {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                
+                return Ok(Some(hex_color));
+            }
+            
+            // 短暂休眠以避免过度占用 CPU
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+// ========================================
+// Clipboard Commands
+// ========================================
+
+#[tauri::command]
+pub async fn get_all_clipboard_items(app_handle: tauri::AppHandle) -> Result<Vec<crate::clipboard::ClipboardItem>, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::get_all_clipboard_items(&app_data_dir)
+}
+
+#[tauri::command]
+pub async fn add_clipboard_item(
+    content: String,
+    content_type: String,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::clipboard::ClipboardItem, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::add_clipboard_item(content, content_type, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn update_clipboard_item(
+    id: String,
+    content: String,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::clipboard::ClipboardItem, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::update_clipboard_item(id, content, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn toggle_favorite_clipboard_item(
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::clipboard::ClipboardItem, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::toggle_favorite_clipboard_item(id, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn delete_clipboard_item(
+    id: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::delete_clipboard_item(id, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn clear_clipboard_history(app_handle: tauri::AppHandle) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::clear_clipboard_history(&app_data_dir)
+}
+
+#[tauri::command]
+pub async fn search_clipboard_items(
+    query: String,
+    app_handle: tauri::AppHandle,
+) -> Result<Vec<crate::clipboard::ClipboardItem>, String> {
+    let app_data_dir = get_app_data_dir(&app_handle)?;
+    crate::clipboard::search_clipboard_items(&query, &app_data_dir)
+}
+
+#[tauri::command]
+pub async fn show_clipboard_window(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app_handle.get_webview_window("clipboard") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        Ok(())
+    } else {
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+        WebviewWindowBuilder::new(
+            &app_handle,
+            "clipboard",
+            WebviewUrl::App("index.html#/clipboard".into()),
+        )
+        .title("剪切板历史")
+        .inner_size(900.0, 700.0)
+        .center()
+        .build()
+        .map_err(|e| format!("Failed to create clipboard window: {}", e))?;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn get_clipboard_image_data(image_path: String) -> Result<Vec<u8>, String> {
+    use std::fs;
+    fs::read(&image_path).map_err(|e| format!("Failed to read image file: {}", e))
+}
+
+#[tauri::command]
+pub async fn copy_image_to_clipboard(image_path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::fs;
+        use windows_sys::Win32::System::DataExchange::{
+            SetClipboardData, OpenClipboard, EmptyClipboard, CloseClipboard,
+        };
+        use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER;
+
+        // 读取图片文件
+        let image_data = fs::read(&image_path)
+            .map_err(|e| format!("Failed to read image: {}", e))?;
+
+        // 解码 PNG
+        let decoder = png::Decoder::new(&image_data[..]);
+        let mut reader = decoder.read_info()
+            .map_err(|e| format!("Failed to decode PNG: {}", e))?;
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf)
+            .map_err(|e| format!("Failed to read PNG frame: {}", e))?;
+
+        let width = info.width as i32;
+        let height = info.height as i32;
+        let bit_count = 32u16; // RGBA
+
+        unsafe {
+            if OpenClipboard(0 as HWND) == 0 {
+                return Err("Failed to open clipboard".to_string());
+            }
+
+            EmptyClipboard();
+
+            // 计算 DIB 大小
+            let header_size = std::mem::size_of::<BITMAPINFOHEADER>();
+            let row_size = ((width * bit_count as i32 + 31) / 32 * 4) as usize;
+            let image_size = row_size * height as usize;
+            let total_size = header_size + image_size;
+
+            // 分配全局内存
+            let h_mem = GlobalAlloc(GMEM_MOVEABLE, total_size);
+            if h_mem == 0 {
+                CloseClipboard();
+                return Err("Failed to allocate memory".to_string());
+            }
+
+            let p_mem = GlobalLock(h_mem as *mut std::ffi::c_void);
+            if p_mem.is_null() {
+                CloseClipboard();
+                return Err("Failed to lock memory".to_string());
+            }
+
+            // 填充 BITMAPINFOHEADER
+            let bmi = p_mem as *mut BITMAPINFOHEADER;
+            (*bmi).biSize = header_size as u32;
+            (*bmi).biWidth = width;
+            (*bmi).biHeight = height;
+            (*bmi).biPlanes = 1;
+            (*bmi).biBitCount = bit_count;
+            (*bmi).biCompression = 0; // BI_RGB
+            (*bmi).biSizeImage = 0;
+            (*bmi).biXPelsPerMeter = 0;
+            (*bmi).biYPelsPerMeter = 0;
+            (*bmi).biClrUsed = 0;
+            (*bmi).biClrImportant = 0;
+
+            // 填充图片数据（转换 RGBA 到 BGRA，并上下翻转）
+            let image_data_ptr = (p_mem as *mut u8).add(header_size);
+            for y in 0..height {
+                for x in 0..width {
+                    let src_offset = ((height - 1 - y) * width + x) as usize * 4;
+                    let dst_offset = (y * width + x) as usize * 4;
+                    if src_offset + 3 < buf.len() {
+                        *image_data_ptr.add(dst_offset) = buf[src_offset + 2]; // B
+                        *image_data_ptr.add(dst_offset + 1) = buf[src_offset + 1]; // G
+                        *image_data_ptr.add(dst_offset + 2) = buf[src_offset]; // R
+                        *image_data_ptr.add(dst_offset + 3) = buf[src_offset + 3]; // A
+                    }
+                }
+            }
+
+            GlobalUnlock(h_mem as *mut std::ffi::c_void);
+
+            // 设置到剪切板
+            if SetClipboardData(8, h_mem) == 0 {
+                CloseClipboard();
+                return Err("Failed to set clipboard data".to_string());
+            }
+
+            CloseClipboard();
+            Ok(())
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Not implemented for this platform".to_string())
+    }
 }

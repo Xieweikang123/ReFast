@@ -26,8 +26,8 @@
         "shadow": true
       },
       {
-        "label": "main",
-        "title": "ReFast",
+        "label": "recording-window",
+        "title": "ReFast - 录制回放工具",
         "width": 800,
         "height": 600,
         "resizable": true,
