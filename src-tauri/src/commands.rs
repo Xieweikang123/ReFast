@@ -1,3 +1,9 @@
+// 子命令模块
+pub mod color_picker;
+
+// 重新导出子模块中的所有命令
+pub use color_picker::{show_color_picker_window, pick_color_from_screen};
+
 use crate::app_search;
 use crate::db;
 use crate::everything_search;
@@ -113,6 +119,30 @@ pub fn get_app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(env::current_dir()
         .map_err(|e| format!("Failed to get current directory: {}", e))?
         .join("recordings"))
+}
+
+/// 统一的窗口显示辅助函数
+/// 
+/// 处理窗口的显示、取消最小化和聚焦逻辑，确保窗口正确显示在最前面
+/// 
+/// # 参数
+/// - `window`: Tauri 窗口引用
+/// 
+/// # 返回
+/// - `Ok(())`: 窗口成功显示并聚焦
+/// - `Err(String)`: 操作失败的错误信息
+pub(crate) fn show_and_focus_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    // 1. 先取消最小化（如果窗口被最小化）
+    //    unminimize() 对未最小化的窗口调用是安全的，不会产生副作用
+    window.unminimize().map_err(|e| format!("Failed to unminimize window: {}", e))?;
+    
+    // 2. 显示窗口（如果窗口被隐藏）
+    window.show().map_err(|e| format!("Failed to show window: {}", e))?;
+    
+    // 3. 将窗口聚焦到前台
+    window.set_focus().map_err(|e| format!("Failed to focus window: {}", e))?;
+    
+    Ok(())
 }
 
 #[tauri::command]
@@ -4351,8 +4381,7 @@ pub async fn show_shortcuts_config(app: tauri::AppHandle) -> Result<(), String> 
     // 1. 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("shortcuts-config") {
         println!("[后端] show_shortcuts_config: 窗口已存在，执行显示操作");
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
         // 设置窗口始终在最前面，确保在主程序窗口前面
         window.set_always_on_top(true).map_err(|e| e.to_string())?;
 
@@ -4422,8 +4451,7 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
         .or_else(|| app.get_webview_window("main"));
     
     if let Some(window) = window {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         return Err("Recording window not found".to_string());
     }
@@ -4464,8 +4492,7 @@ pub async fn show_memo_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("memo-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4491,8 +4518,7 @@ pub async fn show_plugin_list_window(app: tauri::AppHandle) -> Result<(), String
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("plugin-list-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4518,8 +4544,7 @@ pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), Str
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("json-formatter-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4545,8 +4570,7 @@ pub async fn show_translation_window(app: tauri::AppHandle) -> Result<(), String
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("translation-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4572,8 +4596,7 @@ pub async fn show_hex_converter_window(app: tauri::AppHandle) -> Result<(), Stri
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("hex-converter-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4599,8 +4622,7 @@ pub async fn show_file_toolbox_window(app: tauri::AppHandle) -> Result<(), Strin
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("file-toolbox-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4626,8 +4648,7 @@ pub async fn show_calculator_pad_window(app: tauri::AppHandle) -> Result<(), Str
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("calculator-pad-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -4653,8 +4674,7 @@ pub async fn show_everything_search_window(app: tauri::AppHandle) -> Result<(), 
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("everything-search-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -5237,8 +5257,7 @@ pub async fn show_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     // 1. 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("settings") {
         println!("[后端] show_settings_window: 窗口已存在，执行显示操作");
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
 
         // 通知前端刷新数据
         let window_clone = window.clone();
@@ -5347,8 +5366,7 @@ pub async fn show_hotkey_settings(app: tauri::AppHandle) -> Result<(), String> {
     // 1. 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("hotkey-settings") {
         println!("[后端] show_hotkey_settings: 窗口已存在，执行显示操作");
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        show_and_focus_window(&window)?;
     } else {
         println!("[后端] show_hotkey_settings: 窗口不存在，开始动态创建");
 
@@ -6093,134 +6111,6 @@ pub fn quit_app(app_handle: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// ==================== 拾色器功能 ====================
-
-/// 显示拾色器窗口
-#[tauri::command]
-pub async fn show_color_picker_window(app: tauri::AppHandle) -> Result<(), String> {
-    use tauri::Manager;
-
-    // 尝试获取现有窗口
-    if let Some(window) = app.get_webview_window("color-picker-window") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    } else {
-        // 动态创建窗口
-        let _window = tauri::WebviewWindowBuilder::new(
-            &app,
-            "color-picker-window",
-            tauri::WebviewUrl::App("index.html".into()),
-        )
-        .title("拾色器")
-        .inner_size(1000.0, 900.0)
-        .resizable(true)
-        .min_inner_size(800.0, 700.0)
-        .center()
-        .build()
-        .map_err(|e| format!("创建拾色器窗口失败: {}", e))?;
-    }
-
-    Ok(())
-}
-
-/// 从屏幕取色（Windows 实现）
-#[tauri::command]
-pub async fn pick_color_from_screen() -> Result<Option<String>, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use tokio::time::{sleep, Duration};
-        
-        // 创建取消标志
-        let picking = Arc::new(AtomicBool::new(true));
-        let picking_clone = picking.clone();
-        
-        // 在后台线程中执行取色操作
-        let result = tokio::task::spawn_blocking(move || {
-            windows_pick_color(picking_clone)
-        }).await.map_err(|e| format!("取色任务失败: {}", e))?;
-        
-        result
-    }
-    
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("屏幕取色功能目前仅支持 Windows".to_string())
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_pick_color(picking: Arc<AtomicBool>) -> Result<Option<String>, String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos,
-    };
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        GetAsyncKeyState, VK_LBUTTON, VK_ESCAPE,
-    };
-    use windows_sys::Win32::Graphics::Gdi::{
-        GetDC, GetPixel, ReleaseDC,
-    };
-    use windows_sys::Win32::Foundation::POINT;
-    use std::thread;
-    use std::time::Duration;
-    
-    unsafe {
-        // 等待用户点击鼠标或按下 ESC
-        loop {
-            if !picking.load(Ordering::SeqCst) {
-                return Ok(None);
-            }
-            
-            // 检查是否按下 ESC 键
-            if GetAsyncKeyState(VK_ESCAPE as i32) as u16 & 0x8000 != 0 {
-                return Ok(None);
-            }
-            
-            // 检查是否按下鼠标左键
-            if GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000 != 0 {
-                // 获取鼠标位置
-                let mut point = POINT { x: 0, y: 0 };
-                if GetCursorPos(&mut point) == 0 {
-                    return Err("获取鼠标位置失败".to_string());
-                }
-                
-                // 获取屏幕 DC
-                let hdc = GetDC(0);
-                if hdc == 0 {
-                    return Err("获取屏幕 DC 失败".to_string());
-                }
-                
-                // 获取指定位置的像素颜色
-                let color = GetPixel(hdc, point.x, point.y);
-                ReleaseDC(0, hdc);
-                
-                if color == 0xFFFFFFFF {
-                    return Err("获取像素颜色失败".to_string());
-                }
-                
-                // 提取 RGB 值
-                let r = color & 0xFF;
-                let g = (color >> 8) & 0xFF;
-                let b = (color >> 16) & 0xFF;
-                
-                // 转换为 HEX 字符串
-                let hex_color = format!("#{:02x}{:02x}{:02x}", r, g, b);
-                
-                // 等待鼠标释放
-                while GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000 != 0 {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                
-                return Ok(Some(hex_color));
-            }
-            
-            // 短暂休眠以避免过度占用 CPU
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
 // ========================================
 // Clipboard Commands
 // ========================================
@@ -6287,8 +6177,7 @@ pub async fn search_clipboard_items(
 #[tauri::command]
 pub async fn show_clipboard_window(app_handle: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app_handle.get_webview_window("clipboard") {
-        let _ = window.show();
-        let _ = window.set_focus();
+        show_and_focus_window(&window)?;
         Ok(())
     } else {
         use tauri::{WebviewUrl, WebviewWindowBuilder};

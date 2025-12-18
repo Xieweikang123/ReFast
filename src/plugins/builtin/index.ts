@@ -271,48 +271,48 @@ export function createBuiltinPlugins(): Plugin[] {
         }
       },
     },
-    {
-      id: "color_picker",
-      name: "拾色器",
-      description: "颜色选择、格式转换、屏幕取色工具",
-      keywords: [
-        "拾色器",
-        "颜色",
-        "取色",
-        "颜色选择",
-        "color",
-        "picker",
-        "shiseqi",
-        "ssq",
-        "yanse",
-        "ys",
-        "quse",
-        "qs",
-        "yansexuanze",
-        "ysxz",
-        "取色器",
-        "quseqi",
-        "屏幕取色",
-        "pingmuquse",
-        "pmqs",
-        "色彩",
-        "secai",
-        "sc",
-        "color picker",
-        "eyedropper",
-        "颜色工具",
-        "yansegongju",
-        "ysgj",
-      ],
-      execute: async (context) => {
-        // 打开独立的拾色器窗口
-        if (context.tauriApi) {
-          await context.tauriApi.showColorPickerWindow();
-          // 关闭启动器
-          await context.hideLauncher();
-        }
-      },
-    },
+    // {
+    //   id: "color_picker",
+    //   name: "拾色器",
+    //   description: "颜色选择、格式转换、屏幕取色工具",
+    //   keywords: [
+    //     "拾色器",
+    //     "颜色",
+    //     "取色",
+    //     "颜色选择",
+    //     "color",
+    //     "picker",
+    //     "shiseqi",
+    //     "ssq",
+    //     "yanse",
+    //     "ys",
+    //     "quse",
+    //     "qs",
+    //     "yansexuanze",
+    //     "ysxz",
+    //     "取色器",
+    //     "quseqi",
+    //     "屏幕取色",
+    //     "pingmuquse",
+    //     "pmqs",
+    //     "色彩",
+    //     "secai",
+    //     "sc",
+    //     "color picker",
+    //     "eyedropper",
+    //     "颜色工具",
+    //     "yansegongju",
+    //     "ysgj",
+    //   ],
+    //   execute: async (context) => {
+    //     // 打开独立的拾色器窗口
+    //     if (context.tauriApi) {
+    //       await context.tauriApi.showColorPickerWindow();
+    //       // 关闭启动器
+    //       await context.hideLauncher();
+    //     }
+    //   },
+    // },
     {
       id: "clipboard",
       name: "剪切板历史",

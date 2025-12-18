@@ -594,6 +594,9 @@ fn main() {
                 }
             }
 
+            // 预热拾色器资源（后台线程，避免阻塞启动）
+            // commands::color_picker::warmup_color_picker();  // 暂时屏蔽，待优化
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -677,8 +680,8 @@ fn main() {
             show_json_formatter_window,
             show_translation_window,
             show_hex_converter_window,
-            show_color_picker_window,
-            pick_color_from_screen,
+            // show_color_picker_window,  // 暂时屏蔽，待优化
+            // pick_color_from_screen,     // 暂时屏蔽，待优化
             show_file_toolbox_window,
             show_calculator_pad_window,
             show_everything_search_window,

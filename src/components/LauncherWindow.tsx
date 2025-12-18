@@ -1972,6 +1972,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           return !pathLower.endsWith('.exe') && !pathLower.endsWith('.lnk');
         })
         .map((file) => {
+          // 检查是否是 URL（从历史记录中获取的）
+          const isUrl = file.path.startsWith('http://') || file.path.startsWith('https://');
+          
+          if (isUrl) {
+            return {
+              type: "url" as const,
+              url: file.path,
+              file,
+              displayName: file.name,
+              path: file.path,
+            };
+          }
 
           return {
             type: "file" as const,
@@ -4267,6 +4279,67 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         return;
       } else if (result.type === "url" && result.url) {
         await tauriApi.openUrl(result.url);
+        
+        // 添加 URL 到历史记录
+        try {
+          console.log(`[URL打开] 准备更新 file_history: ${result.url}`);
+          
+          // 更新前端缓存（同步更新，保证立即可见）
+          if (allFileHistoryCacheRef.current) {
+            const now = Date.now();
+            const existingIndex = allFileHistoryCacheRef.current.findIndex(
+              (item) => item.path.toLowerCase() === result.url!.toLowerCase()
+            );
+            
+            if (existingIndex !== -1) {
+              // 已存在，更新使用次数和时间
+              const existing = allFileHistoryCacheRef.current[existingIndex];
+              allFileHistoryCacheRef.current[existingIndex] = {
+                ...existing,
+                last_used: now,
+                use_count: existing.use_count + 1,
+              };
+              console.log(`[URL打开] ✓ 更新缓存项: ${result.url} (use_count: ${existing.use_count + 1})`);
+            } else {
+              // 不存在，添加新记录
+              // 从URL提取名称
+              let urlName = result.url;
+              try {
+                const urlObj = new URL(result.url);
+                urlName = urlObj.hostname || result.url;
+              } catch {
+                // 如果不是有效URL，使用原始字符串
+                urlName = result.url;
+              }
+              
+              allFileHistoryCacheRef.current.unshift({
+                path: result.url,
+                name: urlName,
+                last_used: now,
+                use_count: 1,
+                is_folder: false,
+              });
+              console.log(`[URL打开] ✓ 添加新缓存项: ${result.url}`);
+            }
+            allFileHistoryCacheLoadedRef.current = true;
+            
+            // 异步更新后端数据库，不阻塞URL打开
+            void tauriApi.addFileToHistory(result.url)
+              .then(() => {
+                console.log(`[URL打开] ✓ 成功更新 file_history: ${result.url}`);
+                // 刷新文件历史缓存以确保与数据库同步
+                void refreshFileHistoryCache();
+              })
+              .catch((error) => {
+                console.warn(`[URL打开] ✗ 更新 file_history 失败: ${result.url}`, error);
+                // 如果后端更新失败，回滚前端缓存
+                void refreshFileHistoryCache();
+              });
+          }
+        } catch (error) {
+          console.warn(`[URL打开] ✗ 更新 file_history 异常: ${result.url}`, error);
+        }
+        
         // 打开链接后隐藏启动器
         await hideLauncherAndResetState();
         return;

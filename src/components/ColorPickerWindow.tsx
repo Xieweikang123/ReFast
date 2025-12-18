@@ -31,14 +31,6 @@ export function ColorPickerWindow() {
 
   const currentWindow = getCurrentWindow();
 
-  // 预设颜色调色板
-  const presetColors = [
-    "#ef4444", "#f97316", "#f59e0b", "#eab308", "#84cc16", "#22c55e",
-    "#10b981", "#14b8a6", "#06b6d4", "#0ea5e9", "#3b82f6", "#6366f1",
-    "#8b5cf6", "#a855f7", "#d946ef", "#ec4899", "#f43f5e", "#64748b",
-    "#000000", "#ffffff", "#6b7280", "#9ca3af", "#d1d5db", "#f3f4f6",
-  ];
-
   useEffect(() => {
     currentWindow.setTitle("拾色器");
     loadColorHistory();
@@ -257,12 +249,26 @@ export function ColorPickerWindow() {
   const handlePickFromScreen = async () => {
     try {
       setIsPickingColor(true);
+      
+      // 立即隐藏窗口，让用户看到下面的内容（减少卡顿感）
+      await currentWindow.hide();
+      
+      // 短暂延迟确保窗口已隐藏
+      await new Promise(resolve => setTimeout(resolve, 50));
+      
       const color = await tauriApi.pickColorFromScreen();
+      
+      // 取色完成后显示窗口
+      await currentWindow.show();
+      await currentWindow.setFocus();
+      
       if (color) {
         updateColorFormats(color);
       }
     } catch (error) {
       console.error("Failed to pick color from screen:", error);
+      // 出错也要恢复窗口
+      await currentWindow.show();
       alert("屏幕取色失败，请确保已授予必要的权限");
     } finally {
       setIsPickingColor(false);
@@ -280,47 +286,12 @@ export function ColorPickerWindow() {
     }
   };
 
-  // 生成和谐色
-  const generateHarmony = (type: "complementary" | "analogous" | "triadic" | "tetradic") => {
-    const { h, s, l } = colorFormat.hsl;
-    const colors: string[] = [];
-
-    switch (type) {
-      case "complementary":
-        colors.push(currentColor);
-        const comp = hslToRgb((h + 180) % 360, s, l);
-        colors.push(rgbToHex(comp.r, comp.g, comp.b));
-        break;
-      case "analogous":
-        const anal1 = hslToRgb((h - 30 + 360) % 360, s, l);
-        colors.push(rgbToHex(anal1.r, anal1.g, anal1.b));
-        colors.push(currentColor);
-        const anal2 = hslToRgb((h + 30) % 360, s, l);
-        colors.push(rgbToHex(anal2.r, anal2.g, anal2.b));
-        break;
-      case "triadic":
-        colors.push(currentColor);
-        const tri1 = hslToRgb((h + 120) % 360, s, l);
-        colors.push(rgbToHex(tri1.r, tri1.g, tri1.b));
-        const tri2 = hslToRgb((h + 240) % 360, s, l);
-        colors.push(rgbToHex(tri2.r, tri2.g, tri2.b));
-        break;
-      case "tetradic":
-        colors.push(currentColor);
-        const tet1 = hslToRgb((h + 90) % 360, s, l);
-        colors.push(rgbToHex(tet1.r, tet1.g, tet1.b));
-        const tet2 = hslToRgb((h + 180) % 360, s, l);
-        colors.push(rgbToHex(tet2.r, tet2.g, tet2.b));
-        const tet3 = hslToRgb((h + 270) % 360, s, l);
-        colors.push(rgbToHex(tet3.r, tet3.g, tet3.b));
-        break;
-    }
-
-    return colors;
-  };
-
   return (
-    <div className="flex flex-col h-screen bg-gray-50 dark:bg-gray-900">
+    <div 
+      className={`flex flex-col h-screen bg-gray-50 dark:bg-gray-900 ${
+        isPickingColor ? "cursor-crosshair" : ""
+      }`}
+    >
       {/* 标题栏 */}
       <div
         className="flex items-center justify-between px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700"
@@ -334,7 +305,7 @@ export function ColorPickerWindow() {
           disabled={isPickingColor}
           className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${
             isPickingColor
-              ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+              ? "bg-gray-300 text-gray-500"
               : "bg-blue-500 text-white hover:bg-blue-600 active:scale-95"
           }`}
           title="从屏幕取色"
@@ -344,7 +315,7 @@ export function ColorPickerWindow() {
       </div>
 
       {/* 主内容区 */}
-      <div className="flex-1 overflow-auto p-6">
+      <div className={`flex-1 overflow-auto p-6 ${isPickingColor ? "cursor-crosshair" : ""}`}>
         <div className="max-w-4xl mx-auto space-y-6">
           {/* 主色块和颜色选择器 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -383,6 +354,26 @@ export function ColorPickerWindow() {
                   placeholder="#000000"
                 />
               </div>
+
+              {/* 历史记录 */}
+              {colorHistory.length > 0 && (
+                <div className="mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
+                  <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                    历史记录
+                  </h4>
+                  <div className="grid grid-cols-8 gap-2">
+                    {colorHistory.map((item, i) => (
+                      <button
+                        key={i}
+                        onClick={() => updateColorFormats(item.color)}
+                        className="aspect-square rounded-lg border-2 border-gray-300 dark:border-gray-600 hover:scale-110 transition-transform cursor-pointer"
+                        style={{ backgroundColor: item.color }}
+                        title={item.color}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* 颜色格式 */}
@@ -617,77 +608,6 @@ export function ColorPickerWindow() {
               ))}
             </div>
           </div>
-
-          {/* 色彩和谐 */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">
-              色彩和谐
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {[
-                { type: "complementary" as const, label: "互补色", desc: "色轮对面的颜色" },
-                { type: "analogous" as const, label: "类似色", desc: "相邻的颜色" },
-                { type: "triadic" as const, label: "三角色", desc: "等距三角" },
-                { type: "tetradic" as const, label: "四角色", desc: "矩形配色" },
-              ].map(({ type, label, desc }) => (
-                <div key={type} className="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
-                  <div className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                    {label}
-                  </div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-3">{desc}</div>
-                  <div className="flex gap-2">
-                    {generateHarmony(type).map((color, i) => (
-                      <button
-                        key={i}
-                        onClick={() => updateColorFormats(color)}
-                        className="flex-1 h-12 rounded-lg border-2 border-gray-300 dark:border-gray-600 hover:scale-105 transition-transform cursor-pointer"
-                        style={{ backgroundColor: color }}
-                        title={color}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* 预设颜色 */}
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">
-              预设颜色
-            </h3>
-            <div className="grid grid-cols-12 gap-2">
-              {presetColors.map((color) => (
-                <button
-                  key={color}
-                  onClick={() => updateColorFormats(color)}
-                  className="aspect-square rounded-lg border-2 border-gray-300 dark:border-gray-600 hover:scale-110 transition-transform cursor-pointer"
-                  style={{ backgroundColor: color }}
-                  title={color}
-                />
-              ))}
-            </div>
-          </div>
-
-          {/* 历史记录 */}
-          {colorHistory.length > 0 && (
-            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border border-gray-200 dark:border-gray-700">
-              <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">
-                历史记录
-              </h3>
-              <div className="grid grid-cols-12 gap-2">
-                {colorHistory.map((item, i) => (
-                  <button
-                    key={i}
-                    onClick={() => updateColorFormats(item.color)}
-                    className="aspect-square rounded-lg border-2 border-gray-300 dark:border-gray-600 hover:scale-110 transition-transform cursor-pointer"
-                    style={{ backgroundColor: item.color }}
-                    title={item.color}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

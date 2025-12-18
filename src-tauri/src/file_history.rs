@@ -201,34 +201,60 @@ pub fn get_history_count(app_data_dir: &Path) -> Result<usize, String> {
 pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
     // Normalize path: trim whitespace and remove trailing backslashes/slashes
     let trimmed = path.trim();
-    let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
-
-    // Normalize path (convert to absolute if relative)
-    let path_buf = PathBuf::from(trimmed);
-    let normalized_path = if path_buf.is_absolute() {
-        path_buf
+    
+    // Check if this is a URL (http:// or https://)
+    let is_url = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    
+    let (normalized_path_str, is_folder, name) = if is_url {
+        // Handle URL
+        let url = trimmed.to_string();
+        
+        // Extract domain name as the display name
+        let name = if let Some(domain_start) = url.find("://") {
+            let after_protocol = &url[domain_start + 3..];
+            if let Some(slash_pos) = after_protocol.find('/') {
+                after_protocol[..slash_pos].to_string()
+            } else {
+                after_protocol.to_string()
+            }
+        } else {
+            url.clone()
+        };
+        
+        (url, false, name)
     } else {
-        std::env::current_dir()
-            .map_err(|e| format!("Failed to get current directory: {}", e))?
-            .join(&path_buf)
+        // Handle file system path
+        let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
+        
+        // Normalize path (convert to absolute if relative)
+        let path_buf = PathBuf::from(trimmed);
+        let normalized_path = if path_buf.is_absolute() {
+            path_buf
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("Failed to get current directory: {}", e))?
+                .join(&path_buf)
+        };
+
+        let normalized_path_str = normalized_path.to_string_lossy().to_string();
+
+        // Check if path exists (file or directory)
+        if !Path::new(&normalized_path_str).exists() {
+            return Err(format!("Path not found: {}", normalized_path_str));
+        }
+
+        // Check if path is a directory
+        let is_folder = normalized_path.is_dir();
+
+        // Get name (file name or directory name)
+        let name = normalized_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| normalized_path.to_string_lossy().to_string());
+        
+        (normalized_path_str, is_folder, name)
     };
-
-    let normalized_path_str = normalized_path.to_string_lossy().to_string();
-
-    // Check if path exists (file or directory)
-    if !Path::new(&normalized_path_str).exists() {
-        return Err(format!("Path not found: {}", normalized_path_str));
-    }
-
-    // Check if path is a directory
-    let is_folder = normalized_path.is_dir();
-
-    // Get name (file name or directory name)
-    let name = normalized_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| normalized_path.to_string_lossy().to_string());
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
