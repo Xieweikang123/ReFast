@@ -182,6 +182,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const isMemoModalOpenRef = useRef(false);
   // 记录应用中心弹窗是否打开，用于全局 ESC 处理时优先关闭应用中心，而不是隐藏整个窗口
   const isPluginListModalOpenRef = useRef(false);
+  // 记录右键菜单是否打开，用于全局 ESC 处理时优先关闭右键菜单，而不是隐藏整个窗口
+  const contextMenuRef = useRef<{ x: number; y: number; result: SearchResult } | null>(null);
   const shouldPreserveScrollRef = useRef(false); // 标记是否需要保持滚动位置
   const incrementalLoadRef = useRef<number | null>(null); // 用于取消增量加载
   const incrementalTimeoutRef = useRef<number | null>(null); // 用于取消增量加载的 setTimeout
@@ -209,6 +211,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   useEffect(() => {
     isPluginListModalOpenRef.current = isPluginListModalOpen;
   }, [isPluginListModalOpen]);
+
+  useEffect(() => {
+    contextMenuRef.current = contextMenu;
+  }, [contextMenu]);
 
   useEffect(() => {
     closeOnBlurRef.current = closeOnBlur;
@@ -935,6 +941,14 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     
     // Global keyboard listener for Escape key and Arrow keys
     const handleGlobalKeyDown = async (e: KeyboardEvent) => {
+      // 如果右键菜单已打开，优先关闭右键菜单
+      if ((e.key === "Escape" || e.keyCode === 27) && contextMenuRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu(null);
+        return;
+      }
+      
       if (handleEscapeKey(e, {
         isPluginListModalOpen: () => isPluginListModalOpenRef.current,
         isMemoModalOpen: () => isMemoModalOpenRef.current,
@@ -5213,6 +5227,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     if (e.key === "Escape" || e.keyCode === 27) {
       e.preventDefault();
       e.stopPropagation();
+      // 如果右键菜单已打开，优先关闭右键菜单
+      if (contextMenu) {
+        setContextMenu(null);
+        return;
+      }
       // 如果错误弹窗已打开，关闭错误弹窗（ErrorDialog 内部也会处理 ESC，但这里提前处理以避免其他逻辑执行）
       if (errorMessage) {
         setErrorMessage(null);
