@@ -930,8 +930,9 @@ export function EverythingSearchWindow() {
   // 定义处理函数（必须在 useEffect 之前）
   const handleLaunch = useCallback(async (result: EverythingResult) => {
     try {
-      await tauriApi.launchFile(result.path);
+      // 先更新历史记录，然后启动文件（launchFile 不再更新历史记录）
       await tauriApi.addFileToHistory(result.path);
+      await tauriApi.launchFile(result.path);
     } catch (error) {
       console.error("Failed to launch file:", error);
     }

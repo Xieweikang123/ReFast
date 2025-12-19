@@ -1768,7 +1768,9 @@ pub fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), St
     let app_data_dir = get_app_data_dir(&app)?;
 
     // Write to open_history instead of file_history
+    eprintln!("[commands::add_file_to_history] 被调用: {}", path);
     open_history::add_item(path, &app_data_dir)?;
+    eprintln!("[commands::add_file_to_history] 完成");
 
     Ok(())
 }
@@ -4112,10 +4114,7 @@ pub fn copy_file_to_downloads(source_path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    // Add to history when launched
-    let app_data_dir = get_app_data_dir(&app)?;
-    open_history::add_item(path.clone(), &app_data_dir).ok(); // Ignore errors
-
+    // 注意：历史记录更新已由统一更新逻辑处理（handleLaunch 开头），这里不再更新
     // Launch the file (keep using file_history::launch_file as it's just a utility function)
     file_history::launch_file(&path)
 }

@@ -4175,38 +4175,121 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
   const handleLaunch = useCallback(async (result: SearchResult) => {
     try {
-      // Record open history for all types
-      try {
-        void tauriApi.recordOpenHistory(result.path);
-      } catch (error) {
-        console.error("Failed to record open history:", error);
-      }
-      
-      // 立即更新 openHistory 状态和文件历史缓存
+      // 统一更新使用历史记录（所有类型统一处理）
       const pathToUpdate = result.path;
       const timestampToUpdate = Date.now() / 1000;
       
-      // 立即更新 openHistory 状态（用于排序和显示）
-      if (pathToUpdate) {
-        console.log(`[最近使用时间] 更新 openHistory:`, {
-          路径: pathToUpdate,
-          时间戳: timestampToUpdate,
-          时间: new Date(timestampToUpdate * 1000).toLocaleString(),
-          应用名称: result.displayName,
-          类型: result.type
+      // 判断是否需要更新历史记录
+      const shouldUpdateHistory = (): boolean => {
+        if (!pathToUpdate) return false;
+        
+        const pathLower = pathToUpdate.toLowerCase();
+        
+        // 跳过不需要更新的类型
+        if (result.type === "ai" || result.type === "email" || 
+            result.type === "json_formatter" || result.type === "history" || 
+            result.type === "settings" || result.type === "memo" || 
+            result.type === "plugin") {
+          return false;
+        }
+        
+        // 对于应用类型，只更新实际文件路径（.exe, .lnk），跳过 UWP 应用和 Recent 文件夹
+        if (result.type === "app") {
+          const isRealFilePath = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
+          const isRecentFolder = pathLower.includes('\\recent\\') || pathLower.includes('/recent/');
+          return isRealFilePath && !isRecentFolder;
+        }
+        
+        // 其他类型（file、everything、url）都更新
+        return true;
+      };
+      
+      // 如果需要更新，统一处理
+      if (shouldUpdateHistory()) {
+        // 更新 openHistory 状态（用于排序和显示）
+        setOpenHistory(prev => ({
+          ...prev,
+          [pathToUpdate]: timestampToUpdate,
+        }));
+        
+        // 更新前端文件历史缓存（乐观更新）
+        const normalizePathForMatch = (path: string) => {
+          return path.trim().replace(/[\\/]+$/, '');
+        };
+        const normalizedPath = normalizePathForMatch(pathToUpdate);
+        
+        const existingItem = allFileHistoryCacheRef.current.find(item => {
+          const itemNormalized = normalizePathForMatch(item.path);
+          const path1 = itemNormalized.toLowerCase().replace(/\\/g, '/');
+          const path2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
+          return path1 === path2;
         });
-        setOpenHistory(prev => {
-          const updated = {
-            ...prev,
-            [pathToUpdate]: timestampToUpdate,
-          };
-          console.log(`[最近使用时间] openHistory 更新后:`, {
-            总条目数: Object.keys(updated).length,
-            当前路径的时间戳: updated[pathToUpdate],
-            所有路径: Object.keys(updated)
+        
+        if (existingItem) {
+          // 更新现有项的时间戳（使用次数由后端更新，避免重复计数）
+          existingItem.last_used = timestampToUpdate;
+          // 注意：不在这里手动增加 use_count，由后端 addFileToHistory 统一处理
+          
+          // 立即更新 filteredFiles 状态的时间戳（使用次数会在后端更新后通过 refreshFileHistoryCache 同步）
+          setFilteredFiles(prevFiles => {
+            return prevFiles.map(file => {
+              const fileNormalized = normalizePathForMatch(file.path);
+              const filePath1 = fileNormalized.toLowerCase().replace(/\\/g, '/');
+              const filePath2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
+              if (filePath1 === filePath2) {
+                return {
+                  ...file,
+                  last_used: timestampToUpdate,
+                  // use_count 不在这里更新，等待后端更新后通过 refreshFileHistoryCache 同步
+                };
+              }
+              return file;
+            });
           });
-          return updated;
-        });
+        } else {
+          // 添加新项到前端缓存（use_count 由后端决定，这里先设为0，等待后端更新）
+          let name: string;
+          if (result.type === "url" && result.url) {
+            // URL类型：提取域名作为名称
+            try {
+              const urlObj = new URL(result.url);
+              name = urlObj.hostname || result.url;
+            } catch {
+              name = result.url;
+            }
+          } else {
+            // 文件类型：提取文件名
+            name = normalizedPath.split(/[\\/]/).pop() || normalizedPath;
+          }
+          
+          allFileHistoryCacheRef.current.push({
+            path: normalizedPath,
+            name,
+            last_used: timestampToUpdate,
+            use_count: 0, // 先设为0，等待后端 addFileToHistory 更新后通过 refreshFileHistoryCache 同步
+            is_folder: result.type === "url" ? false : undefined,
+          });
+        }
+        allFileHistoryCacheLoadedRef.current = true;
+        
+        // 异步更新后端数据库，不阻塞应用启动
+        console.log(`[统一更新] 准备更新 open_history: ${pathToUpdate}, 类型: ${result.type}`);
+        void tauriApi.addFileToHistory(pathToUpdate)
+          .then(() => {
+            console.log(`[统一更新] ✓ 成功更新 open_history: ${pathToUpdate}`);
+            // 刷新文件历史缓存以确保与数据库同步（包括使用次数）
+            void refreshFileHistoryCache().then(() => {
+              // 如果当前有查询，重新搜索以更新结果列表中的使用次数
+              if (query.trim()) {
+                void searchFileHistory(query);
+              }
+            });
+          })
+          .catch((error) => {
+            console.warn(`[统一更新] ✗ 更新 open_history 失败: ${pathToUpdate}`, error);
+            // 如果后端更新失败，回滚前端缓存（重新从数据库加载）
+            void refreshFileHistoryCache();
+          });
       }
 
       // 对所有结果统一提前处理 http/https 链接，避免走文件/应用启动流程
@@ -4217,96 +4300,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         return;
       }
       
-      // 对于应用类型，同时更新 open_history 表（用于使用频率统计）
-      // 注意：只对实际文件路径（.exe, .lnk）更新，UWP 应用路径（shell:AppsFolder, ms-settings:）跳过
-      if (result.type === "app" && result.path) {
-        const isRealFilePath = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-        // 跳过 Recent 文件夹中的临时快捷方式（这些文件经常被删除）
-        const isRecentFolder = pathLower.includes('\\recent\\') || pathLower.includes('/recent/');
-        if (isRealFilePath && !isRecentFolder) {
-          try {
-            // 立即更新前端文件历史缓存（乐观更新）
-            // 使用与后端一致的路径规范化：去掉末尾斜杠，保持原始格式
-            const normalizePathForMatch = (path: string) => {
-              return path.trim().replace(/[\\/]+$/, '');
-            };
-            const normalizedPath = normalizePathForMatch(result.path);
-            
-            // 使用规范化路径进行匹配（不区分大小写，统一处理反斜杠/正斜杠）
-            const existingItem = allFileHistoryCacheRef.current.find(item => {
-              const itemNormalized = normalizePathForMatch(item.path);
-              // Windows 路径不区分大小写，统一转换为小写比较
-              // 同时统一处理反斜杠和正斜杠
-              const path1 = itemNormalized.toLowerCase().replace(/\\/g, '/');
-              const path2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
-              return path1 === path2;
-            });
-            
-            if (existingItem) {
-              // 更新现有项
-              existingItem.last_used = timestampToUpdate;
-              existingItem.use_count += 1;
-              
-
-              
-              // 立即更新 filteredFiles 状态，使UI显示最新的使用次数
-              setFilteredFiles(prevFiles => {
-                const updatedFiles = prevFiles.map(file => {
-                  const fileNormalized = normalizePathForMatch(file.path);
-                  const filePath1 = fileNormalized.toLowerCase().replace(/\\/g, '/');
-                  const filePath2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
-                  if (filePath1 === filePath2) {
-
-                    return {
-                      ...file,
-                      last_used: timestampToUpdate,
-                      use_count: file.use_count + 1,
-                    };
-                  }
-                  return file;
-                });
-
-                return updatedFiles;
-              });
-              
-
-            } else {
-              // 添加新项（如果路径存在）
-              const name = normalizedPath.split(/[\\/]/).pop() || normalizedPath;
-              allFileHistoryCacheRef.current.push({
-                path: normalizedPath,
-                name,
-                last_used: timestampToUpdate,
-                use_count: 1,
-                is_folder: undefined,
-              });
-              console.log(`[应用打开] ✓ 添加新缓存项: ${result.path}`);
-            }
-            allFileHistoryCacheLoadedRef.current = true;
-            
-            // 异步更新后端数据库，不阻塞应用启动
-            console.log(`[应用打开] 准备更新 open_history: ${result.path}`);
-            void tauriApi.addFileToHistory(result.path)
-              .then(() => {
-                console.log(`[应用打开] ✓ 成功更新 open_history: ${result.path}`);
-                // 刷新文件历史缓存以确保与数据库同步（作为后备）
-                void refreshFileHistoryCache();
-              })
-              .catch((error) => {
-                // 如果路径不存在或其他错误，记录警告（不影响应用启动）
-                console.warn(`[应用打开] ✗ 更新 open_history 失败: ${result.path}`, error);
-                // 如果后端更新失败，回滚前端缓存（重新从数据库加载）
-                void refreshFileHistoryCache();
-              });
-          } catch (error) {
-            console.warn(`[应用打开] ✗ 更新 open_history 异常: ${result.path}`, error);
-          }
-        } else if (isRecentFolder) {
-          console.log(`[应用打开] 跳过 open_history 更新（Recent 文件夹临时快捷方式）: ${result.path}`);
-        } else {
-          console.log(`[应用打开] 跳过 open_history 更新（UWP 应用路径）: ${result.path}`);
-        }
-      }
+      // 注意：历史记录的更新已在开头统一处理，各类型不再单独更新
 
       if (result.type === "ai" && result.aiAnswer) {
         // AI 回答点击时，可以复制到剪贴板或什么都不做
@@ -4314,68 +4308,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         return;
       } else if (result.type === "url" && result.url) {
         await tauriApi.openUrl(result.url);
-        
-        // 添加 URL 到历史记录
-        try {
-          console.log(`[URL打开] 准备更新 open_history: ${result.url}`);
-          
-          // 更新前端缓存（同步更新，保证立即可见）
-          if (allFileHistoryCacheRef.current) {
-            const now = Date.now();
-            const existingIndex = allFileHistoryCacheRef.current.findIndex(
-              (item) => item.path.toLowerCase() === result.url!.toLowerCase()
-            );
-            
-            if (existingIndex !== -1) {
-              // 已存在，更新使用次数和时间
-              const existing = allFileHistoryCacheRef.current[existingIndex];
-              allFileHistoryCacheRef.current[existingIndex] = {
-                ...existing,
-                last_used: now,
-                use_count: existing.use_count + 1,
-              };
-              console.log(`[URL打开] ✓ 更新缓存项: ${result.url} (use_count: ${existing.use_count + 1})`);
-            } else {
-              // 不存在，添加新记录
-              // 从URL提取名称
-              let urlName = result.url;
-              try {
-                const urlObj = new URL(result.url);
-                urlName = urlObj.hostname || result.url;
-              } catch {
-                // 如果不是有效URL，使用原始字符串
-                urlName = result.url;
-              }
-              
-              allFileHistoryCacheRef.current.unshift({
-                path: result.url,
-                name: urlName,
-                last_used: now,
-                use_count: 1,
-                is_folder: false,
-              });
-              console.log(`[URL打开] ✓ 添加新缓存项: ${result.url}`);
-            }
-            allFileHistoryCacheLoadedRef.current = true;
-            
-            // 异步更新后端数据库，不阻塞URL打开
-            void tauriApi.addFileToHistory(result.url)
-              .then(() => {
-                console.log(`[URL打开] ✓ 成功更新 open_history: ${result.url}`);
-                // 刷新文件历史缓存以确保与数据库同步
-                void refreshFileHistoryCache();
-              })
-              .catch((error) => {
-                console.warn(`[URL打开] ✗ 更新 open_history 失败: ${result.url}`, error);
-                // 如果后端更新失败，回滚前端缓存
-                void refreshFileHistoryCache();
-              });
-          }
-        } catch (error) {
-          console.warn(`[URL打开] ✗ 更新 open_history 异常: ${result.url}`, error);
-        }
-        
-        // 打开链接后隐藏启动器
+        // 注意：历史记录的更新已在开头统一处理
         await hideLauncherAndResetState();
         return;
       } else if (result.type === "email" && result.email) {
@@ -4571,11 +4504,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         }
       } else if (result.type === "file" && result.file) {
         try {
-          // launchFile 内部已经会调用 add_file_path 更新使用次数，所以这里不需要再手动更新
-          // 只需要刷新缓存以同步后端更新后的数据
+          // 注意：历史记录的更新已在开头统一处理，launchFile 不再更新历史记录
           await tauriApi.launchFile(result.file.path);
-          
-
           
           // 刷新文件历史缓存以同步后端更新后的数据（包括使用次数）
           void refreshFileHistoryCache()
@@ -4632,81 +4562,19 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             return;
           }
 
+          // 注意：历史记录的更新已在开头统一处理，launchFile 不再更新历史记录
           await tauriApi.launchFile(everythingPath);
           
-          // 立即更新前端文件历史缓存（乐观更新）
-          // 使用与后端一致的路径规范化：去掉末尾斜杠，保持原始格式
-          const normalizePathForMatch = (path: string) => {
-            return path.trim().replace(/[\\/]+$/, '');
-          };
-          const normalizedPath = normalizePathForMatch(everythingPath);
-          
-          // 使用规范化路径进行匹配（不区分大小写，统一处理反斜杠/正斜杠）
-          const existingItem = allFileHistoryCacheRef.current.find(item => {
-            const itemNormalized = normalizePathForMatch(item.path);
-            // Windows 路径不区分大小写，统一转换为小写比较
-            // 同时统一处理反斜杠和正斜杠
-            const path1 = itemNormalized.toLowerCase().replace(/\\/g, '/');
-            const path2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
-            return path1 === path2;
-          });
-          
-          if (existingItem) {
-            // 更新现有项
-            existingItem.last_used = timestampToUpdate;
-            existingItem.use_count += 1;
-            
-
-            
-            // 立即更新 filteredFiles 状态，使UI显示最新的使用次数
-            setFilteredFiles(prevFiles => {
-              const updatedFiles = prevFiles.map(file => {
-                const fileNormalized = normalizePathForMatch(file.path);
-                const filePath1 = fileNormalized.toLowerCase().replace(/\\/g, '/');
-                const filePath2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
-                if (filePath1 === filePath2) {
-
-                  return {
-                    ...file,
-                    last_used: timestampToUpdate,
-                    use_count: file.use_count + 1,
-                  };
-                }
-                return file;
-              });
-
-              return updatedFiles;
-            });
-            
-
-          } else {
-            // 添加新项
-            const name = normalizedPath.split(/[\\/]/).pop() || normalizedPath;
-            allFileHistoryCacheRef.current.push({
-              path: normalizedPath,
-              name,
-              last_used: timestampToUpdate,
-              use_count: 1,
-              is_folder: undefined,
-            });
-            console.log(`[Everything 文件打开] ✓ 添加新缓存项: ${everythingPath}`);
-          }
-          allFileHistoryCacheLoadedRef.current = true;
-          
-          // 异步更新后端数据库
-          void tauriApi.addFileToHistory(everythingPath)
+          // 刷新文件历史缓存以确保与数据库同步
+          void refreshFileHistoryCache()
             .then(() => {
-              // 刷新文件历史缓存以确保与数据库同步（作为后备）
-              void refreshFileHistoryCache();
               // 如果当前有查询，重新搜索以更新结果列表
               if (query.trim()) {
                 void searchFileHistory(query);
               }
             })
             .catch((error) => {
-              console.warn(`[Everything 文件打开] ✗ 更新 open_history 失败: ${everythingPath}`, error);
-              // 如果后端更新失败，回滚前端缓存（重新从数据库加载）
-              void refreshFileHistoryCache();
+              console.warn(`[Everything 文件打开] ✗ 刷新 open_history 缓存失败: ${everythingPath}`, error);
             });
         } catch (fileError: any) {
           const errorMsg = fileError?.message || fileError?.toString() || "";

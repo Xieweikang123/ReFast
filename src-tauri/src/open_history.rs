@@ -232,13 +232,16 @@ pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
 
     // Update or create history item
     if let Some(item) = state.get_mut(&normalized_path_str) {
+        let old_count = item.use_count;
         item.last_opened = timestamp;
         item.use_count += 1;
+        eprintln!("[open_history::add_item] 路径已存在: {}, use_count: {} -> {}", normalized_path_str, old_count, item.use_count);
         item.is_folder = Some(is_folder); // Update is_folder in case it changed
         if name.is_some() {
             item.name = name; // Update name if provided
         }
     } else {
+        eprintln!("[open_history::add_item] 创建新项: {}, use_count: 1", normalized_path_str);
         state.insert(
             normalized_path_str.clone(),
             OpenHistoryItem {

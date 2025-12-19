@@ -136,6 +136,7 @@ export const tauriApi = {
   },
 
   async launchFile(path: string): Promise<void> {
+    // 注意：历史记录更新已由统一更新逻辑处理，这里不再更新
     return invoke("launch_file", { path });
   },
 
