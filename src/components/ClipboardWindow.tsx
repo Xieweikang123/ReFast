@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
@@ -16,6 +16,8 @@ export function ClipboardWindow() {
   const [showSettings, setShowSettings] = useState(false);
   const [maxItems, setMaxItems] = useState<number>(100);
   const [tempMaxItems, setTempMaxItems] = useState<number>(100);
+  const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const imageDataUrlsRef = useRef<Map<string, string>>(new Map());
 
   const loadClipboardItems = async () => {
     try {
@@ -27,13 +29,15 @@ export function ClipboardWindow() {
       const currentImagePaths = new Set(
         items.filter(item => item.content_type === "image").map(item => item.content)
       );
-      imageDataUrls.forEach((url, path) => {
+      const newMap = new Map(imageDataUrlsRef.current);
+      imageDataUrlsRef.current.forEach((url, path) => {
         if (!currentImagePaths.has(path)) {
           URL.revokeObjectURL(url);
-          imageDataUrls.delete(path);
+          newMap.delete(path);
         }
       });
-      setImageDataUrls(new Map(imageDataUrls));
+      imageDataUrlsRef.current = newMap;
+      setImageDataUrls(newMap);
     } catch (error) {
       console.error("Failed to load clipboard items:", error);
     }
@@ -41,7 +45,7 @@ export function ClipboardWindow() {
 
   // 懒加载图片数据
   const loadImageData = async (imagePath: string) => {
-    if (imageDataUrls.has(imagePath)) {
+    if (imageDataUrlsRef.current.has(imagePath)) {
       return; // 已经加载过了
     }
 
@@ -53,7 +57,9 @@ export function ClipboardWindow() {
         : new Uint8Array(imageData as any);
       const blob = new Blob([uint8Array], { type: 'image/png' });
       const url = URL.createObjectURL(blob);
-      setImageDataUrls(prev => new Map(prev).set(imagePath, url));
+      const newMap = new Map(imageDataUrlsRef.current).set(imagePath, url);
+      imageDataUrlsRef.current = newMap;
+      setImageDataUrls(newMap);
     } catch (error) {
       console.error("Failed to load image:", error);
     }
@@ -65,7 +71,7 @@ export function ClipboardWindow() {
     
     // 清理函数：组件卸载时释放所有 blob URLs
     return () => {
-      imageDataUrls.forEach(url => URL.revokeObjectURL(url));
+      imageDataUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
 
@@ -108,17 +114,50 @@ export function ClipboardWindow() {
     }
   }, [selectedItem]);
 
-  // 自动加载列表中前面的图片缩略图（优化用户体验）
+  // 使用 Intersection Observer 实现视口内图片懒加载
   useEffect(() => {
-    const imagesToLoad = filteredItems
-      .filter(item => item.content_type === "image")
-      .slice(0, 10); // 只加载前10个
+    const imageItems = filteredItems.filter(item => item.content_type === "image");
     
-    imagesToLoad.forEach(item => {
-      if (!imageDataUrls.has(item.content)) {
-        loadImageData(item.content);
+    if (imageItems.length === 0) {
+      return;
+    }
+
+    // 创建 Intersection Observer
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const itemElement = entry.target as HTMLDivElement;
+            const itemId = itemElement.dataset.itemId;
+            if (itemId) {
+              const item = filteredItems.find(i => i.id === itemId);
+              // 使用 ref 来检查是否已加载，避免依赖导致 observer 重建
+              if (item && item.content_type === "image" && !imageDataUrlsRef.current.has(item.content)) {
+                loadImageData(item.content);
+              }
+            }
+          }
+        });
+      },
+      {
+        root: null, // 使用视口作为根
+        rootMargin: "50px", // 提前50px开始加载
+        threshold: 0.01 // 只要有任何部分可见就触发
+      }
+    );
+
+    // 观察所有图片项
+    imageItems.forEach((item) => {
+      const element = itemRefs.current.get(item.id);
+      if (element) {
+        observer.observe(element);
       }
     });
+
+    // 清理函数
+    return () => {
+      observer.disconnect();
+    };
   }, [filteredItems]);
 
   useEffect(() => {
@@ -444,6 +483,14 @@ export function ClipboardWindow() {
               {filteredItems.map((item, index) => (
                 <div
                   key={item.id}
+                  ref={(el) => {
+                    if (el) {
+                      itemRefs.current.set(item.id, el);
+                    } else {
+                      itemRefs.current.delete(item.id);
+                    }
+                  }}
+                  data-item-id={item.id}
                   onClick={() => setSelectedItem(item)}
                   className={`group p-3 cursor-pointer transition-all duration-200 rounded-xl border ${
                     selectedItem?.id === item.id
@@ -483,12 +530,8 @@ export function ClipboardWindow() {
                         />
                       ) : (
                         <div 
-                          className="w-12 h-12 bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg flex items-center justify-center text-gray-400 text-xl cursor-pointer hover:from-gray-200 hover:to-gray-300 transition-all duration-200 shadow-sm border border-gray-200"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            loadImageData(item.content);
-                          }}
-                          title="点击加载图片"
+                          className="w-12 h-12 bg-gradient-to-br from-gray-100 to-gray-200 rounded-lg flex items-center justify-center text-gray-400 text-xl transition-all duration-200 shadow-sm border border-gray-200 animate-pulse"
+                          title="加载中..."
                         >
                           📷
                         </div>
