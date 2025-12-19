@@ -28,6 +28,12 @@ pub struct Settings {
     pub last_update_check_time: Option<i64>,
     #[serde(default)]
     pub ignored_update_version: Option<String>,
+    #[serde(default = "default_clipboard_max_items")]
+    pub clipboard_max_items: u32,
+}
+
+fn default_clipboard_max_items() -> u32 {
+    100
 }
 
 fn default_result_style() -> String {
@@ -56,6 +62,7 @@ impl Default for Settings {
             auto_check_update: default_auto_check_update(),
             last_update_check_time: None,
             ignored_update_version: None,
+            clipboard_max_items: default_clipboard_max_items(),
         }
     }
 }

@@ -103,6 +103,7 @@ interface SystemSettingsProps {
     result_style?: "compact" | "soft" | "skeuomorphic";
     close_on_blur?: boolean;
     auto_check_update?: boolean;
+    clipboard_max_items?: number;
   };
   onSettingsChange: (settings: any) => void;
   onOpenHotkeySettings: () => void;
@@ -295,6 +296,7 @@ export function SystemSettingsPage({
               </label>
             </div>
           </div>
+
 
         </div>
       </div>

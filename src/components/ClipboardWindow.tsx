@@ -13,6 +13,8 @@ export function ClipboardWindow() {
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState("");
   const [imageDataUrls, setImageDataUrls] = useState<Map<string, string>>(new Map());
+  const [showSettings, setShowSettings] = useState(false);
+  const [maxItems, setMaxItems] = useState<number>(100);
 
   const loadClipboardItems = async () => {
     try {
@@ -58,12 +60,35 @@ export function ClipboardWindow() {
 
   useEffect(() => {
     loadClipboardItems();
+    loadSettings();
     
     // 清理函数：组件卸载时释放所有 blob URLs
     return () => {
       imageDataUrls.forEach(url => URL.revokeObjectURL(url));
     };
   }, []);
+
+  const loadSettings = async () => {
+    try {
+      const settings = await tauriApi.getSettings();
+      setMaxItems(settings.clipboard_max_items ?? 100);
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    }
+  };
+
+  const saveMaxItems = async (value: number) => {
+    try {
+      const settings = await tauriApi.getSettings();
+      await tauriApi.saveSettings({
+        ...settings,
+        clipboard_max_items: value,
+      });
+      setMaxItems(value);
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+    }
+  };
 
   // 当选中图片项时，自动加载图片数据
   useEffect(() => {
@@ -257,10 +282,11 @@ export function ClipboardWindow() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold text-gray-800">剪切板历史</h2>
             <button
-              onClick={handleClose}
+              onClick={() => setShowSettings(!showSettings)}
               className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded transition-colors"
+              title="设置"
             >
-              关闭
+              ⚙️
             </button>
           </div>
           
@@ -307,6 +333,38 @@ export function ClipboardWindow() {
             图片
           </button>
         </div>
+
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="p-3 border-b border-gray-200 bg-gray-50">
+            <div className="mb-2">
+              <label className="block text-xs font-medium text-gray-700 mb-1">
+                最大保存数量
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="10000"
+                  value={maxItems}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10) || 0;
+                    setMaxItems(value);
+                  }}
+                  onBlur={(e) => {
+                    const value = parseInt(e.target.value, 10) || 0;
+                    saveMaxItems(value);
+                  }}
+                  className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-xs text-gray-500">条</span>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                超过此数量时自动删除最旧记录（0=不限制，收藏不受影响）
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="p-3 border-b border-gray-200 flex gap-2">

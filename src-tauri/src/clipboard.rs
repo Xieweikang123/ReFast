@@ -1,4 +1,5 @@
 use crate::db;
+use crate::settings;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -101,7 +102,102 @@ pub fn add_clipboard_item(
     )
     .map_err(|e| format!("Failed to insert clipboard item: {}", e))?;
 
+    // 检查并限制最大数量
+    enforce_max_items(app_data_dir)?;
+
     Ok(item)
+}
+
+/// 限制剪切板历史的最大数量，删除超出部分的记录
+fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
+    // 获取设置中的最大数量
+    let settings = settings::load_settings(app_data_dir)
+        .unwrap_or_default();
+    let max_items = settings.clipboard_max_items;
+    
+    if max_items == 0 {
+        // 0 表示不限制
+        return Ok(());
+    }
+
+    let conn = db::get_connection(app_data_dir)?;
+    
+    // 统计非收藏项的数量
+    let non_favorite_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE is_favorite = 0",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to count clipboard items: {}", e))?;
+    
+    if non_favorite_count <= max_items as i64 {
+        // 未超过最大数量，不需要删除
+        return Ok(());
+    }
+    
+    // 计算需要删除的数量
+    let to_delete = non_favorite_count - max_items as i64;
+    
+    // 查询最旧的非收藏项（按创建时间升序）
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content, content_type 
+             FROM clipboard_history 
+             WHERE is_favorite = 0 
+             ORDER BY created_at ASC 
+             LIMIT ?1"
+        )
+        .map_err(|e| format!("Failed to prepare delete query: {}", e))?;
+    
+    let items_to_delete: Vec<(String, String, String)> = stmt
+        .query_map(params![to_delete], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| format!("Failed to query items to delete: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+    
+    drop(stmt);
+    
+    // 删除对应的图片文件
+    for (id, content, content_type) in &items_to_delete {
+        if content_type == "image" {
+            let image_path = std::path::Path::new(content);
+            if image_path.exists() {
+                // 检查是否还有其他记录引用这个图片
+                let ref_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM clipboard_history WHERE content = ?1 AND content_type = 'image'",
+                        params![content],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                
+                // 只有当没有其他记录引用时才删除文件
+                if ref_count <= 1 {
+                    if let Err(e) = std::fs::remove_file(image_path) {
+                        eprintln!("[Clipboard] Failed to delete image file {}: {}", content, e);
+                    } else {
+                        println!("[Clipboard] Deleted image file: {}", content);
+                    }
+                }
+            }
+        }
+    }
+    
+    // 删除数据库记录（逐个删除更安全）
+    for (id, _, _) in &items_to_delete {
+        conn.execute(
+            "DELETE FROM clipboard_history WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| format!("Failed to delete clipboard item {}: {}", id, e))?;
+    }
+    
+    println!("[Clipboard] Deleted {} old clipboard items (max_items: {})", to_delete, max_items);
+    
+    Ok(())
 }
 
 /// 更新剪切板项内容
