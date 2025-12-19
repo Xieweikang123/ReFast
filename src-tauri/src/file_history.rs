@@ -17,6 +17,8 @@ pub struct FileHistoryItem {
     pub use_count: u64,
     #[serde(default)]
     pub is_folder: Option<bool>, // 是否为文件夹
+    #[serde(default)]
+    pub source: Option<String>, // 数据来源: "file_history" 或 "open_history"
 }
 
 // 临时使用 RwLock，读操作不需要锁，写操作才需要锁（测试性能影响）
@@ -69,6 +71,7 @@ pub fn load_history_into(
                     last_used: row.get::<_, i64>(2)? as u64,
                     use_count: row.get::<_, i64>(3)? as u64,
                     is_folder: row.get::<_, Option<bool>>(4)?,
+                    source: None, // From file_history table
                 },
             ))
         })
@@ -281,6 +284,7 @@ pub fn add_file_path(path: String, app_data_dir: &Path) -> Result<(), String> {
                 last_used: timestamp,
                 use_count: 1,
                 is_folder: Some(is_folder),
+                source: None, // From file_history table
             },
         );
     }

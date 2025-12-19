@@ -45,6 +45,7 @@ export interface FileHistoryItem {
   last_used: number;
   use_count: number;
   is_folder?: boolean | null; // 是否为文件夹
+  source?: string | null; // 数据来源: "file_history" 或 "open_history"
 }
 
 export interface EverythingResult {

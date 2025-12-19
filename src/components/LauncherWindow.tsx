@@ -4217,7 +4217,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         return;
       }
       
-      // 对于应用类型，同时更新 file_history 表（用于使用频率统计）
+      // 对于应用类型，同时更新 open_history 表（用于使用频率统计）
       // 注意：只对实际文件路径（.exe, .lnk）更新，UWP 应用路径（shell:AppsFolder, ms-settings:）跳过
       if (result.type === "app" && result.path) {
         const isRealFilePath = pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
@@ -4285,26 +4285,26 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             allFileHistoryCacheLoadedRef.current = true;
             
             // 异步更新后端数据库，不阻塞应用启动
-            console.log(`[应用打开] 准备更新 file_history: ${result.path}`);
+            console.log(`[应用打开] 准备更新 open_history: ${result.path}`);
             void tauriApi.addFileToHistory(result.path)
               .then(() => {
-                console.log(`[应用打开] ✓ 成功更新 file_history: ${result.path}`);
+                console.log(`[应用打开] ✓ 成功更新 open_history: ${result.path}`);
                 // 刷新文件历史缓存以确保与数据库同步（作为后备）
                 void refreshFileHistoryCache();
               })
               .catch((error) => {
                 // 如果路径不存在或其他错误，记录警告（不影响应用启动）
-                console.warn(`[应用打开] ✗ 更新 file_history 失败: ${result.path}`, error);
+                console.warn(`[应用打开] ✗ 更新 open_history 失败: ${result.path}`, error);
                 // 如果后端更新失败，回滚前端缓存（重新从数据库加载）
                 void refreshFileHistoryCache();
               });
           } catch (error) {
-            console.warn(`[应用打开] ✗ 更新 file_history 异常: ${result.path}`, error);
+            console.warn(`[应用打开] ✗ 更新 open_history 异常: ${result.path}`, error);
           }
         } else if (isRecentFolder) {
-          console.log(`[应用打开] 跳过 file_history 更新（Recent 文件夹临时快捷方式）: ${result.path}`);
+          console.log(`[应用打开] 跳过 open_history 更新（Recent 文件夹临时快捷方式）: ${result.path}`);
         } else {
-          console.log(`[应用打开] 跳过 file_history 更新（UWP 应用路径）: ${result.path}`);
+          console.log(`[应用打开] 跳过 open_history 更新（UWP 应用路径）: ${result.path}`);
         }
       }
 
@@ -4317,7 +4317,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         
         // 添加 URL 到历史记录
         try {
-          console.log(`[URL打开] 准备更新 file_history: ${result.url}`);
+          console.log(`[URL打开] 准备更新 open_history: ${result.url}`);
           
           // 更新前端缓存（同步更新，保证立即可见）
           if (allFileHistoryCacheRef.current) {
@@ -4361,18 +4361,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             // 异步更新后端数据库，不阻塞URL打开
             void tauriApi.addFileToHistory(result.url)
               .then(() => {
-                console.log(`[URL打开] ✓ 成功更新 file_history: ${result.url}`);
+                console.log(`[URL打开] ✓ 成功更新 open_history: ${result.url}`);
                 // 刷新文件历史缓存以确保与数据库同步
                 void refreshFileHistoryCache();
               })
               .catch((error) => {
-                console.warn(`[URL打开] ✗ 更新 file_history 失败: ${result.url}`, error);
+                console.warn(`[URL打开] ✗ 更新 open_history 失败: ${result.url}`, error);
                 // 如果后端更新失败，回滚前端缓存
                 void refreshFileHistoryCache();
               });
           }
         } catch (error) {
-          console.warn(`[URL打开] ✗ 更新 file_history 异常: ${result.url}`, error);
+          console.warn(`[URL打开] ✗ 更新 open_history 异常: ${result.url}`, error);
         }
         
         // 打开链接后隐藏启动器
@@ -4447,14 +4447,14 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           await tauriApi.launchApplication(result.app);
           trackEvent("app_launched", { name: result.app.name });
           
-          // 注意：openHistory 和 file_history 的更新已经在 handleLaunch 开头处理了，这里不需要重复更新
+          // 注意：open_history 的更新已经在 handleLaunch 开头处理了，这里不需要重复更新
           
           // 清除启动状态
           setLaunchingAppPath(null);
         } catch (launchError: any) {
           // 如果启动失败，清除启动状态
           setLaunchingAppPath(null);
-          // 注意：openHistory 和 file_history 的更新已经在 handleLaunch 开头处理了，这里不需要重复更新
+          // 注意：open_history 的更新已经在 handleLaunch 开头处理了，这里不需要重复更新
           const errorMsg = launchError?.message || launchError?.toString() || "";
           // 检测是否是文件不存在的错误，自动删除索引
           if (
@@ -4468,12 +4468,12 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
               console.log(`[删除应用] ========== 开始删除流程 ==========`);
               console.log(`[删除应用] 要删除的路径: ${pathToRemove}`);
               
-              // 并行执行删除操作（应用索引 + 文件历史）
+              // 并行执行删除操作（应用索引 + 打开历史）
               await Promise.all([
                 tauriApi.removeAppFromIndex(pathToRemove),
                 tauriApi.deleteFileHistory(pathToRemove).catch(() => {
-                  // file_history 中可能不存在该记录，忽略错误
-                  console.log(`[清理] file_history 中没有该路径记录: ${pathToRemove}`);
+                  // open_history 中可能不存在该记录，忽略错误
+                  console.log(`[清理] open_history 中没有该路径记录: ${pathToRemove}`);
                 }),
               ]);
               
@@ -4586,7 +4586,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
               }
             })
             .catch((error) => {
-              console.warn(`[文件打开] ✗ 刷新 file_history 缓存失败: ${result.file?.path || '未知路径'}`, error);
+              console.warn(`[文件打开] ✗ 刷新 open_history 缓存失败: ${result.file?.path || '未知路径'}`, error);
             });
         } catch (fileError: any) {
           const errorMsg = fileError?.message || fileError?.toString() || "";
@@ -4704,7 +4704,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
               }
             })
             .catch((error) => {
-              console.warn(`[Everything 文件打开] ✗ 更新 file_history 失败: ${everythingPath}`, error);
+              console.warn(`[Everything 文件打开] ✗ 更新 open_history 失败: ${everythingPath}`, error);
               // 如果后端更新失败，回滚前端缓存（重新从数据库加载）
               void refreshFileHistoryCache();
             });

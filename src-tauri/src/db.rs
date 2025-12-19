@@ -113,8 +113,18 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS open_history (
             key TEXT PRIMARY KEY,
-            last_opened INTEGER NOT NULL
+            last_opened INTEGER NOT NULL,
+            name TEXT,
+            use_count INTEGER DEFAULT 1,
+            is_folder INTEGER
         );
+        
+        -- Migrate existing open_history table to add new columns if they don't exist
+        -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN, so we use a workaround
+        -- Check if columns exist by trying to select them, and add if they don't exist
+        -- This is safe because if the column exists, the ALTER TABLE will fail silently in a transaction
+        -- We'll handle this in the application code instead
+        CREATE INDEX IF NOT EXISTS idx_open_history_last_opened ON open_history(last_opened);
 
         CREATE TABLE IF NOT EXISTS memos (
             id TEXT PRIMARY KEY,

@@ -415,13 +415,14 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
       const pathsToDelete = filteredHistoryItems.map(item => item.path);
       
       // 逐个删除（或者可以批量删除，但后端目前只支持单个删除）
+      // 所有数据现在都在 open_history 中，统一使用 deleteFileHistory
       let deletedCount = 0;
-      for (const path of pathsToDelete) {
+      for (const item of filteredHistoryItems) {
         try {
-          await tauriApi.deleteFileHistory(path);
+          await tauriApi.deleteFileHistory(item.path);
           deletedCount++;
         } catch (error) {
-          console.error(`删除文件历史失败: ${path}`, error);
+          console.error(`删除文件历史失败: ${item.path}`, error);
           // 继续删除其他项，不因单个失败而停止
         }
       }
@@ -477,6 +478,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
       setIsDeletingHistory(true);
       setHistoryMessage(null);
       
+      // 所有数据现在都在 open_history 中，统一使用 deleteFileHistory
       await tauriApi.deleteFileHistory(pendingDeleteItem.path);
       
       setHistoryMessage(`已删除文件历史记录: ${pendingDeleteItem.name}`);
@@ -658,7 +660,14 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                 >
                   <span className="text-gray-400 font-mono shrink-0">{index + 1}.</span>
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-gray-900 truncate">{item.name}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium text-gray-900 truncate">{item.name}</div>
+                      {item.source === "open_history" && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 border border-blue-200 shrink-0" title="来自打开历史">
+                          URL
+                        </span>
+                      )}
+                    </div>
                     <div className="text-gray-500 truncate">{item.path}</div>
                     <div className="text-gray-400">
                       使用 {item.use_count} 次 · 最近 {formatTimestamp(item.last_used)}

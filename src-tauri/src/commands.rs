@@ -1767,10 +1767,8 @@ pub fn hide_launcher(app: tauri::AppHandle) -> Result<(), String> {
 pub fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
 
-    // Load history first to ensure it's up to date
-    file_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
-
-    file_history::add_file_path(path, &app_data_dir)?;
+    // Write to open_history instead of file_history
+    open_history::add_item(path, &app_data_dir)?;
 
     Ok(())
 }
@@ -1799,11 +1797,52 @@ pub async fn search_file_history(
         // #region agent log
         let blocking_start = std::time::Instant::now();
         // #endregion
-        let search_result = file_history::search_file_history(&query_clone, &app_data_dir);
+        // Search in open_history and convert to FileHistoryItem format
+        let search_result = open_history::search_history(&query_clone, &app_data_dir)
+            .map(|items| {
+                items.into_iter().map(|item| {
+                    // Use stored name if available, otherwise extract from key
+                    let name = item.name.clone().unwrap_or_else(|| {
+                        if item.key.starts_with("http://") || item.key.starts_with("https://") {
+                            // URL: extract domain
+                            if let Some(domain_start) = item.key.find("://") {
+                                let after_protocol = &item.key[domain_start + 3..];
+                                if let Some(slash_pos) = after_protocol.find('/') {
+                                    after_protocol[..slash_pos].to_string()
+                                } else {
+                                    after_protocol.to_string()
+                                }
+                            } else {
+                                item.key.clone()
+                            }
+                        } else {
+                            // File path: extract filename
+                            std::path::Path::new(&item.key)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| item.key.clone())
+                        }
+                    });
+
+                    file_history::FileHistoryItem {
+                        path: item.key.clone(),
+                        name,
+                        last_used: item.last_opened,
+                        use_count: item.use_count,
+                        is_folder: item.is_folder,
+                        source: Some("open_history".to_string()),
+                    }
+                }).collect::<Vec<file_history::FileHistoryItem>>()
+            });
         // #region agent log
         let blocking_duration = blocking_start.elapsed();
+        let results_count = match &search_result {
+            Ok(ref vec) => vec.len(),
+            Err(_) => 0,
+        };
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"location":"commands.rs:1164","message":"file_history::search_file_history 返回","data":{{"duration_ms":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, blocking_duration.as_millis(), search_result.as_ref().map(|r| r.len()).unwrap_or(0), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+            let _ = writeln!(file, r#"{{"location":"commands.rs:1164","message":"open_history::search_history 返回","data":{{"duration_ms":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, blocking_duration.as_millis(), results_count, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
         }
         // #endregion
         search_result
@@ -1841,41 +1880,69 @@ pub fn get_all_file_history(
         }
     };
 
-    // CRITICAL: Lock only once, then do all operations within the lock
-    // This prevents nested locking and potential deadlocks
-    // 使用写锁，因为需要调用 load_history_into（需要可变引用）
-    let mut state = match file_history::lock_history_write() {
-        Ok(guard) => {
-            guard
-        }
+    // Read from open_history instead of file_history
+    let open_history_items = match open_history::get_all_history_items(&app_data_dir) {
+        Ok(items) => items,
         Err(e) => {
-            println!("[后端] get_all_file_history: ERROR acquiring lock: {}", e);
+            println!(
+                "[后端] get_all_file_history: ERROR loading open_history: {}",
+                e
+            );
             return Err(e);
         }
     };
 
-    // Load history into the locked state (no additional locking)
-    match file_history::load_history_into(&mut state, &app_data_dir) {
-        Ok(_) => {
-        }
-        Err(e) => {
-            println!("[后端] get_all_file_history: ERROR loading history: {}", e);
-            return Err(e);
-        }
-    }
+    // Convert OpenHistoryItem to FileHistoryItem
+    let mut result: Vec<file_history::FileHistoryItem> = open_history_items
+        .values()
+        .map(|item| {
+            // Use stored name if available, otherwise extract from key
+            let name = item.name.clone().unwrap_or_else(|| {
+                // Extract name from key (similar to add_item logic)
+                if item.key.starts_with("http://") || item.key.starts_with("https://") {
+                    // URL: extract domain
+                    if let Some(domain_start) = item.key.find("://") {
+                        let after_protocol = &item.key[domain_start + 3..];
+                        if let Some(slash_pos) = after_protocol.find('/') {
+                            after_protocol[..slash_pos].to_string()
+                        } else {
+                            after_protocol.to_string()
+                        }
+                    } else {
+                        item.key.clone()
+                    }
+                } else {
+                    // File path: extract filename
+                    std::path::Path::new(&item.key)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| item.key.clone())
+                }
+            });
 
-    // Search within the locked state (no additional locking)
-    let result = file_history::search_in_history(&state, "");
+            file_history::FileHistoryItem {
+                path: item.key.clone(),
+                name,
+                last_used: item.last_opened,
+                use_count: item.use_count,
+                is_folder: item.is_folder,
+                source: Some("open_history".to_string()),
+            }
+        })
+        .collect();
 
-    // Lock is automatically released when state goes out of scope
+    // Sort by last_used (most recent first)
+    result.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+
     Ok(result)
 }
 
 #[tauri::command]
 pub fn delete_file_history(path: String, app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    file_history::load_history(&app_data_dir)?;
-    file_history::delete_file_history(path, &app_data_dir)
+    // Delete from open_history instead of file_history
+    open_history::delete_open_history(path, &app_data_dir)
 }
 
 #[tauri::command]
@@ -1885,8 +1952,17 @@ pub fn update_file_history_name(
     app: tauri::AppHandle,
 ) -> Result<file_history::FileHistoryItem, String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    file_history::load_history(&app_data_dir)?;
-    file_history::update_file_history_name(path, new_name, &app_data_dir)
+    let item = open_history::update_item_name(path.clone(), new_name, &app_data_dir)?;
+    
+    // Convert to FileHistoryItem format
+    Ok(file_history::FileHistoryItem {
+        path: item.key.clone(),
+        name: item.name.unwrap_or_else(|| item.key.clone()),
+        last_used: item.last_opened,
+        use_count: item.use_count,
+        is_folder: item.is_folder,
+        source: Some("open_history".to_string()),
+    })
 }
 
 // ===== Memo commands =====
@@ -2592,7 +2668,7 @@ pub fn get_everything_log_file_path() -> Result<Option<String>, String> {
 pub fn purge_file_history(days: Option<u64>, app: tauri::AppHandle) -> Result<usize, String> {
     let app_data_dir = get_app_data_dir(&app)?;
     let days = days.unwrap_or(30).max(1);
-    file_history::purge_history_older_than(days, &app_data_dir)
+    open_history::purge_history_older_than(days, &app_data_dir)
 }
 
 #[tauri::command]
@@ -2602,7 +2678,7 @@ pub fn delete_file_history_by_range(
     app: tauri::AppHandle,
 ) -> Result<usize, String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    file_history::delete_file_history_by_range(start_ts, end_ts, &app_data_dir)
+    open_history::delete_by_range(start_ts, end_ts, &app_data_dir)
 }
 
 #[derive(Serialize)]
@@ -3149,7 +3225,7 @@ pub async fn get_index_status(app: tauri::AppHandle) -> Result<IndexStatus, Stri
             // 使用带超时的历史记录计数，避免数据库锁死
             crate::log!("IndexStatus", "  - 开始查询历史记录数量（带 5 秒超时保护）...");
             let count_start = std::time::Instant::now();
-            let history_total = match file_history::get_history_count(&app_data_dir) {
+            let history_total = match open_history::get_history_count(&app_data_dir) {
                 Ok(count) => {
                     crate::log!("IndexStatus", "  - 历史记录数量查询成功: {} 条 (耗时: {}ms)", count, count_start.elapsed().as_millis());
                     count
@@ -3242,9 +3318,10 @@ pub async fn check_database_health(app: tauri::AppHandle) -> Result<DatabaseHeal
                 let conn = db::get_connection(&app_data_dir_clone)?;
                 
                 // 查询各表记录数
+                // 注意：已迁移到 open_history 表，这里查询 open_history 而不是 file_history
                 let file_history_count: i64 = conn
-                    .query_row("SELECT COUNT(*) FROM file_history", [], |row| row.get(0))
-                    .map_err(|e| format!("查询 file_history 失败: {}", e))?;
+                    .query_row("SELECT COUNT(*) FROM open_history", [], |row| row.get(0))
+                    .map_err(|e| format!("查询 open_history 失败: {}", e))?;
                 
                 let shortcuts_count: i64 = conn
                     .query_row("SELECT COUNT(*) FROM shortcuts", [], |row| row.get(0))
@@ -3524,17 +3601,11 @@ pub fn check_path_exists(path: String, app: tauri::AppHandle) -> Result<Option<f
         .map_err(|e| format!("Failed to get timestamp: {}", e))?
         .as_secs();
 
-    // Try to get use_count from history
-    // 使用写锁，因为可能需要调用 load_history_into（需要可变引用）
-    let use_count = {
-        let mut state = file_history::lock_history_write()?;
-        if state.is_empty() {
-            file_history::load_history_into(&mut state, &app_data_dir).ok();
-        }
-        // Get use_count from history if exists, otherwise use 0
-        state.get(&normalized_path_str)
-            .map(|item| item.use_count)
-            .unwrap_or(0)
+    // Try to get use_count from open_history
+    let use_count = if let Some(item) = open_history::check_path_exists(&normalized_path_str, &app_data_dir)? {
+        item.use_count
+    } else {
+        0
     };
 
     Ok(Some(file_history::FileHistoryItem {
@@ -3543,6 +3614,7 @@ pub fn check_path_exists(path: String, app: tauri::AppHandle) -> Result<Option<f
         last_used: timestamp,
         use_count,
         is_folder: Some(is_folder),
+        source: Some("open_history".to_string()),
     }))
 }
 
@@ -4042,10 +4114,9 @@ pub fn copy_file_to_downloads(source_path: String) -> Result<String, String> {
 pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
     // Add to history when launched
     let app_data_dir = get_app_data_dir(&app)?;
-    file_history::load_history(&app_data_dir).ok(); // Ignore errors
-    file_history::add_file_path(path.clone(), &app_data_dir).ok(); // Ignore errors
+    open_history::add_item(path.clone(), &app_data_dir).ok(); // Ignore errors
 
-    // Launch the file
+    // Launch the file (keep using file_history::launch_file as it's just a utility function)
     file_history::launch_file(&path)
 }
 

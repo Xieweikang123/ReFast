@@ -15,6 +15,7 @@ export function ClipboardWindow() {
   const [imageDataUrls, setImageDataUrls] = useState<Map<string, string>>(new Map());
   const [showSettings, setShowSettings] = useState(false);
   const [maxItems, setMaxItems] = useState<number>(100);
+  const [tempMaxItems, setTempMaxItems] = useState<number>(100);
 
   const loadClipboardItems = async () => {
     try {
@@ -71,24 +72,34 @@ export function ClipboardWindow() {
   const loadSettings = async () => {
     try {
       const settings = await tauriApi.getSettings();
-      setMaxItems(settings.clipboard_max_items ?? 100);
+      const value = settings.clipboard_max_items ?? 100;
+      setMaxItems(value);
+      setTempMaxItems(value);
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
   };
 
-  const saveMaxItems = async (value: number) => {
+  const saveMaxItems = async () => {
     try {
       const settings = await tauriApi.getSettings();
       await tauriApi.saveSettings({
         ...settings,
-        clipboard_max_items: value,
+        clipboard_max_items: tempMaxItems,
       });
-      setMaxItems(value);
+      setMaxItems(tempMaxItems);
     } catch (error) {
       console.error("Failed to save settings:", error);
     }
   };
+
+  // 当打开设置面板时，同步临时值
+  useEffect(() => {
+    if (showSettings) {
+      setTempMaxItems(maxItems);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSettings]);
 
   // 当选中图片项时，自动加载图片数据
   useEffect(() => {
@@ -185,6 +196,10 @@ export function ClipboardWindow() {
       setClipboardItems((items) =>
         items.map((i) => (i.id === updated.id ? updated : i))
       );
+      // 如果当前选中的item就是被更新的item，同步更新selectedItem
+      if (selectedItem?.id === updated.id) {
+        setSelectedItem(updated);
+      }
     } catch (error) {
       console.error("Failed to toggle favorite:", error);
     }
@@ -278,38 +293,80 @@ export function ClipboardWindow() {
       {/* Left Panel - List */}
       <div className="w-2/5 border-r border-gray-200/60 bg-white/80 backdrop-blur-sm flex flex-col shadow-lg">
         {/* Header */}
-        <div className="p-5 border-b border-gray-200/60 bg-gradient-to-r from-white to-gray-50/50">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
-                <span className="text-white text-lg">📋</span>
+        <div className="border-b border-gray-200/60 bg-gradient-to-r from-white to-gray-50/50">
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-md">
+                  <span className="text-white text-lg">📋</span>
+                </div>
+                <h2 className="text-xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
+                  剪切板历史
+                </h2>
               </div>
-              <h2 className="text-xl font-bold bg-gradient-to-r from-gray-800 to-gray-600 bg-clip-text text-transparent">
-                剪切板历史
-              </h2>
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className={`px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200 ${
+                  showSettings ? "bg-blue-50 text-blue-600" : ""
+                }`}
+                title="设置"
+              >
+                <span className="text-base">⚙️</span>
+              </button>
             </div>
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className={`px-3 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200 ${
-                showSettings ? "bg-blue-50 text-blue-600" : ""
-              }`}
-              title="设置"
-            >
-              <span className="text-base">⚙️</span>
-            </button>
+            
+            {/* Search Box */}
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="搜索剪切板内容..."
+                className="w-full px-4 py-2.5 pl-10 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 text-sm bg-white/80 shadow-sm transition-all duration-200 placeholder:text-gray-400"
+              />
+              <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+            </div>
           </div>
-          
-          {/* Search Box */}
-          <div className="relative">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索剪切板内容..."
-              className="w-full px-4 py-2.5 pl-10 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 text-sm bg-white/80 shadow-sm transition-all duration-200 placeholder:text-gray-400"
-            />
-            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm">🔍</span>
-          </div>
+
+          {/* Settings Panel */}
+          {showSettings && (
+            <div className="px-5 pb-4 border-t border-gray-200/40 bg-gradient-to-br from-blue-50/50 to-indigo-50/30 backdrop-blur-sm">
+              <div className="pt-4">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  最大保存数量
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    max="10000"
+                    value={tempMaxItems}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value, 10) || 0;
+                      setTempMaxItems(value);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        saveMaxItems();
+                      }
+                    }}
+                    className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 bg-white shadow-sm"
+                  />
+                  <span className="text-sm text-gray-600 font-medium">条</span>
+                  <button
+                    onClick={saveMaxItems}
+                    disabled={tempMaxItems === maxItems}
+                    className="px-3 py-2 text-xs font-medium bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 transition-all duration-200 shadow-md shadow-blue-500/30 hover:shadow-lg hover:shadow-blue-500/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md whitespace-nowrap"
+                  >
+                    💾 保存
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-2 leading-relaxed">
+                  超过此数量时自动删除最旧记录（0=不限制，收藏不受影响）
+                </p>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Filter Buttons */}
@@ -345,38 +402,6 @@ export function ClipboardWindow() {
             图片
           </button>
         </div>
-
-        {/* Settings Panel */}
-        {showSettings && (
-          <div className="p-4 border-b border-gray-200/60 bg-gradient-to-br from-blue-50/50 to-indigo-50/30 backdrop-blur-sm">
-            <div className="mb-2">
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                最大保存数量
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  max="10000"
-                  value={maxItems}
-                  onChange={(e) => {
-                    const value = parseInt(e.target.value, 10) || 0;
-                    setMaxItems(value);
-                  }}
-                  onBlur={(e) => {
-                    const value = parseInt(e.target.value, 10) || 0;
-                    saveMaxItems(value);
-                  }}
-                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-400 bg-white shadow-sm"
-                />
-                <span className="text-sm text-gray-600 font-medium">条</span>
-              </div>
-              <p className="text-xs text-gray-500 mt-2 leading-relaxed">
-                超过此数量时自动删除最旧记录（0=不限制，收藏不受影响）
-              </p>
-            </div>
-          </div>
-        )}
 
         {/* Actions */}
         <div className="p-3 border-b border-gray-200/60 bg-white/50 flex gap-2">
@@ -416,7 +441,7 @@ export function ClipboardWindow() {
             </div>
           ) : (
             <div className="space-y-2">
-              {filteredItems.map((item) => (
+              {filteredItems.map((item, index) => (
                 <div
                   key={item.id}
                   onClick={() => setSelectedItem(item)}
@@ -428,6 +453,9 @@ export function ClipboardWindow() {
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <span className="text-xs font-bold text-gray-400 bg-gray-200/60 px-1.5 py-0.5 rounded min-w-[24px] text-center flex-shrink-0">
+                        {index + 1}
+                      </span>
                       <span className="text-xs font-medium text-gray-500 bg-gray-100/80 px-2 py-0.5 rounded-md">
                         {formatDate(item.created_at)}
                       </span>

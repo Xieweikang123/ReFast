@@ -531,7 +531,7 @@ fn main() {
             // 不阻塞应用启动，在后台加载
             let app_data_dir_clone = app_data_dir.clone();
             std::thread::spawn(move || {
-                file_history::load_history(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
+                open_history::load_history(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
             });
             open_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist
