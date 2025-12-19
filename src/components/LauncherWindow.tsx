@@ -145,6 +145,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   // 备忘录中心当前是否为“列表模式”（true=列表，false=单条查看/编辑）
   const [isMemoListMode, setIsMemoListMode] = useState(true);
   const [filteredPlugins, setFilteredPlugins] = useState<Array<{ id: string; name: string; description?: string }>>([]);
+  // 待发送到 JSON 查看器的内容队列
+  const pendingJsonContentRef = useRef<string | null>(null);
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
@@ -555,6 +557,40 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
     return () => {
       unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 监听 JSON 查看器窗口准备好事件，发送待处理的内容
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+
+    const setupListener = async () => {
+      try {
+        unlistenFn = await listen("json-formatter:ready", async () => {
+          // 窗口已准备好，发送待处理的内容
+          if (pendingJsonContentRef.current) {
+            const content = pendingJsonContentRef.current;
+            pendingJsonContentRef.current = null; // 清空待处理内容
+            
+            try {
+              const { emit } = await import("@tauri-apps/api/event");
+              await emit("json-formatter:set-content", content);
+            } catch (error) {
+              console.error("Failed to send JSON content to formatter window:", error);
+            }
+          }
+        });
+      } catch (error) {
+        console.error("Failed to setup JSON formatter ready listener:", error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
     };
   }, []);
 
@@ -4346,27 +4382,12 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         return;
       } else if (result.type === "json_formatter" && result.jsonContent) {
         // 打开 JSON 格式化窗口并传递 JSON 内容
+        // 保存待处理的内容，等待窗口准备好事件
+        pendingJsonContentRef.current = result.jsonContent;
+        
+        // 打开窗口（如果窗口已存在，会立即收到 ready 事件；如果是新窗口，会在组件挂载后收到 ready 事件）
         await tauriApi.showJsonFormatterWindow();
-        // 使用事件传递 JSON 内容到格式化窗口
-        // 延迟发送事件，确保窗口已创建并准备好接收事件
-        // 使用多个延迟确保窗口完全初始化
-        setTimeout(async () => {
-          try {
-            const { emit } = await import("@tauri-apps/api/event");
-            await emit("json-formatter:set-content", result.jsonContent);
-          } catch (error) {
-            console.error("Failed to send JSON content to formatter window:", error);
-            // 如果第一次失败，再试一次
-            setTimeout(async () => {
-              try {
-                const { emit } = await import("@tauri-apps/api/event");
-                await emit("json-formatter:set-content", result.jsonContent);
-              } catch (retryError) {
-                console.error("Failed to send JSON content to formatter window (retry):", retryError);
-              }
-            }, 500);
-          }
-        }, 500);
+        
         // 关闭启动器
         await hideLauncherAndResetState();
         return;

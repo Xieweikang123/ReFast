@@ -26,41 +26,73 @@ export function JsonFormatterWindow() {
   const monacoEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null); // Monaco Editor 实例
 
 
+  // 处理 JSON 内容的函数
+  const handleJsonContent = useCallback((jsonContent: string) => {
+    if (!jsonContent) return;
+    
+    // 自动格式化
+    try {
+      const parsed = JSON.parse(jsonContent);
+      const formattedJson = JSON.stringify(parsed, null, DEFAULT_INDENT);
+      setFormatted(formattedJson);
+      setParsedData(parsed);
+      setError(null);
+      
+      // 同时更新两个状态，确保无论当前模式如何都能正确显示
+      setInput(jsonContent); // 分栏模式使用
+      setSingleModeInput(formattedJson); // 单框模式使用格式化后的内容
+      
+      // 默认展开所有节点
+      const allPaths = getAllPaths(parsed, "");
+      setExpandedPaths(new Set(allPaths));
+    } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : "JSON 格式错误";
+      setError(errorMessage);
+      setFormatted("");
+      setParsedData(null);
+      // 即使解析失败，也显示原始内容
+      setInput(jsonContent);
+      setSingleModeInput(jsonContent);
+    }
+  }, []);
+
+  // 发送就绪信号的函数
+  const sendReadySignal = useCallback(async () => {
+    try {
+      const { emit } = await import("@tauri-apps/api/event");
+      await emit("json-formatter:ready");
+    } catch (error) {
+      console.error("Failed to emit ready signal:", error);
+    }
+  }, []);
+
   // 监听来自启动器的 JSON 内容设置事件
   useEffect(() => {
     let unlisten: (() => void) | null = null;
+    let unlistenFocus: (() => void) | null = null;
 
     const setupListener = async () => {
       try {
+        const window = getCurrentWindow();
+        
+        // 监听内容设置事件
         unlisten = await listen<string>("json-formatter:set-content", (event) => {
-          const jsonContent = event.payload;
-          if (jsonContent) {
-            // 自动格式化
-            try {
-              const parsed = JSON.parse(jsonContent);
-              const formattedJson = JSON.stringify(parsed, null, DEFAULT_INDENT);
-              setFormatted(formattedJson);
-              setParsedData(parsed);
-              setError(null);
-              
-              // 同时更新两个状态，确保无论当前模式如何都能正确显示
-              setInput(jsonContent); // 分栏模式使用
-              setSingleModeInput(formattedJson); // 单框模式使用格式化后的内容
-              
-              // 默认展开所有节点
-              const allPaths = getAllPaths(parsed, "");
-              setExpandedPaths(new Set(allPaths));
-            } catch (e) {
-              const errorMessage = e instanceof Error ? e.message : "JSON 格式错误";
-              setError(errorMessage);
-              setFormatted("");
-              setParsedData(null);
-              // 即使解析失败，也显示原始内容
-              setInput(jsonContent);
-              setSingleModeInput(jsonContent);
-            }
+          handleJsonContent(event.payload);
+        });
+        
+        // 监听窗口聚焦事件，当窗口显示时发送就绪信号
+        unlistenFocus = await window.onFocusChanged(async ({ payload: focused }) => {
+          if (focused) {
+            // 窗口获得焦点时，发送就绪信号
+            await sendReadySignal();
           }
         });
+        
+        // 组件挂载后，发送就绪信号，通知启动器窗口已准备好接收内容
+        // 延迟一小段时间确保监听器已完全设置好
+        setTimeout(() => {
+          sendReadySignal();
+        }, 100);
       } catch (error) {
         console.error("Failed to setup JSON formatter event listener:", error);
       }
@@ -72,8 +104,11 @@ export function JsonFormatterWindow() {
       if (unlisten) {
         unlisten();
       }
+      if (unlistenFocus) {
+        unlistenFocus();
+      }
     };
-  }, []);
+  }, [handleJsonContent, sendReadySignal]);
 
   // 格式化输入的 JSON 内容
   const formatJsonContent = (content: string, preserveCursor: boolean = false) => {

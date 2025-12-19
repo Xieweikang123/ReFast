@@ -411,9 +411,6 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
       setHistoryMessage(null);
       
       // 基于当前筛选结果进行删除，确保与显示的列表完全一致
-      // 获取当前筛选后的路径列表
-      const pathsToDelete = filteredHistoryItems.map(item => item.path);
-      
       // 逐个删除（或者可以批量删除，但后端目前只支持单个删除）
       // 所有数据现在都在 open_history 中，统一使用 deleteFileHistory
       let deletedCount = 0;

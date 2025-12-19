@@ -1,4 +1,7 @@
-import type { Plugin } from "../types";
+import type { Plugin, PluginContext } from "../types";
+
+// Re-export Plugin types for use in plugin files
+export type { Plugin, PluginContext };
 
 export interface PluginManifest {
   id: string;
