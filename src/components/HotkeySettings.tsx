@@ -44,10 +44,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
   const appCenterIsCompletingRef = useRef(false);
   const appCenterFinalKeysRef = useRef<string[] | null>(null);
 
+  // 应用快捷键相关状态
+  const [appHotkeys, setAppHotkeys] = useState<Record<string, HotkeyConfig>>({});
+
   useEffect(() => {
     loadHotkey();
     loadPluginHotkeys();
     loadAppCenterHotkey();
+    loadAppHotkeys();
     // 确保插件已初始化
     pluginRegistry.initialize().then(() => {
       setAllPlugins(pluginRegistry.getAllPlugins());
@@ -94,7 +98,26 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
     }
   };
 
+  const loadAppHotkeys = async () => {
+    try {
+      const configs = await tauriApi.getAppHotkeys();
+      setAppHotkeys(configs);
+    } catch (error) {
+      console.error("Failed to load app hotkeys:", error);
+    }
+  };
+
   const saveAppCenterHotkey = async (config: HotkeyConfig | null) => {
+    // 如果设置了快捷键，检查冲突
+    if (config) {
+      const conflict = checkHotkeyConflict(config, "appCenter");
+      if (conflict) {
+        setSaveMessage(`⚠️ ${conflict}，请修改后再保存`);
+        setTimeout(() => setSaveMessage(null), 5000);
+        return;
+      }
+    }
+
     try {
       await tauriApi.saveAppCenterHotkey(config);
       setAppCenterHotkey(config);
@@ -109,6 +132,16 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
   };
 
   const savePluginHotkey = async (pluginId: string, config: HotkeyConfig | null) => {
+    // 如果设置了快捷键，检查冲突
+    if (config) {
+      const conflict = checkHotkeyConflict(config, "plugin", pluginId);
+      if (conflict) {
+        setSaveMessage(`⚠️ ${conflict}，请修改后再保存`);
+        setTimeout(() => setSaveMessage(null), 5000);
+        return;
+      }
+    }
+
     try {
       console.log(`[PluginHotkeys] Saving hotkey for plugin ${pluginId}:`, config);
       await tauriApi.savePluginHotkey(pluginId, config);
@@ -148,6 +181,56 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
     }
     
     return `${mods} + ${config.key}`;
+  };
+
+  // 检查快捷键是否相同
+  const isHotkeyEqual = (a: HotkeyConfig, b: HotkeyConfig): boolean => {
+    // 对修饰键数组进行排序后比较
+    const aMods = [...a.modifiers].sort().join(",");
+    const bMods = [...b.modifiers].sort().join(",");
+    return aMods === bMods && a.key === b.key;
+  };
+
+  // 检查快捷键冲突
+  const checkHotkeyConflict = (
+    newHotkey: HotkeyConfig,
+    excludeType?: "launcher" | "appCenter" | "plugin" | "app",
+    excludeId?: string
+  ): string | null => {
+    // 检查与启动器快捷键冲突
+    if (excludeType !== "launcher" && isHotkeyEqual(newHotkey, hotkey)) {
+      return "与启动器快捷键冲突";
+    }
+
+    // 检查与应用中心快捷键冲突
+    if (excludeType !== "appCenter" && appCenterHotkey && isHotkeyEqual(newHotkey, appCenterHotkey)) {
+      return "与应用中心快捷键冲突";
+    }
+
+    // 检查与插件快捷键冲突
+    for (const [pluginId, pluginHotkey] of Object.entries(pluginHotkeys)) {
+      if (excludeType === "plugin" && excludeId === pluginId) {
+        continue; // 跳过当前正在设置的插件
+      }
+      if (isHotkeyEqual(newHotkey, pluginHotkey)) {
+        const plugin = allPlugins.find(p => p.id === pluginId);
+        return `与插件"${plugin?.name || pluginId}"的快捷键冲突`;
+      }
+    }
+
+    // 检查与应用快捷键冲突
+    for (const [appPath, appHotkey] of Object.entries(appHotkeys)) {
+      if (excludeType === "app" && excludeId === appPath) {
+        continue; // 跳过当前正在设置的应用
+      }
+      if (isHotkeyEqual(newHotkey, appHotkey)) {
+        // 尝试从路径中提取应用名称
+        const appName = appPath.split(/[/\\]/).pop() || appPath;
+        return `与应用"${appName}"的快捷键冲突`;
+      }
+    }
+
+    return null;
   };
 
   const startRecording = () => {
@@ -306,6 +389,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
         key: key,
       };
 
+      // 检查冲突
+      const conflict = checkHotkeyConflict(newHotkey, "launcher");
+      if (conflict) {
+        setSaveMessage(`⚠️ ${conflict}`);
+        setTimeout(() => setSaveMessage(null), 5000);
+        // 仍然设置快捷键，但显示警告
+      }
+
       setHotkey(newHotkey);
       setCurrentKeys([...modifiers, key]);
       setIsRecording(false);
@@ -379,6 +470,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
             key: mappedKey,
           };
 
+          // 检查冲突
+          const conflict = checkHotkeyConflict(newHotkey, "plugin", recordingPluginId);
+          if (conflict) {
+            setSaveMessage(`⚠️ ${conflict}`);
+            setTimeout(() => setSaveMessage(null), 5000);
+            // 仍然保存，但显示警告
+          }
+
           pluginLastModifierRef.current = null;
           pluginLastModifierTimeRef.current = 0;
 
@@ -433,6 +532,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
         modifiers: modifiers,
         key: key,
       };
+
+      // 检查冲突
+      const conflict = checkHotkeyConflict(newHotkey, "plugin", recordingPluginId);
+      if (conflict) {
+        setSaveMessage(`⚠️ ${conflict}`);
+        setTimeout(() => setSaveMessage(null), 5000);
+        // 仍然保存，但显示警告
+      }
 
       setPluginRecordingKeys([...modifiers, key]);
       savePluginHotkey(recordingPluginId, newHotkey);
@@ -506,6 +613,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
             key: mappedKey,
           };
 
+          // 检查冲突
+          const conflict = checkHotkeyConflict(newHotkey, "appCenter");
+          if (conflict) {
+            setSaveMessage(`⚠️ ${conflict}`);
+            setTimeout(() => setSaveMessage(null), 5000);
+            // 仍然保存，但显示警告
+          }
+
           appCenterLastModifierRef.current = null;
           appCenterLastModifierTimeRef.current = 0;
 
@@ -561,6 +676,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
         key: key,
       };
 
+      // 检查冲突
+      const conflict = checkHotkeyConflict(newHotkey, "appCenter");
+      if (conflict) {
+        setSaveMessage(`⚠️ ${conflict}`);
+        setTimeout(() => setSaveMessage(null), 5000);
+        // 仍然保存，但显示警告
+      }
+
       setAppCenterRecordingKeys([...modifiers, key]);
       saveAppCenterHotkey(newHotkey);
       setRecordingAppCenter(false);
@@ -610,6 +733,14 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
   }, [isRecording, recordingPluginId, recordingAppCenter, onClose]);
 
   const handleSave = async () => {
+    // 检查冲突
+    const conflict = checkHotkeyConflict(hotkey, "launcher");
+    if (conflict) {
+      setSaveMessage(`⚠️ ${conflict}，请修改后再保存`);
+      setTimeout(() => setSaveMessage(null), 5000);
+      return;
+    }
+
     try {
       setIsSaving(true);
       setSaveMessage(null);
@@ -731,6 +862,7 @@ export function HotkeySettings({ onClose }: HotkeySettingsProps) {
             <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
               <li>快捷键必须包含至少一个修饰键（Ctrl、Alt、Shift 或 Meta）</li>
               <li>建议使用 Alt 或 Ctrl 作为修饰键，避免与其他应用冲突</li>
+              <li>系统会自动检测快捷键冲突，冲突时无法保存</li>
               <li>保存后需要重启应用才能生效</li>
             </ul>
           </div>
