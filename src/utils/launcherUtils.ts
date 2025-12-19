@@ -174,7 +174,8 @@ export function calculateRelevanceScore(
   isApp?: boolean,  // 新增：标识是否是应用
   namePinyin?: string,  // 新增：应用名称的拼音全拼
   namePinyinInitials?: string,  // 新增：应用名称的拼音首字母
-  isFileHistory?: boolean  // 新增：标识是否是历史文件
+  isFileHistory?: boolean,  // 新增：标识是否是历史文件
+  isUrl?: boolean  // 新增：标识是否是 URL
 ): number {
   if (!query || !query.trim()) {
     // 如果查询为空，只根据使用频率和时间排序
@@ -250,6 +251,11 @@ export function calculateRelevanceScore(
     nameMatchScore = 500; // 开头匹配
   } else if (nameLower.includes(queryLower)) {
     nameMatchScore = 100; // 包含匹配
+  }
+  
+  // URL 类型降低匹配分数权重（×0.7），避免 URL 历史记录权重过高
+  if (isUrl && nameMatchScore > 0) {
+    nameMatchScore = Math.floor(nameMatchScore * 0.7);
   }
   
   score += nameMatchScore;
@@ -362,6 +368,12 @@ export function calculateRelevanceScore(
     // 历史文件类型额外加权（×1.5），让历史文件更重视最近使用时间
     if (isFileHistory && timeScore > 0) {
       timeScore = Math.floor(timeScore * 1.5);
+    }
+    
+    // URL 类型大幅降低时间加分权重（×0.3），避免 URL 历史记录权重过高
+    // 注意：这不会影响排序，因为排序时优先按时间排序，这里只是影响评分
+    if (isUrl && timeScore > 0) {
+      timeScore = Math.floor(timeScore * 0.3);
     }
     
     score += Math.max(0, timeScore);

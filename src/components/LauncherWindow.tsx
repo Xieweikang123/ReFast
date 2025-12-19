@@ -2316,9 +2316,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           normalizePathForHistory(key) === bPathNormalized
         )?.[1];
         const aUseCount = a.file?.use_count;
-        const aLastUsed = aLastUsedFromHistory || a.file?.last_used || 0;
+        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+        const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
         const bUseCount = b.file?.use_count;
-        const bLastUsed = bLastUsedFromHistory || b.file?.last_used || 0;
+        const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
         
 
         // 计算相关性评分
@@ -2332,7 +2333,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           a.type === "app",  // 新增：标识是否是应用
           a.app?.name_pinyin,  // 新增：应用拼音全拼
           a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          a.type === "file"  // 新增：标识是否是历史文件
+          a.type === "file",  // 新增：标识是否是历史文件
+          a.type === "url"  // 新增：标识是否是 URL
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -2344,7 +2346,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           b.type === "app",  // 新增：标识是否是应用
           b.app?.name_pinyin,  // 新增：应用拼音全拼
           b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          b.type === "file"  // 新增：标识是否是历史文件
+          b.type === "file",  // 新增：标识是否是历史文件
+          b.type === "url"  // 新增：标识是否是 URL
         );
         
         // 调试：输出排序比较过程
@@ -2363,16 +2366,16 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         if (a.type === "file" && b.type === "everything") return -1;
         if (a.type === "everything" && b.type === "file") return 1;
 
-        // 第一优先级：最近使用时间（最近打开的始终排在前面）
-        if (aLastUsed !== undefined && aLastUsed > 0 && bLastUsed !== undefined && bLastUsed > 0) {
-          // 两个都有使用时间，按时间降序排序（最近的在前面）
-          if (aLastUsed !== bLastUsed) {
-            return bLastUsed - aLastUsed;
-          }
-        } else if (aLastUsed !== undefined && aLastUsed > 0) {
+        // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
+        // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
+        if (aLastUsed > 0 && bLastUsed > 0) {
+          // 两个都有使用时间，严格按时间降序排序（最近的在前面）
+          // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
+          return bLastUsed - aLastUsed;
+        } else if (aLastUsed > 0) {
           // 只有 a 有使用时间，a 排在前面
           return -1;
-        } else if (bLastUsed !== undefined && bLastUsed > 0) {
+        } else if (bLastUsed > 0) {
           // 只有 b 有使用时间，b 排在前面
           return 1;
         }
@@ -2450,9 +2453,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           normalizePathForHistory(key) === bPathNormalized
         )?.[1];
         const aUseCount = a.file?.use_count;
-        const aLastUsed = aLastUsedFromHistory || a.file?.last_used || 0;
+        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+        const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
         const bUseCount = b.file?.use_count;
-        const bLastUsed = bLastUsedFromHistory || b.file?.last_used || 0;
+        const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
         
 
         // 计算相关性评分
@@ -2466,7 +2470,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           a.type === "app",  // 新增：标识是否是应用
           a.app?.name_pinyin,  // 新增：应用拼音全拼
           a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          a.type === "file"  // 新增：标识是否是历史文件
+          a.type === "file",  // 新增：标识是否是历史文件
+          a.type === "url"  // 新增：标识是否是 URL
         );
         const bScore = calculateRelevanceScore(
           b.displayName,
@@ -2478,7 +2483,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           b.type === "app",  // 新增：标识是否是应用
           b.app?.name_pinyin,  // 新增：应用拼音全拼
           b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          b.type === "file"  // 新增：标识是否是历史文件
+          b.type === "file",  // 新增：标识是否是历史文件
+          b.type === "url"  // 新增：标识是否是 URL
         );
 
         // Everything 内部快捷方式 (.lnk) 优先
@@ -2492,21 +2498,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         if (a.type === "file" && b.type === "everything") return -1;
         if (a.type === "everything" && b.type === "file") return 1;
 
-        // 第一优先级：最近使用时间（最近打开的始终排在前面）
-        if (aLastUsed !== undefined && aLastUsed > 0 && bLastUsed !== undefined && bLastUsed > 0) {
-          // 两个都有使用时间，按时间降序排序（最近的在前面）
-          if (aLastUsed !== bLastUsed) {
-            const result = bLastUsed - aLastUsed;
-            return result;
-          }
-        } else if (aLastUsed !== undefined && aLastUsed > 0) {
+        // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
+        // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
+        if (aLastUsed > 0 && bLastUsed > 0) {
+          // 两个都有使用时间，严格按时间降序排序（最近的在前面）
+          // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
+          return bLastUsed - aLastUsed;
+        } else if (aLastUsed > 0) {
           // 只有 a 有使用时间，a 排在前面
           return -1;
-        } else if (bLastUsed !== undefined && bLastUsed > 0) {
+        } else if (bLastUsed > 0) {
           // 只有 b 有使用时间，b 排在前面
           return 1;
-        } else {
-          // 两个都没有使用时间
         }
 
         // 第二优先级：按评分降序排序（分数高的在前）
@@ -2542,14 +2545,91 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       });
     }
     
-    // 插件不再单独提取，已包含在 otherResults 的排序结果中
-    // 如果 JSON 中包含链接，优先显示 JSON 格式化选项，否则按原来的顺序（URLs -> Emails -> JSON formatter -> other results）
-    const finalResults = jsonContainsLinks && jsonFormatterResult.length > 0
-      ? [...jsonFormatterResult, ...urlResults, ...emailResults, ...otherResults]
-      : [...urlResults, ...emailResults, ...jsonFormatterResult, ...otherResults];
+    // 合并所有结果，然后统一排序（确保最近使用时间优先）
+    const allResultsToSort = [
+      ...otherResults,
+      ...urlResults,
+      ...emailResults,
+      ...jsonFormatterResult
+    ];
     
+    // 对所有结果统一排序，确保最近使用时间优先
+    const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
+    allResultsToSort.sort((a, b) => {
+      const aPathNormalized = normalizePathForHistory(a.path);
+      const bPathNormalized = normalizePathForHistory(b.path);
+      const aLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
+        normalizePathForHistory(key) === aPathNormalized
+      )?.[1];
+      const bLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
+        normalizePathForHistory(key) === bPathNormalized
+      )?.[1];
+      const aUseCount = a.file?.use_count;
+      // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+      const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
+      const bUseCount = b.file?.use_count;
+      const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
+      
+      // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
+      if (aLastUsed > 0 && bLastUsed > 0) {
+        // 两个都有使用时间，严格按时间降序排序（最近的在前面）
+        return bLastUsed - aLastUsed;
+      } else if (aLastUsed > 0) {
+        // 只有 a 有使用时间，a 排在前面
+        return -1;
+      } else if (bLastUsed > 0) {
+        // 只有 b 有使用时间，b 排在前面
+        return 1;
+      }
+      
+      // 第二优先级：按评分降序排序（分数高的在前）
+      const aScore = calculateRelevanceScore(
+        a.displayName,
+        a.path,
+        query,
+        aUseCount,
+        aLastUsed,
+        a.type === "everything",
+        a.type === "app",
+        a.app?.name_pinyin,
+        a.app?.name_pinyin_initials,
+        a.type === "file",
+        a.type === "url"
+      );
+      const bScore = calculateRelevanceScore(
+        b.displayName,
+        b.path,
+        query,
+        bUseCount,
+        bLastUsed,
+        b.type === "everything",
+        b.type === "app",
+        b.app?.name_pinyin,
+        b.app?.name_pinyin_initials,
+        b.type === "file",
+        b.type === "url"
+      );
+      
+      if (bScore !== aScore) {
+        return bScore - aScore;
+      }
+      
+      // 第三优先级：类型优先级（应用 > 历史文件 > Everything > 其他）
+      if (a.type === "app" && b.type !== "app") return -1;
+      if (a.type !== "app" && b.type === "app") return 1;
+      if (a.type === "file" && b.type === "everything") return -1;
+      if (a.type === "everything" && b.type === "file") return 1;
+      
+      // 第四优先级：使用频率（使用次数多的在前）
+      if (aUseCount !== undefined && bUseCount !== undefined && aUseCount !== bUseCount) {
+        return bUseCount - aUseCount;
+      }
+      
+      // 最后：按名称排序（保持稳定排序）
+      return a.displayName.localeCompare(b.displayName);
+    });
     
-    return finalResults;
+    return allResultsToSort;
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, query, aiAnswer]);
 
   // 使用 ref 来跟踪当前的 query，避免闭包问题
@@ -2693,18 +2773,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         normalizePathForHistory(key) === bPathNormalized
       )?.[1];
       const aUseCount = a.file?.use_count;
-      const aLastUsed = aLastUsedFromHistory || a.file?.last_used || 0;
+      // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+      const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
       const bUseCount = b.file?.use_count;
-      const bLastUsed = bLastUsedFromHistory || b.file?.last_used || 0;
+      const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
       
       
       // 第一优先级：最近使用时间（最近打开的始终排在前面，无论是否有查询）
+      // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
       if (aLastUsed > 0 && bLastUsed > 0) {
-        // 两个都有使用时间，按时间降序排序（最近的在前面）
-        if (aLastUsed !== bLastUsed) {
-          const result = bLastUsed - aLastUsed;
-          return result;
-        }
+        // 两个都有使用时间，严格按时间降序排序（最近的在前面）
+        // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
+        return bLastUsed - aLastUsed;
       } else if (aLastUsed > 0) {
         // 只有 a 有使用时间，a 排在前面
         return -1;
@@ -5906,6 +5986,54 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
                       </div>
                     )}
                     {/* 其他结果垂直排列 */}
+                    {(() => {
+                      // 调试：输出最终渲染的纵向列表数组（完整数组）
+                      const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
+                      const fullArray = verticalResults.map((result, idx) => {
+                        const pathNormalized = normalizePathForHistory(result.path);
+                        const lastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
+                          normalizePathForHistory(key) === pathNormalized
+                        )?.[1];
+                        const useCount = result.file?.use_count;
+                        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+                        const lastUsed = (lastUsedFromHistory || result.file?.last_used || 0) * 1000;
+                        const score = calculateRelevanceScore(
+                          result.displayName,
+                          result.path,
+                          query,
+                          useCount,
+                          lastUsed,
+                          result.type === "everything",
+                          result.type === "app",
+                          result.app?.name_pinyin,
+                          result.app?.name_pinyin_initials,
+                          result.type === "file",
+                          result.type === "url"
+                        );
+                        return {
+                          index: idx,
+                          type: result.type,
+                          displayName: result.displayName,
+                          path: result.path,
+                          lastUsed: lastUsed ? new Date(lastUsed).toLocaleString() : "无",
+                          lastUsedTimestamp: lastUsed,
+                          useCount: useCount || 0,
+                          score: score,
+                          url: result.url || undefined,
+                          file: result.file ? {
+                            use_count: result.file.use_count,
+                            last_used: result.file.last_used ? new Date(result.file.last_used * 1000).toLocaleString() : "无",
+                            last_used_timestamp: result.file.last_used
+                          } : undefined
+                        };
+                      });
+                      console.log("=== 纵向列表最终渲染数组（完整） ===", {
+                        数组长度: fullArray.length,
+                        查询内容: query,
+                        完整数组: fullArray
+                      });
+                      return null;
+                    })()}
                     {verticalResults.map((result, index) => {
                       const isSelected = selectedVerticalIndex === index;
                       // 计算垂直结果的序号（从1开始，只计算垂直结果）
@@ -5993,7 +6121,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
                       )}
                       {result.type === "file" && result.file && (() => {
                         // 获取最近使用时间（优先使用 openHistory 最新数据，否则使用 file.last_used）
-                        const lastUsed = openHistory[result.path] || result.file?.last_used || 0;
+                        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+                        const lastUsed = (openHistory[result.path] || result.file?.last_used || 0) * 1000;
                         const useCount = result.file.use_count || 0;
                         
                         // 只有在有使用记录（使用次数 > 0 或最后使用时间 > 0）时才显示
