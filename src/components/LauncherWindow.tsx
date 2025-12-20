@@ -1804,9 +1804,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       path: "json://formatter",
     }] : [];
     
-    // 检查 JSON 中是否包含链接
-    const jsonContainsLinks = detectedJson ? extractUrls(detectedJson).length > 0 : false;
-    
     // 检查是否应该显示"历史访问"结果（只在明确搜索相关关键词时显示）
     const lowerQuery = query.toLowerCase().trim();
     const historyKeywords = ["历史访问", "历史", "访问历史", "ls", "history"];
