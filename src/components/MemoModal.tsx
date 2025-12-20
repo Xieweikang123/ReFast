@@ -1,5 +1,6 @@
 import type { MemoItem } from "../types";
 import { tauriApi } from "../api/tauri";
+import { formatFullDateTime } from "../utils/dateUtils";
 
 interface MemoModalProps {
   isOpen: boolean;
@@ -222,7 +223,7 @@ export function MemoModal({
                       </div>
                       <div className="text-[11px] text-gray-400 mt-0.5">
                         更新于{" "}
-                        {new Date(memo.updated_at * 1000).toLocaleString("zh-CN")}
+                        {formatFullDateTime(memo.updated_at)}
                       </div>
                     </div>
                     <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -355,11 +356,11 @@ export function MemoModal({
                 <div className="text-xs text-gray-500">
                   <div>
                     创建时间:{" "}
-                    {new Date(selectedMemo.created_at * 1000).toLocaleString("zh-CN")}
+                    {formatFullDateTime(selectedMemo.created_at)}
                   </div>
                   <div>
                     更新时间:{" "}
-                    {new Date(selectedMemo.updated_at * 1000).toLocaleString("zh-CN")}
+                    {formatFullDateTime(selectedMemo.updated_at)}
                   </div>
                 </div>
               </div>

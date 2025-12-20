@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { MemoItem } from "../types";
+import { formatFullDateTime } from "../utils/dateUtils";
 
 export function MemoWindow() {
   const [memos, setMemos] = useState<MemoItem[]>([]);
@@ -176,7 +177,7 @@ export function MemoWindow() {
                       {memo.content && memo.content.length > 80 ? "..." : ""}
                     </div>
                     <div className="text-[11px] text-gray-400 mt-1">
-                      更新于 {new Date(memo.updated_at * 1000).toLocaleString("zh-CN")}
+                      更新于 {formatFullDateTime(memo.updated_at)}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -321,11 +322,11 @@ export function MemoWindow() {
               <div className="text-xs text-gray-500">
                 <div>
                   创建时间:{" "}
-                  {new Date(selectedMemo.created_at * 1000).toLocaleString("zh-CN")}
+                  {formatFullDateTime(selectedMemo.created_at)}
                 </div>
                 <div>
                   更新时间:{" "}
-                  {new Date(selectedMemo.updated_at * 1000).toLocaleString("zh-CN")}
+                  {formatFullDateTime(selectedMemo.updated_at)}
                 </div>
               </div>
             </div>

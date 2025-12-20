@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import type { IndexStatus, FileHistoryItem } from "../types";
 import { tauriApi } from "../api/tauri";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { formatSimpleDateTime } from "../utils/dateUtils";
 
 interface FileHistoryPanelProps {
   indexStatus?: IndexStatus | null;
@@ -12,7 +13,7 @@ interface FileHistoryPanelProps {
 // 格式化时间戳
 const formatTimestamp = (timestamp?: number | null) => {
   if (!timestamp) return "暂无";
-  return new Date(timestamp * 1000).toLocaleString();
+  return formatSimpleDateTime(timestamp);
 };
 
 // 解析日期范围为时间戳

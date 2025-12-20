@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { WordRecord } from "../types";
+import { formatDateTime } from "../utils/dateUtils";
 
 interface WordbookPanelProps {
   ollamaSettings: { model: string; base_url: string };
@@ -221,6 +222,7 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
           throw new Error('无法读取响应流');
         }
 
+        // 立即开始读取，不等待
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
@@ -248,7 +250,8 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
           // 保留最后一个不完整的行
           buffer = lines.pop() || '';
 
-          // 快速处理所有完整的行
+          // 快速处理所有完整的行，累积更新后一次性刷新
+          let hasUpdate = false;
           for (const line of lines) {
             const trimmedLine = line.trim();
             if (!trimmedLine) continue;
@@ -257,13 +260,11 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
               const data = JSON.parse(trimmedLine);
               if (data.response) {
                 accumulatedAnswer += data.response;
-                flushSync(() => {
-                  setAiExplanationText(accumulatedAnswer);
-                });
+                hasUpdate = true;
               }
               if (data.done) {
-                setIsAiExplanationLoading(false);
                 flushSync(() => {
+                  setIsAiExplanationLoading(false);
                   setAiExplanationText(accumulatedAnswer);
                 });
                 return;
@@ -273,10 +274,19 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
               console.warn('解析流式数据失败:', e, trimmedLine);
             }
           }
+          
+          // 如果有更新，立即更新UI（一次性更新，避免多次flushSync）
+          if (hasUpdate) {
+            flushSync(() => {
+              setAiExplanationText(accumulatedAnswer);
+            });
+          }
         }
         
-        setIsAiExplanationLoading(false);
-        setAiExplanationText(accumulatedAnswer);
+        flushSync(() => {
+          setIsAiExplanationLoading(false);
+          setAiExplanationText(accumulatedAnswer);
+        });
         return;
       }
 
@@ -288,6 +298,7 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
         throw new Error('无法读取响应流');
       }
 
+      // 立即开始读取，不等待
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -297,9 +308,6 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
               const data = JSON.parse(buffer);
               if (data.message?.content) {
                 accumulatedAnswer += data.message.content;
-                flushSync(() => {
-                  setAiExplanationText(accumulatedAnswer);
-                });
               }
             } catch (e) {
               console.warn('解析最后的数据失败:', e, buffer);
@@ -315,7 +323,8 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
         // 保留最后一个不完整的行
         buffer = lines.pop() || '';
 
-        // 快速处理所有完整的行
+        // 快速处理所有完整的行，累积更新后一次性刷新
+        let hasUpdate = false;
         for (const line of lines) {
           const trimmedLine = line.trim();
           if (!trimmedLine) continue;
@@ -324,14 +333,11 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
             const data = JSON.parse(trimmedLine);
             if (data.message?.content) {
               accumulatedAnswer += data.message.content;
-              // 立即更新 UI，不等待
-              flushSync(() => {
-                setAiExplanationText(accumulatedAnswer);
-              });
+              hasUpdate = true;
             }
             if (data.done) {
-              setIsAiExplanationLoading(false);
               flushSync(() => {
+                setIsAiExplanationLoading(false);
                 setAiExplanationText(accumulatedAnswer);
               });
               return;
@@ -341,38 +347,29 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
             console.warn('解析流式数据失败:', e, trimmedLine);
           }
         }
+        
+        // 如果有更新，立即更新UI（一次性更新，避免多次flushSync）
+        if (hasUpdate) {
+          flushSync(() => {
+            setAiExplanationText(accumulatedAnswer);
+          });
+        }
       }
       
-      setIsAiExplanationLoading(false);
-      setAiExplanationText(accumulatedAnswer);
+      // 流结束，确保最终状态更新
+      flushSync(() => {
+        setIsAiExplanationLoading(false);
+        setAiExplanationText(accumulatedAnswer);
+      });
     } catch (error: any) {
       console.error('AI解释失败:', error);
-      setIsAiExplanationLoading(false);
-      setAiExplanationText(`获取AI解释失败: ${error.message || '未知错误'}\n\n请确保：\n1. Ollama服务正在运行\n2. 已安装并配置了正确的模型\n3. 设置中的Ollama配置正确`);
+      flushSync(() => {
+        setIsAiExplanationLoading(false);
+        setAiExplanationText(`获取AI解释失败: ${error.message || '未知错误'}\n\n请确保：\n1. Ollama服务正在运行\n2. 已安装并配置了正确的模型\n3. 设置中的Ollama配置正确`);
+      });
     }
   }, [ollamaSettings]);
 
-  const formatDate = useCallback((timestamp: number | undefined | null) => {
-    if (!timestamp || timestamp <= 0) {
-      return "未知时间";
-    }
-    try {
-      const timestampMs = timestamp < 10000000000 ? timestamp * 1000 : timestamp;
-      const date = new Date(timestampMs);
-      if (isNaN(date.getTime())) {
-        return "无效时间";
-      }
-      return date.toLocaleDateString("zh-CN", {
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch (error) {
-      return "无效时间";
-    }
-  }, []);
 
   // 暴露刷新函数给父组件
   useEffect(() => {
@@ -474,7 +471,7 @@ export function WordbookPanel({ ollamaSettings, onRefresh }: WordbookPanelProps)
                       </span>
                       <span>掌握程度: {record.masteryLevel}/5</span>
                       <span>复习次数: {record.reviewCount}</span>
-                      <span>{formatDate(record.createdAt)}</span>
+                      <span>{formatDateTime(record.createdAt)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

@@ -8,6 +8,7 @@ import { fetchUsersCount } from "../api/events";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AppIndexList } from "./AppIndexList";
 import { FileHistoryPanel } from "./FileHistoryPanel";
+import { formatSimpleDateTime } from "../utils/dateUtils";
 
 // Icon extraction failure marker 和相关函数已移至 AppIndexList 组件
 
@@ -153,7 +154,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
 
   const formatTimestamp = (timestamp?: number | null) => {
     if (!timestamp) return "暂无";
-    return new Date(timestamp * 1000).toLocaleString();
+    return formatSimpleDateTime(timestamp);
   };
 
   const formatBytes = (size?: number | null) => {

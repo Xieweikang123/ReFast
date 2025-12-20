@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { tauriApi } from "../api/tauri";
 import { listen } from "@tauri-apps/api/event";
 import type { FileHistoryItem } from "../types";
+import { formatFullDateTime } from "../utils/dateUtils";
 
 interface ShortcutsConfigProps {
   isOpen?: boolean;
@@ -400,7 +401,7 @@ export function ShortcutsConfig({ onClose }: ShortcutsConfigProps) {
                             {item.path}
                           </div>
                           <div className="text-xs text-gray-400 mt-1">
-                            使用 {item.use_count} 次 · 最后使用：{new Date(item.last_used * 1000).toLocaleString('zh-CN')}
+                            使用 {item.use_count} 次 · 最后使用：{formatFullDateTime(item.last_used)}
                           </div>
                         </div>
                         <div className="flex gap-2 ml-4">

@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { UpdateCheckResult, DownloadProgress } from "../types";
+import { formatDateString } from "../utils/dateUtils";
 
 interface UpdateSectionProps {
   currentVersion: string;
@@ -184,20 +185,6 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
     await handleCheckUpdate();
   };
 
-  // 格式化日期
-  const formatDate = (dateString: string) => {
-    try {
-      const date = new Date(dateString);
-      return date.toLocaleDateString("zh-CN", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-      });
-    } catch {
-      return dateString;
-    }
-  };
-
   // 格式化字节大小
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 B";
@@ -267,7 +254,7 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
                   {updateInfo.release_name || `版本 ${updateInfo.latest_version}`}
                 </h4>
                 <p className="text-sm text-gray-500">
-                  发布时间: {formatDate(updateInfo.published_at)}
+                  发布时间: {formatDateString(updateInfo.published_at)}
                 </p>
               </div>
 

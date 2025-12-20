@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
 import type { EverythingResult, FilePreview } from "../types";
+import { formatStandardDateTime } from "../utils/dateUtils";
 
 type SortKey = "size" | "type" | "name";
 type SortOrder = "asc" | "desc";
@@ -1405,7 +1406,7 @@ export function EverythingSearchWindow() {
                         <div className="text-sm text-gray-500 truncate mt-1">{item.path}</div>
                         <div className="text-xs text-gray-400 mt-1 flex flex-wrap gap-3">
                           <span>类型：{ext || "未知"}</span>
-                          <span>修改：{formatDate(item.date_modified)}</span>
+                          <span>修改：{formatStandardDateTime(item.date_modified, parseDate)}</span>
                           {typeof item.size === "number" && (
                             <span>大小：{formatFileSize(item.size)}</span>
                           )}
@@ -1444,7 +1445,7 @@ export function EverythingSearchWindow() {
                 {typeof currentSelectedItem.size === "number" && (
                   <span>大小：{formatFileSize(currentSelectedItem.size!)}</span>
                 )}
-                <span>修改：{formatDate(currentSelectedItem.date_modified)}</span>
+                <span>修改：{formatStandardDateTime(currentSelectedItem.date_modified, parseDate)}</span>
                 <span>类型：{getExtension(currentSelectedItem.path) || "未知"}</span>
               </div>
 
@@ -1526,17 +1527,5 @@ function parseDate(dateStr?: string): number | null {
   return ts;
 }
 
-function formatDate(dateStr?: string): string {
-  const ts = parseDate(dateStr);
-  if (!ts) return "-";
-  const d = new Date(ts);
-  return `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d
-    .getDate()
-    .toString()
-    .padStart(2, "0")} ${d.getHours().toString().padStart(2, "0")}:${d
-    .getMinutes()
-    .toString()
-    .padStart(2, "0")}`;
-}
 
 

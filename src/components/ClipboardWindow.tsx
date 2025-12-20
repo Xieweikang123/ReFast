@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { ClipboardItem } from "../types";
+import { formatRelativeTime, formatFullDateTime } from "../utils/dateUtils";
 
 export function ClipboardWindow() {
   const [clipboardItems, setClipboardItems] = useState<ClipboardItem[]>([]);
@@ -285,25 +286,6 @@ export function ClipboardWindow() {
     }
   };
 
-  const formatDate = (timestamp: number) => {
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const seconds = Math.floor(diff / 1000);
-    const minutes = Math.floor(seconds / 60);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-
-    if (days > 0) {
-      return `${days}天前`;
-    } else if (hours > 0) {
-      return `${hours}小时前`;
-    } else if (minutes > 0) {
-      return `${minutes}分钟前`;
-    } else {
-      return "刚刚";
-    }
-  };
 
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
@@ -504,7 +486,7 @@ export function ClipboardWindow() {
                         {index + 1}
                       </span>
                       <span className="text-xs font-medium text-gray-500 bg-gray-100/80 px-2 py-0.5 rounded-md">
-                        {formatDate(item.created_at)}
+                        {formatRelativeTime(item.created_at)}
                       </span>
                       {item.is_favorite && (
                         <span className="text-yellow-500 text-base drop-shadow-sm" title="收藏">
@@ -639,7 +621,7 @@ export function ClipboardWindow() {
                   <div className="mb-4 px-4 py-2.5 text-sm text-gray-600 bg-gradient-to-r from-gray-50 to-blue-50/50 rounded-lg border border-gray-200/60 flex-shrink-0">
                     <span className="font-medium">🕐 创建时间:</span>{" "}
                     <span className="text-gray-700">
-                      {new Date(selectedItem.created_at * 1000).toLocaleString("zh-CN", {
+                      {formatFullDateTime(selectedItem.created_at, {
                         year: "numeric",
                         month: "long",
                         day: "numeric",
