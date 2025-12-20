@@ -35,6 +35,8 @@ function SettingsApp() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isListingModels, setIsListingModels] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const saveTimerRef = useRef<number | null>(null);
   const hasLoadedSettingsRef = useRef(false);
 
@@ -148,6 +150,61 @@ function SettingsApp() {
       });
     } finally {
       setIsTesting(false);
+    }
+  };
+
+  const listModels = async () => {
+    setIsListingModels(true);
+    setAvailableModels([]);
+    
+    try {
+      const baseUrl = settings.ollama.base_url || 'http://localhost:11434';
+      
+      // 使用 Ollama API 的 /api/tags 端点获取所有已安装的模型
+      const response = await fetch(`${baseUrl}/api/tags`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`API 请求失败: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      const models: string[] = [];
+      
+      if (data.models && Array.isArray(data.models)) {
+        data.models.forEach((model: any) => {
+          if (model.name) {
+            models.push(model.name);
+          }
+        });
+      }
+
+      if (models.length === 0) {
+        setTestResult({
+          success: false,
+          message: '未找到已安装的模型。请先使用 `ollama pull <model_name>` 安装模型。',
+        });
+      } else {
+        setAvailableModels(models);
+        setTestResult({
+          success: true,
+          message: `成功获取 ${models.length} 个可用模型。`,
+        });
+      }
+    } catch (error: any) {
+      console.error('列出模型失败:', error);
+      const errorMessage = error.message || '未知错误';
+      setTestResult({
+        success: false,
+        message: `获取模型列表失败: ${errorMessage}`,
+      });
+      setAvailableModels([]);
+    } finally {
+      setIsListingModels(false);
     }
   };
 
@@ -295,6 +352,9 @@ function SettingsApp() {
                 isTesting={isTesting}
                 testResult={testResult}
                 onTestConnection={testConnection}
+                isListingModels={isListingModels}
+                availableModels={availableModels}
+                onListModels={listModels}
               />
             )}
             {activePage === "system" && (

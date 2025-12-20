@@ -13,6 +13,9 @@ interface OllamaSettingsProps {
   isTesting: boolean;
   testResult: { success: boolean; message: string } | null;
   onTestConnection: () => void;
+  isListingModels: boolean;
+  availableModels: string[];
+  onListModels: () => void;
 }
 
 export function OllamaSettingsPage({
@@ -21,6 +24,9 @@ export function OllamaSettingsPage({
   isTesting,
   testResult,
   onTestConnection,
+  isListingModels,
+  availableModels,
+  onListModels,
 }: OllamaSettingsProps) {
   return (
     <div className="space-y-6">
@@ -35,21 +41,56 @@ export function OllamaSettingsPage({
             <label className="block text-sm font-medium text-gray-700 mb-2">
               模型名称
             </label>
-            <input
-              type="text"
-              value={settings.ollama.model}
-              onChange={(e) =>
-                onSettingsChange({
-                  ...settings,
-                  ollama: { ...settings.ollama, model: e.target.value },
-                })
-              }
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="例如: llama2, mistral, codellama"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={settings.ollama.model}
+                onChange={(e) =>
+                  onSettingsChange({
+                    ...settings,
+                    ollama: { ...settings.ollama, model: e.target.value },
+                  })
+                }
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="例如: llama2, mistral, codellama"
+              />
+              <button
+                onClick={onListModels}
+                disabled={isListingModels || !settings.ollama.base_url.trim()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors text-sm whitespace-nowrap"
+                title="列出所有可用的模型"
+              >
+                {isListingModels ? "加载中..." : "列出模型"}
+              </button>
+            </div>
             <p className="mt-1 text-xs text-gray-500">
-              输入已安装的 Ollama 模型名称
+              输入已安装的 Ollama 模型名称，或点击"列出模型"自动获取
             </p>
+            {availableModels.length > 0 && (
+              <div className="mt-2 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                <p className="text-xs font-medium text-blue-800 mb-2">可用模型：</p>
+                <div className="flex flex-wrap gap-2">
+                  {availableModels.map((model) => (
+                    <button
+                      key={model}
+                      onClick={() =>
+                        onSettingsChange({
+                          ...settings,
+                          ollama: { ...settings.ollama, model: model },
+                        })
+                      }
+                      className={`px-2 py-1 text-xs rounded transition-colors ${
+                        settings.ollama.model === model
+                          ? "bg-blue-600 text-white"
+                          : "bg-white text-blue-700 hover:bg-blue-100 border border-blue-300"
+                      }`}
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
