@@ -4747,7 +4747,7 @@ pub async fn show_translation_window(app: tauri::AppHandle) -> Result<(), String
             "translation-window",
             tauri::WebviewUrl::App("index.html".into()),
         )
-        .title("翻译工具")
+        .title("单词助手")
         .inner_size(900.0, 700.0)
         .resizable(true)
         .min_inner_size(600.0, 500.0)

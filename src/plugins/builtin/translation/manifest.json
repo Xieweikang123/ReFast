@@ -1,6 +1,6 @@
 {
   "id": "translation",
-  "name": "翻译工具",
+  "name": "单词助手",
   "version": "1.0.0",
   "description": "多语言翻译工具，支持自动检测语言",
   "keywords": [

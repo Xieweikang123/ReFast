@@ -26,7 +26,7 @@ export function WordbookPanel({
   editingRecord: externalEditingRecord,
   onEditingRecordChange,
 }: WordbookPanelProps) {
-  // 单词本相关状态
+  // 单词助手相关状态
   const [wordRecords, setWordRecords] = useState<WordRecord[]>([]);
   const [allWordRecords, setAllWordRecords] = useState<WordRecord[]>([]); // 保存所有单词记录用于筛选
   const [wordSearchQuery, setWordSearchQuery] = useState("");
@@ -91,7 +91,7 @@ export function WordbookPanel({
     setWordRecords(filtered);
   }, []);
 
-  // 单词本相关函数
+  // 单词助手相关函数
   const loadWordRecords = useCallback(async () => {
     setIsWordLoading(true);
     try {
@@ -139,7 +139,7 @@ export function WordbookPanel({
     applyFilters(allWordRecords, wordSearchQuery, masteryFilter);
   }, [masteryFilter, allWordRecords, wordSearchQuery, applyFilters]);
 
-  // 切换到单词本标签页时加载数据
+  // 切换到单词助手标签页时加载数据
   useEffect(() => {
     if (!wordSearchQuery.trim()) {
       loadWordRecords();
@@ -880,46 +880,6 @@ export function WordbookPanel({
               </button>
             )}
           </div>
-          {/* 熟练度筛选 */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 whitespace-nowrap">熟练度筛选:</span>
-            <div className="flex items-center gap-1 flex-wrap">
-              <button
-                onClick={() => setMasteryFilter(null)}
-                className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                  masteryFilter === null
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                }`}
-                title="显示全部"
-              >
-                全部
-              </button>
-              {[0, 1, 2, 3, 4, 5].map((level) => (
-                <button
-                  key={level}
-                  onClick={() => setMasteryFilter(level)}
-                  className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                    masteryFilter === level
-                      ? "bg-blue-500 text-white"
-                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  }`}
-                  title={`熟练度 ${level}/5`}
-                >
-                  {level}/5
-                </button>
-              ))}
-            </div>
-            {masteryFilter !== null && (
-              <button
-                onClick={() => setMasteryFilter(null)}
-                className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded transition-colors"
-                title="清除筛选"
-              >
-                ✕
-              </button>
-            )}
-          </div>
           {/* 熟练度统计 */}
           {allWordRecords.length > 0 && (
             <div className="mt-3 pt-3 border-t border-gray-200">
@@ -935,27 +895,52 @@ export function WordbookPanel({
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs text-gray-600 font-medium">熟练度分布:</span>
+                  <button
+                    onClick={() => setMasteryFilter(null)}
+                    className={`text-xs px-2 py-0.5 rounded transition-colors ${
+                      masteryFilter === null
+                        ? "bg-blue-500 text-white font-medium"
+                        : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                    }`}
+                    title="显示全部"
+                  >
+                    全部
+                  </button>
                   {[0, 1, 2, 3, 4, 5].map((level) => {
                     const count = allWordRecords.filter((r) => r.masteryLevel === level).length;
                     const percentage = allWordRecords.length > 0 ? (count / allWordRecords.length) * 100 : 0;
+                    const isSelected = masteryFilter === level;
                     return (
                       <div key={level} className="flex items-center gap-1">
                         <span className="text-xs text-gray-500">{level}/5:</span>
-                        <span className="text-xs font-medium text-gray-700">{count}</span>
-                        <div className="w-12 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full transition-all ${
-                              level === 0
-                                ? "bg-gray-400"
-                                : level <= 2
-                                ? "bg-yellow-400"
-                                : level <= 4
-                                ? "bg-blue-400"
-                                : "bg-green-500"
-                            }`}
-                            style={{ width: `${percentage}%` }}
-                          />
-                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMasteryFilter(isSelected ? null : level);
+                          }}
+                          className={`flex items-center gap-1 text-xs font-medium px-1 py-0.5 rounded transition-colors cursor-pointer ${
+                            isSelected
+                              ? "bg-blue-500 text-white"
+                              : "text-gray-700 hover:text-blue-600 hover:bg-blue-50"
+                          }`}
+                          title={`点击筛选熟练度为 ${level}/5 的单词`}
+                        >
+                          <span>{count}</span>
+                          <div className="w-12 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full transition-all ${
+                                level === 0
+                                  ? "bg-gray-400"
+                                  : level <= 2
+                                  ? "bg-yellow-400"
+                                  : level <= 4
+                                  ? "bg-blue-400"
+                                  : "bg-green-500"
+                              }`}
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                        </button>
                       </div>
                     );
                   })}
@@ -976,7 +961,7 @@ export function WordbookPanel({
           <div className="flex flex-col items-center justify-center h-full text-gray-500">
             <div className="text-4xl mb-4">📚</div>
             <div className="text-lg mb-2">暂无单词记录</div>
-            <div className="text-sm">在翻译工具中保存单词后，会显示在这里</div>
+            <div className="text-sm">在单词助手中保存单词后，会显示在这里</div>
           </div>
         ) : (
           <div className="space-y-3">

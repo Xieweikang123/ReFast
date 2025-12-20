@@ -218,7 +218,7 @@ export function createBuiltinPlugins(): Plugin[] {
     },
     {
       id: "translation",
-      name: "翻译工具",
+      name: "单词助手",
       description: "多语言翻译工具，支持自动检测语言",
       keywords: [
         "翻译",

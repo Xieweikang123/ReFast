@@ -40,7 +40,7 @@ export function TranslationWindow() {
   // 编辑单词对话框状态（提升到父组件，用于ESC键优先级处理）
   const [editingRecord, setEditingRecord] = useState<WordRecord | null>(null);
   
-  // 用于刷新单词本
+  // 用于刷新单词助手
   const wordbookRefreshRef = useRef<{ current: (() => void) | null }>({ current: null });
 
   // 处理保存单词后的刷新
@@ -55,7 +55,7 @@ export function TranslationWindow() {
       null,
       []
     );
-    // 如果当前在单词本标签页，刷新列表
+    // 如果当前在单词助手标签页，刷新列表
     if (activeTab === "wordbook" && wordbookRefreshRef.current.current) {
       wordbookRefreshRef.current.current();
     }
@@ -141,7 +141,7 @@ export function TranslationWindow() {
     <div className="h-screen w-screen flex flex-col bg-gray-50">
       {/* 标题栏 */}
       <div className="flex items-center justify-between px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <h1 className="text-lg font-semibold text-gray-800">翻译工具</h1>
+        <h1 className="text-lg font-semibold text-gray-800">单词助手</h1>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowTabOrderSettings(true)}
@@ -158,7 +158,7 @@ export function TranslationWindow() {
         {tabOrder.map((tab) => {
           const tabConfig = {
             translation: { label: "翻译工具", icon: null },
-            wordbook: { label: "📚 单词本", icon: null },
+            wordbook: { label: "单词助手", icon: null },
           }[tab];
           
           return (
@@ -188,7 +188,7 @@ export function TranslationWindow() {
         />
       )}
 
-      {/* 单词本内容 */}
+      {/* 单词助手内容 */}
       {activeTab === "wordbook" && (
         <WordbookPanel
           ollamaSettings={ollamaSettings}
@@ -234,13 +234,13 @@ export function TranslationWindow() {
             </div>
             <div className="space-y-3 mb-6">
               <p className="text-sm text-gray-500 mb-4">
-                调整翻译工具窗口中标签页的显示顺序
+                调整单词助手窗口中标签页的显示顺序
               </p>
               <div className="space-y-2">
                 {tabOrder.map((tab, index) => {
                   const tabLabels: Record<string, string> = {
                     translation: "翻译工具",
-                    wordbook: "📚 单词本",
+                    wordbook: "单词助手",
                   };
                   
                   return (

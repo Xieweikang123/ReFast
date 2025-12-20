@@ -400,7 +400,7 @@ export function TranslationPanel({
               ref={iframeRef}
               src={iframeUrl}
               className="w-full h-full border-0"
-              title="翻译工具"
+              title="单词助手"
               sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation allow-modals"
               allow="clipboard-read; clipboard-write; fullscreen"
               referrerPolicy="no-referrer-when-downgrade"
