@@ -40,7 +40,7 @@ pub fn get_all_word_records(app_data_dir: &Path) -> Result<Vec<WordRecord>, Stri
             "SELECT id, word, translation, source_lang, target_lang, context, phonetic, 
                     example_sentence, tags, mastery_level, review_count, last_reviewed, 
                     created_at, updated_at, is_favorite, is_mastered 
-             FROM word_records ORDER BY created_at DESC",
+             FROM word_records ORDER BY mastery_level ASC",
         )
         .map_err(|e| format!("Failed to prepare word_records query: {}", e))?;
 
@@ -280,7 +280,7 @@ pub fn search_word_records(query: &str, app_data_dir: &Path) -> Result<Vec<WordR
                     created_at, updated_at, is_favorite, is_mastered 
              FROM word_records
              WHERE lower(word) LIKE ?1 OR lower(translation) LIKE ?1
-             ORDER BY updated_at DESC",
+             ORDER BY mastery_level ASC",
         )
         .map_err(|e| format!("Failed to prepare word_record search: {}", e))?;
 

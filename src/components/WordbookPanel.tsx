@@ -45,10 +45,7 @@ export function WordbookPanel({
   }, [onEditingRecordChange]);
   const [editWord, setEditWord] = useState("");
   const [editTranslation, setEditTranslation] = useState("");
-  const [editContext, setEditContext] = useState("");
-  const [editPhonetic, setEditPhonetic] = useState("");
   const [editExampleSentence, setEditExampleSentence] = useState("");
-  const [editTags, setEditTags] = useState("");
   const [editMasteryLevel, setEditMasteryLevel] = useState(0);
   
   // AI解释相关状态（如果父组件提供了状态，使用父组件的；否则使用本地状态）
@@ -67,6 +64,8 @@ export function WordbookPanel({
   const [isAiExplanationLoading, setIsAiExplanationLoading] = useState(false);
   const [aiQueryWord, setAiQueryWord] = useState<string>(""); // 用于AI查词的单词
   const [hasAutoSaved, setHasAutoSaved] = useState(false); // 标记是否已自动保存
+  const [masterySelectorOpen, setMasterySelectorOpen] = useState<string | null>(null); // 正在显示选择器的单词ID
+  const masterySelectorRef = useRef<{ id: string; element: HTMLButtonElement } | null>(null);
   
   // 使用 ref 存储最新的筛选条件，避免在回调中依赖这些值
   const filterRef = useRef({ wordSearchQuery: "", masteryFilter: null as number | null });
@@ -162,10 +161,7 @@ export function WordbookPanel({
     setEditingRecord(record);
     setEditWord(record.word);
     setEditTranslation(record.translation);
-    setEditContext(record.context || "");
-    setEditPhonetic(record.phonetic || "");
     setEditExampleSentence(record.exampleSentence || "");
-    setEditTags(record.tags.join(", "));
     setEditMasteryLevel(record.masteryLevel);
   }, []);
 
@@ -173,19 +169,14 @@ export function WordbookPanel({
     if (!editingRecord) return;
 
     try {
-      const tagsArray = editTags
-        .split(",")
-        .map((tag) => tag.trim())
-        .filter((tag) => tag.length > 0);
-
       const updated = await tauriApi.updateWordRecord(
         editingRecord.id,
         editWord.trim() || null,
         editTranslation.trim() || null,
-        editContext.trim() || null,
-        editPhonetic.trim() || null,
+        null,
+        null,
         editExampleSentence.trim() || null,
-        tagsArray.length > 0 ? tagsArray : null,
+        null,
         editMasteryLevel,
         null,
         null
@@ -193,34 +184,32 @@ export function WordbookPanel({
 
       setAllWordRecords((records) => {
         const updatedRecords = records.map((r) => (r.id === updated.id ? updated : r));
-        allWordRecordsRef.current = updatedRecords; // 更新 ref
-        return updatedRecords;
+        // 按掌握程度升序排序（0在最前）
+        const sortedRecords = updatedRecords.sort((a, b) => a.masteryLevel - b.masteryLevel);
+        allWordRecordsRef.current = sortedRecords; // 更新 ref
+        return sortedRecords;
       });
-      setWordRecords((records) =>
-        records.map((r) => (r.id === updated.id ? updated : r))
-      );
+      setWordRecords((records) => {
+        const updatedRecords = records.map((r) => (r.id === updated.id ? updated : r));
+        // 按掌握程度升序排序（0在最前）
+        return updatedRecords.sort((a, b) => a.masteryLevel - b.masteryLevel);
+      });
       setEditingRecord(null);
       setEditWord("");
       setEditTranslation("");
-      setEditContext("");
-      setEditPhonetic("");
       setEditExampleSentence("");
-      setEditTags("");
       setEditMasteryLevel(0);
     } catch (error) {
       console.error("Failed to update word record:", error);
       alert("更新失败：" + (error instanceof Error ? error.message : String(error)));
     }
-  }, [editingRecord, editWord, editTranslation, editContext, editPhonetic, editExampleSentence, editTags, editMasteryLevel]);
+  }, [editingRecord, editWord, editTranslation, editExampleSentence, editMasteryLevel]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingRecord(null);
     setEditWord("");
     setEditTranslation("");
-    setEditContext("");
-    setEditPhonetic("");
     setEditExampleSentence("");
-    setEditTags("");
     setEditMasteryLevel(0);
   }, []);
 
@@ -259,17 +248,45 @@ export function WordbookPanel({
       );
       setAllWordRecords((records) => {
         const updatedRecords = records.map((r) => (r.id === updated.id ? updated : r));
-        allWordRecordsRef.current = updatedRecords; // 更新 ref
-        return updatedRecords;
+        // 按掌握程度升序排序（0在最前）
+        const sortedRecords = updatedRecords.sort((a, b) => a.masteryLevel - b.masteryLevel);
+        allWordRecordsRef.current = sortedRecords; // 更新 ref
+        return sortedRecords;
       });
-      setWordRecords((records) =>
-        records.map((r) => (r.id === updated.id ? updated : r))
-      );
+      setWordRecords((records) => {
+        const updatedRecords = records.map((r) => (r.id === updated.id ? updated : r));
+        // 按掌握程度升序排序（0在最前）
+        return updatedRecords.sort((a, b) => a.masteryLevel - b.masteryLevel);
+      });
     } catch (error) {
       console.error("Failed to update mastery level:", error);
       alert("更新失败：" + (error instanceof Error ? error.message : String(error)));
     }
   }, []);
+
+  // 点击外部关闭熟练度选择器
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (masterySelectorOpen) {
+        const target = event.target as Node;
+        const selectorMenu = document.getElementById(`mastery-selector-${masterySelectorOpen}`);
+        const button = masterySelectorRef.current?.element;
+        
+        // 如果点击的不是按钮也不是选择器菜单，则关闭选择器
+        if (button && !button.contains(target) && selectorMenu && !selectorMenu.contains(target)) {
+          setMasterySelectorOpen(null);
+          masterySelectorRef.current = null;
+        }
+      }
+    };
+
+    if (masterySelectorOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [masterySelectorOpen]);
 
   // 关闭AI解释弹窗的统一处理
   const handleCloseAiExplanation = useCallback(() => {
@@ -544,13 +561,6 @@ export function WordbookPanel({
       translation = "待完善";
     }
 
-    // 提取音标
-    let phonetic = null;
-    const phoneticMatch = text.match(/\[([^\]]+)\]/) || text.match(/\/\/([^\/]+)\/\//);
-    if (phoneticMatch && phoneticMatch[1].length < 50) {
-      phonetic = phoneticMatch[1].trim();
-    }
-
     // 提取例句（尝试找到第一个中英文对照的例句）
     let exampleSentence = null;
     const exampleMatch = text.match(/(?:例句|例子)[：:]\s*([^\n]+)/i) ||
@@ -562,7 +572,7 @@ export function WordbookPanel({
       }
     }
 
-    return { translation, phonetic, exampleSentence };
+    return { translation, exampleSentence };
   }, []);
 
   // 自动保存单词到单词表
@@ -579,7 +589,7 @@ export function WordbookPanel({
       }
 
       // 解析AI返回的文本
-      const { translation, phonetic, exampleSentence } = parseAiResponse(aiText);
+      const { translation, exampleSentence } = parseAiResponse(aiText);
 
       // 保存单词
       const newRecord = await tauriApi.addWordRecord(
@@ -587,10 +597,10 @@ export function WordbookPanel({
         translation,
         "en", // 默认源语言为英语
         "zh", // 默认目标语言为中文
-        aiText.length > 500 ? aiText.substring(0, 500) + "..." : aiText, // 将完整AI解释作为上下文
-        phonetic,
+        null, // 上下文字段已删除
+        null, // 音标字段已删除
         exampleSentence,
-        ["AI查词"] // 添加标签
+        [] // 标签已移除，传递空数组
       );
 
       // 直接添加到现有列表，而不是重新加载所有数据
@@ -654,10 +664,9 @@ export function WordbookPanel({
       const prompt = `请详细解释英语单词 "${word.trim()}"。请提供：
 1. 单词的详细含义和用法
 2. 词性（如果是动词，说明及物/不及物）
-3. 音标（如果知道）
-4. 常见搭配和短语
-5. 2-3个实用的例句（中英文对照）
-6. 记忆技巧或词根词缀分析（如果有）
+3. 常见搭配和短语
+4. 2-3个实用的例句（中英文对照）
+5. 记忆技巧或词根词缀分析（如果有）
 请用中文回答，内容要详细且实用。`;
 
       // 尝试使用 chat API (流式)
@@ -886,10 +895,15 @@ export function WordbookPanel({
   return (
     <>
       {/* 搜索栏 */}
-      <div className="px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2">
+      <div className="px-5 py-4 bg-gradient-to-b from-white to-gray-50/50 border-b border-gray-200 shadow-sm">
+        <div className="flex flex-col gap-4">
+          <div className="flex items-center gap-3">
             <div className="flex-1 relative">
+              <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
               <input
                 type="text"
                 value={wordSearchQuery}
@@ -900,12 +914,12 @@ export function WordbookPanel({
                   }
                 }}
                 placeholder="搜索单词或翻译..."
-                className="w-full px-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                className="w-full pl-11 pr-10 py-3 text-sm border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm hover:shadow-md"
               />
               {wordSearchQuery && (
                 <button
                   onClick={() => setWordSearchQuery("")}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all"
                   title="清除"
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -917,39 +931,40 @@ export function WordbookPanel({
             {wordSearchQuery.trim() && (
               <button
                 onClick={() => handleAiQuery(wordSearchQuery.trim())}
-                className="px-4 py-2.5 text-sm bg-gradient-to-r from-purple-500 to-purple-600 text-white hover:from-purple-600 hover:to-purple-700 rounded-lg transition-all shadow-sm hover:shadow-md font-medium"
+                className="px-5 py-3 text-sm bg-gradient-to-r from-purple-500 to-purple-600 text-white hover:from-purple-600 hover:to-purple-700 rounded-xl transition-all shadow-md hover:shadow-lg font-semibold flex items-center gap-2"
                 title="使用AI查询单词"
               >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
                 AI查词
               </button>
             )}
           </div>
           {/* 熟练度统计 */}
           {allWordRecords.length > 0 && (
-            <div className="pt-2 border-t border-gray-200">
-              <div className="flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-500 font-medium">总计:</span>
-                  <span className="text-gray-800 font-semibold">{allWordRecords.length}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-500 font-medium">已掌握:</span>
-                  <span className="text-green-600 font-semibold">{allWordRecords.filter((r) => r.isMastered).length}</span>
-                </div>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className="text-gray-500 font-medium">收藏:</span>
-                  <span className="text-yellow-600 font-semibold">{allWordRecords.filter((r) => r.isFavorite).length}</span>
+            <div className="pt-3 border-t border-gray-200">
+              <div className="flex items-center gap-6 flex-wrap">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-lg border border-blue-100">
+                    <span className="text-xs text-gray-600 font-medium">总计</span>
+                    <span className="text-sm text-gray-900 font-bold">{allWordRecords.length}</span>
+                  </div>
+                  <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-lg border border-green-100">
+                    <span className="text-xs text-gray-600 font-medium">已掌握</span>
+                    <span className="text-sm text-green-700 font-bold">{allWordRecords.filter((r) => r.isMastered).length}</span>
+                  </div>
                 </div>
                 <div className="flex-1" />
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-500 font-medium">熟练度:</span>
-                  <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-gray-500 font-semibold uppercase tracking-wide">熟练度筛选:</span>
+                  <div className="flex items-center gap-2">
                     <button
                       onClick={() => setMasteryFilter(null)}
-                      className={`px-3 py-1 text-xs rounded-md transition-all ${
+                      className={`px-3 py-1.5 text-xs rounded-lg transition-all font-semibold ${
                         masteryFilter === null
-                          ? "bg-blue-500 text-white font-semibold shadow-sm"
-                          : "text-gray-600 hover:text-gray-800 hover:bg-gray-100"
+                          ? "bg-blue-500 text-white shadow-md"
+                          : "text-gray-600 hover:text-gray-800 hover:bg-gray-100 bg-white border border-gray-200"
                       }`}
                       title="显示全部"
                     >
@@ -974,19 +989,19 @@ export function WordbookPanel({
                             e.stopPropagation();
                             setMasteryFilter(isSelected ? null : level);
                           }}
-                          className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all ${
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-all border ${
                             isSelected
-                              ? "bg-blue-500 text-white shadow-sm"
-                              : "text-gray-600 hover:text-blue-600 hover:bg-blue-50"
+                              ? "bg-blue-500 text-white shadow-md border-blue-500"
+                              : "text-gray-700 hover:text-blue-700 hover:bg-blue-50 bg-white border-gray-200 hover:border-blue-200"
                           }`}
                           title={`${level}/5: ${count}个单词`}
                         >
-                          <span className="text-xs font-semibold">{level}/5</span>
-                          <span className="text-xs">{count}</span>
-                          <div className="w-10 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                          <span className="text-xs font-bold">{level}/5</span>
+                          <span className="text-xs font-semibold">{count}</span>
+                          <div className="w-12 h-2 bg-gray-200 rounded-full overflow-hidden">
                             <div
                               className={`h-full transition-all ${levelColors[level as keyof typeof levelColors] || "bg-gray-400"}`}
-                              style={{ width: `${Math.max(percentage, 2)}%` }}
+                              style={{ width: `${Math.max(percentage, 3)}%` }}
                             />
                           </div>
                         </button>
@@ -1001,7 +1016,7 @@ export function WordbookPanel({
       </div>
 
       {/* 单词列表 */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 bg-gray-50/30">
         {isWordLoading ? (
           <div className="flex flex-col items-center justify-center h-full">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
@@ -1014,164 +1029,149 @@ export function WordbookPanel({
             <div className="text-sm text-gray-500">在单词助手中保存单词后，会显示在这里</div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-2.5">
             {wordRecords.map((record, index) => (
               <div
                 key={record.id}
-                className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-lg hover:border-blue-200 transition-all"
+                className="bg-white rounded-lg shadow-sm border border-gray-200 p-3.5 hover:shadow-md hover:border-blue-200 transition-all duration-200 group"
               >
-                <div className="flex items-start justify-between gap-4">
+                <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-3 flex-wrap">
-                      <span className="text-sm text-gray-400 font-semibold min-w-[2rem]">
+                    {/* 单词标题区域 */}
+                    <div className="flex items-start gap-2 mb-2">
+                      <span className="text-xs text-gray-400 font-semibold min-w-[1.5rem] flex-shrink-0 pt-0.5">
                         {index + 1}.
                       </span>
-                      <h3 className="text-xl font-bold text-gray-900">
-                        {record.word}
-                      </h3>
-                      {record.phonetic && (
-                        <span className="text-sm text-gray-500 font-mono bg-gray-50 px-2 py-0.5 rounded">
-                          [{record.phonetic}]
-                        </span>
-                      )}
-                      <div className="flex items-center gap-2 ml-auto">
-                        {record.isFavorite && (
-                          <span className="text-yellow-500 text-lg" title="已收藏">⭐</span>
-                        )}
-                        {record.isMastered && (
-                          <span className="text-green-600 text-sm font-medium bg-green-50 px-2 py-0.5 rounded" title="已掌握">✓ 已掌握</span>
-                        )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <h3 className="text-lg font-bold text-gray-900 break-words">
+                            {record.word}
+                          </h3>
+                          {record.isMastered && (
+                            <span className="text-green-700 text-xs font-semibold bg-green-100 px-2 py-0.5 rounded-full flex-shrink-0 border border-green-200" title="已掌握">
+                              ✓ 已掌握
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div className="text-gray-700 mb-3 prose prose-sm max-w-none leading-relaxed">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={{
-                          p: ({ children }: any) => <p className="mb-2 last:mb-0">{children}</p>,
-                          ul: ({ children }: any) => <ul className="list-disc list-inside mb-2 space-y-1">{children}</ul>,
-                          ol: ({ children }: any) => <ol className="list-decimal list-inside mb-2 space-y-1">{children}</ol>,
-                          li: ({ children }: any) => <li className="ml-2">{children}</li>,
-                          strong: ({ children }: any) => <strong className="font-semibold text-gray-900">{children}</strong>,
-                          em: ({ children }: any) => <em className="italic">{children}</em>,
-                          code: ({ inline, children }: any) => 
-                            inline ? (
-                              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono text-gray-800">{children}</code>
-                            ) : (
-                              <code className="block bg-gray-100 p-2 rounded text-xs font-mono overflow-x-auto mb-2">{children}</code>
-                            ),
-                        }}
-                      >
-                        {record.translation}
-                      </ReactMarkdown>
-                    </div>
-                    {record.context && (
-                      <div className="text-sm text-gray-600 mb-3 italic prose prose-sm max-w-none bg-gray-50 p-3 rounded-lg border-l-3 border-blue-200">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            p: ({ children }: any) => <p className="mb-1 last:mb-0">{children}</p>,
-                            strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
-                            em: ({ children }: any) => <em className="italic">{children}</em>,
-                          }}
-                        >
-                          {record.context}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {record.exampleSentence && (
-                      <div className="text-sm text-gray-700 mb-3 prose prose-sm max-w-none bg-blue-50 p-3 rounded-lg">
-                        <span className="font-semibold text-blue-700">例句：</span>
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            p: ({ children }: any) => <span className="inline">{children}</span>,
-                            strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
-                            em: ({ children }: any) => <em className="italic">{children}</em>,
-                          }}
-                        >
-                          {record.exampleSentence}
-                        </ReactMarkdown>
-                      </div>
-                    )}
-                    {record.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-3">
-                        {record.tags.map((tag, idx) => (
-                          <span
-                            key={idx}
-                            className="px-2.5 py-1 text-xs bg-blue-100 text-blue-700 rounded-md font-medium"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-4 text-xs text-gray-500 pt-3 border-t border-gray-100">
-                      <span className="font-medium">
-                        {record.sourceLang} → {record.targetLang}
-                      </span>
+                    
+                    {/* 底部信息栏 */}
+                    <div className="flex items-center gap-3 text-xs text-gray-500 pt-2 border-t border-gray-100 flex-wrap">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-gray-500">掌握程度:</span>
+                        <span className="text-gray-500 font-medium">掌握程度:</span>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             const newLevel = Math.max(0, record.masteryLevel - 1);
                             handleQuickUpdateMastery(record.id, newLevel);
                           }}
-                          className="px-2 py-1 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-md transition-all disabled:opacity-30 disabled:cursor-not-allowed font-semibold"
+                          className="px-1.5 py-0.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-all disabled:opacity-30 disabled:cursor-not-allowed font-bold text-sm"
                           disabled={record.masteryLevel <= 0}
                           title="减少熟练度"
                         >
                           −
                         </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            const levels = [0, 1, 2, 3, 4, 5];
-                            const currentIndex = levels.indexOf(record.masteryLevel);
-                            const nextIndex = (currentIndex + 1) % levels.length;
-                            handleQuickUpdateMastery(record.id, levels[nextIndex]);
-                          }}
-                          className="px-3 py-1 text-gray-800 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-all font-bold min-w-[3rem] text-center bg-gray-50"
-                          title="点击切换熟练度 (0-5)"
-                        >
-                          {record.masteryLevel}/5
-                        </button>
+                        <div className="relative">
+                          <button
+                            ref={(el) => {
+                              if (el && masterySelectorOpen === record.id) {
+                                masterySelectorRef.current = { id: record.id, element: el };
+                              }
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // 切换选择器的显示状态
+                              if (masterySelectorOpen === record.id) {
+                                setMasterySelectorOpen(null);
+                                masterySelectorRef.current = null;
+                              } else {
+                                setMasterySelectorOpen(record.id);
+                              }
+                            }}
+                            className="px-2 py-0.5 text-gray-800 hover:text-gray-900 hover:bg-gray-100 rounded transition-all font-bold min-w-[2.5rem] text-center bg-gray-50 border border-gray-200 hover:border-gray-300 text-xs"
+                            title="点击选择熟练度 (0-5)"
+                          >
+                            {record.masteryLevel}/5
+                          </button>
+                          {masterySelectorOpen === record.id && (
+                            <div
+                              id={`mastery-selector-${record.id}`}
+                              className="absolute top-full left-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-xl z-50 py-1 min-w-[2.5rem]"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {[0, 1, 2, 3, 4, 5].map((level) => (
+                                <button
+                                  key={level}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleQuickUpdateMastery(record.id, level);
+                                    setMasterySelectorOpen(null);
+                                    masterySelectorRef.current = null;
+                                  }}
+                                  className={`w-full px-2 py-1 text-xs text-center hover:bg-blue-50 transition-colors ${
+                                    record.masteryLevel === level
+                                      ? "bg-blue-100 text-blue-700 font-semibold"
+                                      : "text-gray-700"
+                                  }`}
+                                >
+                                  {level}/5
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             const newLevel = Math.min(5, record.masteryLevel + 1);
                             handleQuickUpdateMastery(record.id, newLevel);
                           }}
-                          className="px-2 py-1 text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-md transition-all disabled:opacity-30 disabled:cursor-not-allowed font-semibold"
+                          className="px-1.5 py-0.5 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded transition-all disabled:opacity-30 disabled:cursor-not-allowed font-bold text-sm"
                           disabled={record.masteryLevel >= 5}
                           title="增加熟练度"
                         >
                           +
                         </button>
                       </div>
-                      <span>复习次数: <span className="font-semibold">{record.reviewCount}</span></span>
-                      <span>{formatDateTime(record.createdAt)}</span>
+                      <div className="flex items-center gap-1">
+                        <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                        <span className="whitespace-nowrap">复习 <span className="font-semibold text-gray-700">{record.reviewCount}</span> 次</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span className="whitespace-nowrap">{formatDateTime(record.createdAt)}</span>
+                      </div>
                     </div>
                   </div>
+                  
+                  {/* 右侧操作按钮 */}
                   <div className="flex flex-col items-end gap-2 flex-shrink-0">
                     <button
                       onClick={() => handleAiExplanation(record)}
-                      className="px-4 py-2 text-sm text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded-lg transition-all font-medium border border-purple-200 hover:border-purple-300"
+                      className="px-3 py-1.5 text-sm text-purple-600 hover:text-purple-700 hover:bg-purple-50 rounded-md transition-all font-medium whitespace-nowrap flex items-center gap-1.5"
                       title="AI解释"
                     >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
                       AI解释
                     </button>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => handleEditWord(record)}
-                        className="px-3 py-1.5 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-all"
+                        className="px-3 py-1.5 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-md transition-all font-medium whitespace-nowrap"
                         title="编辑"
                       >
                         编辑
                       </button>
                       <button
                         onClick={() => handleDeleteWord(record.id, record.word)}
-                        className="px-3 py-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-all"
+                        className="px-3 py-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 rounded-md transition-all font-medium whitespace-nowrap"
                         title="删除"
                       >
                         删除
@@ -1188,83 +1188,54 @@ export function WordbookPanel({
       {/* 编辑单词对话框 */}
       {editingRecord && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-[600px] max-w-[90vw] max-h-[90vh] overflow-y-auto">
-            <h2 className="text-xl font-bold mb-6 text-gray-900">编辑单词</h2>
-            <div className="space-y-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-[650px] max-w-[90vw] max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-200">
+              <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900">编辑单词</h2>
+            </div>
+            <div className="space-y-5">
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  单词 *
+                <label className="block text-sm font-semibold text-gray-700 mb-2.5">
+                  单词 <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   value={editWord}
                   onChange={(e) => setEditWord(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-gray-50 hover:bg-white"
                   autoFocus
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  翻译 *
+                <label className="block text-sm font-semibold text-gray-700 mb-2.5">
+                  翻译 <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   value={editTranslation}
                   onChange={(e) => setEditTranslation(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-gray-50 hover:bg-white"
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  音标
-                </label>
-                <input
-                  type="text"
-                  value={editPhonetic}
-                  onChange={(e) => setEditPhonetic(e.target.value)}
-                  placeholder="例如: [wɜːd]"
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  上下文
-                </label>
-                <textarea
-                  value={editContext}
-                  onChange={(e) => setEditContext(e.target.value)}
-                  placeholder="单词出现的上下文"
-                  rows={3}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                <label className="block text-sm font-semibold text-gray-700 mb-2.5">
                   例句
                 </label>
                 <textarea
                   value={editExampleSentence}
                   onChange={(e) => setEditExampleSentence(e.target.value)}
-                  placeholder="例句"
+                  placeholder="输入例句..."
                   rows={3}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all resize-none bg-gray-50 hover:bg-white"
                 />
               </div>
               <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  标签（用逗号分隔）
-                </label>
-                <input
-                  type="text"
-                  value={editTags}
-                  onChange={(e) => setEditTags(e.target.value)}
-                  placeholder="例如: 常用, 动词, 商务"
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-3">
-                  掌握程度: <span className="text-blue-600 font-bold">{editMasteryLevel}/5</span>
+                <label className="block text-sm font-semibold text-gray-700 mb-4">
+                  掌握程度: <span className="text-blue-600 font-bold text-lg">{editMasteryLevel}/5</span>
                 </label>
                 <input
                   type="range"
@@ -1272,22 +1243,22 @@ export function WordbookPanel({
                   max="5"
                   value={editMasteryLevel}
                   onChange={(e) => setEditMasteryLevel(parseInt(e.target.value))}
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                  className="w-full h-3 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 />
-                <div className="flex justify-between text-xs text-gray-500 mt-2">
-                  <span>0</span>
-                  <span>1</span>
-                  <span>2</span>
-                  <span>3</span>
-                  <span>4</span>
-                  <span>5</span>
+                <div className="flex justify-between text-xs text-gray-500 mt-2 px-1">
+                  <span className="font-semibold">0</span>
+                  <span className="font-semibold">1</span>
+                  <span className="font-semibold">2</span>
+                  <span className="font-semibold">3</span>
+                  <span className="font-semibold">4</span>
+                  <span className="font-semibold">5</span>
                 </div>
               </div>
             </div>
             <div className="flex justify-end gap-3 mt-8 pt-6 border-t border-gray-200">
               <button
                 onClick={handleCancelEdit}
-                className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-all"
+                className="px-6 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-100 rounded-xl transition-all border border-gray-200 hover:border-gray-300"
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     handleCancelEdit();
@@ -1298,7 +1269,7 @@ export function WordbookPanel({
               </button>
               <button
                 onClick={handleSaveEdit}
-                className="px-5 py-2.5 text-sm font-semibold bg-blue-500 text-white hover:bg-blue-600 rounded-lg transition-all shadow-sm hover:shadow-md"
+                className="px-6 py-3 text-sm font-semibold bg-blue-500 text-white hover:bg-blue-600 rounded-xl transition-all shadow-md hover:shadow-lg"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                     handleSaveEdit();
@@ -1315,14 +1286,26 @@ export function WordbookPanel({
       {/* AI解释对话框 */}
       {showAiExplanation && (aiExplanationWord || aiQueryWord) && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white rounded-xl shadow-2xl p-6 w-[700px] max-w-[90vw] max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-200">
-              <h2 className="text-xl font-bold text-gray-900">
-                {aiExplanationWord ? "AI解释" : "AI查词"}: <span className="text-blue-600">{aiExplanationWord?.word || aiQueryWord}</span>
-              </h2>
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-[750px] max-w-[90vw] max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-6 pb-5 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg flex items-center justify-center shadow-md">
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">
+                    {aiExplanationWord ? "AI解释" : "AI查词"}
+                  </h2>
+                  <p className="text-sm text-blue-600 font-semibold mt-0.5">
+                    {aiExplanationWord?.word || aiQueryWord}
+                  </p>
+                </div>
+              </div>
               <button
                 onClick={handleCloseAiExplanation}
-                className="text-gray-400 hover:text-gray-600 transition-colors p-1 hover:bg-gray-100 rounded-lg"
+                className="text-gray-400 hover:text-gray-600 transition-colors p-2 hover:bg-gray-100 rounded-lg"
               >
                 <svg
                   className="w-6 h-6"
@@ -1339,18 +1322,18 @@ export function WordbookPanel({
                 </svg>
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto mb-4">
+            <div className="flex-1 overflow-y-auto mb-4 pr-2">
               {isAiExplanationLoading && !aiExplanationText ? (
                 <div className="flex flex-col items-center justify-center h-full text-gray-500">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mb-2"></div>
-                  <div>AI正在生成解释...</div>
+                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-purple-600 mb-3"></div>
+                  <div className="font-medium">AI正在生成解释...</div>
                 </div>
               ) : (
                 <div className="prose max-w-none">
                   {isAiExplanationLoading && (
-                    <div className="flex items-center gap-2 mb-2 text-sm text-gray-500">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
-                      <span>AI正在生成解释...</span>
+                    <div className="flex items-center gap-2 mb-4 text-sm text-gray-500 bg-purple-50 px-4 py-2 rounded-lg border border-purple-100">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-purple-600"></div>
+                      <span className="font-medium">AI正在生成解释...</span>
                     </div>
                   )}
                   <div className="text-gray-700 leading-relaxed">
@@ -1359,27 +1342,27 @@ export function WordbookPanel({
                         remarkPlugins={[remarkGfm]}
                         components={{
                           // 自定义样式
-                          p: ({ children }: any) => <p className="mb-3 last:mb-0">{children}</p>,
-                          h1: ({ children }: any) => <h1 className="text-2xl font-bold mb-3 mt-4 first:mt-0">{children}</h1>,
-                          h2: ({ children }: any) => <h2 className="text-xl font-bold mb-2 mt-4 first:mt-0">{children}</h2>,
-                          h3: ({ children }: any) => <h3 className="text-lg font-semibold mb-2 mt-3 first:mt-0">{children}</h3>,
-                          h4: ({ children }: any) => <h4 className="text-base font-semibold mb-2 mt-3 first:mt-0">{children}</h4>,
-                          ul: ({ children }: any) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
-                          ol: ({ children }: any) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
+                          p: ({ children }: any) => <p className="mb-4 last:mb-0 text-gray-700 leading-relaxed">{children}</p>,
+                          h1: ({ children }: any) => <h1 className="text-2xl font-bold mb-4 mt-6 first:mt-0 text-gray-900">{children}</h1>,
+                          h2: ({ children }: any) => <h2 className="text-xl font-bold mb-3 mt-5 first:mt-0 text-gray-900">{children}</h2>,
+                          h3: ({ children }: any) => <h3 className="text-lg font-semibold mb-2 mt-4 first:mt-0 text-gray-800">{children}</h3>,
+                          h4: ({ children }: any) => <h4 className="text-base font-semibold mb-2 mt-3 first:mt-0 text-gray-800">{children}</h4>,
+                          ul: ({ children }: any) => <ul className="list-disc list-inside mb-4 space-y-2 ml-2">{children}</ul>,
+                          ol: ({ children }: any) => <ol className="list-decimal list-inside mb-4 space-y-2 ml-2">{children}</ol>,
                           li: ({ children }: any) => <li className="ml-2">{children}</li>,
                           code: ({ inline, children }: any) => 
                             inline ? (
-                              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>
+                              <code className="bg-gray-100 px-2 py-1 rounded text-sm font-mono text-purple-700 border border-gray-200">{children}</code>
                             ) : (
-                              <code className="block bg-gray-100 p-3 rounded text-sm font-mono overflow-x-auto mb-3">{children}</code>
+                              <code className="block bg-gray-50 p-4 rounded-lg text-sm font-mono overflow-x-auto mb-4 border border-gray-200">{children}</code>
                             ),
-                          pre: ({ children }: any) => <pre className="mb-3">{children}</pre>,
+                          pre: ({ children }: any) => <pre className="mb-4">{children}</pre>,
                           blockquote: ({ children }: any) => (
-                            <blockquote className="border-l-4 border-gray-300 pl-4 italic my-3">{children}</blockquote>
+                            <blockquote className="border-l-4 border-purple-300 pl-4 italic my-4 bg-purple-50 py-2 rounded-r-lg">{children}</blockquote>
                           ),
                           table: ({ children }: any) => (
-                            <div className="overflow-x-auto mb-3">
-                              <table className="min-w-full border border-gray-300">{children}</table>
+                            <div className="overflow-x-auto mb-4">
+                              <table className="min-w-full border border-gray-300 rounded-lg">{children}</table>
                             </div>
                           ),
                           thead: ({ children }: any) => <thead className="bg-gray-50">{children}</thead>,
@@ -1387,24 +1370,24 @@ export function WordbookPanel({
                           tr: ({ children }: any) => <tr className="border-b border-gray-200">{children}</tr>,
                           th: ({ children }: any) => <th className="px-4 py-2 text-left font-semibold">{children}</th>,
                           td: ({ children }: any) => <td className="px-4 py-2">{children}</td>,
-                          hr: () => <hr className="my-4 border-gray-300" />,
-                          strong: ({ children }: any) => <strong className="font-semibold">{children}</strong>,
+                          hr: () => <hr className="my-5 border-gray-300" />,
+                          strong: ({ children }: any) => <strong className="font-semibold text-gray-900">{children}</strong>,
                           em: ({ children }: any) => <em className="italic">{children}</em>,
                         }}
                       >
                         {aiExplanationText}
                       </ReactMarkdown>
                     ) : (
-                      <div className="text-gray-400 italic">暂无解释内容</div>
+                      <div className="text-gray-400 italic text-center py-8">暂无解释内容</div>
                     )}
                   </div>
                 </div>
               )}
             </div>
-            <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+            <div className="flex justify-end gap-3 pt-5 border-t border-gray-200">
               <button
                 onClick={handleCloseAiExplanation}
-                className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition-all"
+                className="px-6 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-100 rounded-xl transition-all border border-gray-200 hover:border-gray-300"
               >
                 关闭
               </button>
