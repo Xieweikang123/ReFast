@@ -1,6 +1,7 @@
 import { tauriApi } from "../api/tauri";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { UpdateSection } from "./UpdateSection";
+import { ErrorDialog } from "./ErrorDialog";
 import type { SearchEngineConfig } from "../types";
 
 interface OllamaSettingsProps {
@@ -360,16 +361,16 @@ export function LauncherSettingsPage({
   const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>(
     settings.search_engines || []
   );
-  const isInitialMountRef = useRef(true);
-
-  // 标记初始化完成
-  useEffect(() => {
-    // 在下一个渲染周期标记初始化完成，确保跳过了首次渲染的 searchEngines 变化
-    const timer = setTimeout(() => {
-      isInitialMountRef.current = false;
-    }, 0);
-    return () => clearTimeout(timer);
-  }, []);
+  const [errorDialog, setErrorDialog] = useState<{
+    isOpen: boolean;
+    type: "error" | "success" | "warning" | "info";
+    message: string;
+  }>({
+    isOpen: false,
+    type: "error",
+    message: "",
+  });
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
 
   // 当外部设置更新时同步
   useEffect(() => {
@@ -377,17 +378,6 @@ export function LauncherSettingsPage({
       setSearchEngines(settings.search_engines);
     }
   }, [settings.search_engines]);
-
-  // 当搜索引擎配置变化时，更新设置（跳过初始加载）
-  useEffect(() => {
-    if (isInitialMountRef.current) {
-      return;
-    }
-    onSettingsChange({
-      ...settings,
-      search_engines: searchEngines,
-    });
-  }, [searchEngines, onSettingsChange, settings]);
 
   const handleAddEngine = () => {
     setSearchEngines([
@@ -417,6 +407,49 @@ export function LauncherSettingsPage({
       return;
     }
     setSearchEngines([...searchEngines, preset]);
+  };
+
+  const handleSave = () => {
+    // 验证配置
+    for (const engine of searchEngines) {
+      if (!engine.prefix.trim() || !engine.name.trim() || !engine.url.trim()) {
+        setErrorDialog({
+          isOpen: true,
+          type: "warning",
+          message: "请确保所有搜索引擎的前缀、名称和 URL 模板都已填写完整",
+        });
+        return;
+      }
+      if (!engine.url.includes("{query}")) {
+        setErrorDialog({
+          isOpen: true,
+          type: "warning",
+          message: `搜索引擎 "${engine.name}" 的 URL 模板必须包含 {query} 占位符`,
+        });
+        return;
+      }
+    }
+    // 检查是否有重复的前缀
+    const prefixes = searchEngines.map((e) => e.prefix.trim());
+    const uniquePrefixes = new Set(prefixes);
+    if (prefixes.length !== uniquePrefixes.size) {
+      setErrorDialog({
+        isOpen: true,
+        type: "warning",
+        message: "存在重复的前缀，请确保每个搜索引擎的前缀都是唯一的",
+      });
+      return;
+    }
+    // 保存配置
+    onSettingsChange({
+      ...settings,
+      search_engines: searchEngines,
+    });
+    // 显示成功提示（自动消失）
+    setSaveSuccessMessage("搜索引擎配置已保存成功");
+    setTimeout(() => {
+      setSaveSuccessMessage(null);
+    }, 2000);
   };
 
   const presets: SearchEngineConfig[] = [
@@ -454,17 +487,36 @@ export function LauncherSettingsPage({
         <p className="text-sm text-gray-500">配置启动器的行为和功能</p>
       </div>
 
+      {saveSuccessMessage && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-green-50 text-green-700 border border-green-200 rounded-md px-4 py-2 text-sm flex items-center gap-2 shadow-lg">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>{saveSuccessMessage}</span>
+        </div>
+      )}
+
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <div className="space-y-6">
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-medium text-gray-700">搜索引擎配置</h3>
-              <button
-                onClick={handleAddEngine}
-                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
-              >
-                添加搜索引擎
-              </button>
+            <div className="sticky top-0 z-10 bg-white pb-4 -mx-6 px-6 pt-0 mb-4 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-medium text-gray-700">搜索引擎配置</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleAddEngine}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+                  >
+                    添加搜索引擎
+                  </button>
+                  <button
+                    onClick={handleSave}
+                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm"
+                  >
+                    保存配置
+                  </button>
+                </div>
+              </div>
             </div>
             <p className="text-sm text-gray-500 mb-4">
               配置搜索引擎前缀，输入特定前缀时可在浏览器中快速搜索。URL 模板中使用 <code className="bg-gray-100 px-1 rounded">{`{query}`}</code> 作为搜索关键词的占位符。
@@ -572,6 +624,14 @@ export function LauncherSettingsPage({
           </div>
         </div>
       </div>
+
+      <ErrorDialog
+        isOpen={errorDialog.isOpen}
+        type={errorDialog.type}
+        title={errorDialog.type === "success" ? "保存成功" : errorDialog.type === "warning" ? "配置验证" : "错误"}
+        message={errorDialog.message}
+        onClose={() => setErrorDialog({ ...errorDialog, isOpen: false })}
+      />
     </div>
   );
 }
