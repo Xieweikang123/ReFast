@@ -6,7 +6,6 @@ import { tauriApi } from "../api/tauri";
 import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
 import { plugins, searchPlugins, executePlugin } from "../plugins";
 import { AppCenterContent } from "./AppCenterContent";
 import { MemoModal } from "./MemoModal";
@@ -23,7 +22,7 @@ import {
 } from "../utils/launcherUtils";
 import { getThemeConfig, getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, resetSelectedIndices, selectFirstHorizontal, selectFirstVertical, loadResultsIncrementally } from "../utils/resultUtils";
+import { clearAllResults, loadResultsIncrementally } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import { searchMemos, searchSystemFolders, searchApplications, searchFileHistory } from "../utils/searchUtils";
 import type { SearchResult } from "../utils/resultUtils";
@@ -39,6 +38,8 @@ import {
 } from "../utils/everythingUtils";
 import { useLauncherInitialization } from "../hooks/useLauncherInitialization";
 import { useWindowSizeAdjustment } from "../hooks/useWindowSizeAdjustment";
+import { useSystemFoldersInitialization } from "../hooks/useSystemFoldersInitialization";
+import { useAppIconsListener } from "../hooks/useAppIconsListener";
 import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
@@ -51,6 +52,7 @@ import {
   editRemark as editRemarkUtil,
   saveRemark as saveRemarkUtil,
 } from "../utils/contextMenuUtils";
+import { handleKeyDown as handleKeyDownUtil } from "../utils/keyboardUtils";
 
 
 interface LauncherWindowProps {
@@ -1676,17 +1678,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const systemFoldersListRef = useRef<Array<{ name: string; path: string; display_name: string; is_folder: boolean; icon?: string; name_pinyin?: string; name_pinyin_initials?: string }>>([]);
   const systemFoldersListLoadedRef = useRef(false);
 
-  // 初始化系统文件夹列表（只加载一次）
-  useEffect(() => {
-    if (!systemFoldersListLoadedRef.current) {
-      tauriApi.searchSystemFolders("").then((folders) => {
-        systemFoldersListRef.current = folders;
-        systemFoldersListLoadedRef.current = true;
-      }).catch((error) => {
-        console.error("Failed to load system folders:", error);
-      });
-    }
-  }, []);
+  // 使用自定义 hook 初始化系统文件夹列表
+  useSystemFoldersInitialization({
+    systemFoldersListRef,
+    systemFoldersListLoadedRef,
+  });
 
   // 搜索系统文件夹（前端搜索，避免每次调用后端）- 异步分批处理，避免阻塞UI
   const searchSystemFoldersWrapper = useCallback(async (searchQuery: string) => {
@@ -1714,54 +1710,12 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     });
   }, [query, updateSearchResults, apps, filterWindowsApps]);
 
-  // 监听图标更新事件，收到后刷新搜索结果中的图标
-  useEffect(() => {
-    let unlisten: (() => void) | null = null;
-
-    const setupListener = async () => {
-      try {
-        unlisten = await listen<Array<[string, string]>>("app-icons-updated", (event) => {
-          const iconUpdates = event.payload;
-          
-          // 更新 filteredApps 中的图标
-          setFilteredApps((prevApps) => {
-            const updatedApps = prevApps.map((app) => {
-              const iconUpdate = iconUpdates.find(([path]) => path === app.path);
-              if (iconUpdate) {
-                return { ...app, icon: iconUpdate[1] };
-              }
-              return app;
-            });
-            return updatedApps;
-          });
-
-          // 同时更新 apps 状态和缓存中的图标
-          setApps((prevApps) => {
-            const updatedApps = prevApps.map((app) => {
-              const iconUpdate = iconUpdates.find(([path]) => path === app.path);
-              if (iconUpdate) {
-                return { ...app, icon: iconUpdate[1] };
-              }
-              return app;
-            });
-            // 同步更新缓存
-            allAppsCacheRef.current = updatedApps;
-            return updatedApps;
-          });
-        });
-      } catch (error) {
-        console.error("Failed to setup app-icons-updated listener:", error);
-      }
-    };
-
-    setupListener();
-
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-    };
-  }, []);
+  // 使用自定义 hook 监听图标更新事件
+  useAppIconsListener({
+    setFilteredApps,
+    setApps,
+    allAppsCacheRef,
+  });
 
   // 刷新文件历史缓存（当文件历史更新时调用）
   const refreshFileHistoryCache = useCallback(async () => {
@@ -2078,280 +2032,76 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   );
 
 
-  const handleKeyDown = async (e: React.KeyboardEvent) => {
-    if (e.key === "Escape" || e.keyCode === 27) {
-      e.preventDefault();
-      e.stopPropagation();
-      // 如果右键菜单已打开，优先关闭右键菜单
-      if (contextMenu) {
-        setContextMenu(null);
-        return;
-      }
-      // 如果错误弹窗已打开，关闭错误弹窗（ErrorDialog 内部也会处理 ESC，但这里提前处理以避免其他逻辑执行）
-      if (errorMessage) {
-        setErrorMessage(null);
-        return;
-      }
-      // 如果应用中心弹窗已打开，关闭应用中心并隐藏窗口（插件像独立软件一样运行）
-      if (isPluginListModalOpen) {
-        setIsPluginListModalOpen(false);
-        // 延迟隐藏窗口，让关闭动画完成
-        setTimeout(() => {
-          hideLauncherAndResetState();
-        }, 100);
-        return;
-      }
-      // 如果备忘录弹窗已打开，关闭备忘录并隐藏窗口（插件像独立软件一样运行）
-      if (isMemoModalOpen) {
-        resetMemoState();
-        // 延迟隐藏窗口，让关闭动画完成
-        setTimeout(() => {
-          hideLauncherAndResetState();
-        }, 100);
-        return;
-      }
-      // 如果备注弹窗已打开，只关闭备注弹窗，不关闭启动器
-      if (isRemarkModalOpen) {
-        setIsRemarkModalOpen(false);
-        setEditingRemarkUrl(null);
-        setRemarkText("");
-        return;
-      }
-      await hideLauncherAndResetState({ resetMemo: true });
-      return;
-    }
-
-    // 处理退格键删除粘贴的图片
-    if (e.key === "Backspace") {
-      // 如果输入框为空且有粘贴的图片，则删除图片预览
-      if (query === "" && pastedImageDataUrl) {
-        e.preventDefault();
-        setPastedImageDataUrl(null);
-        setPastedImagePath(null);
-        // 清除搜索结果
-        clearAllResults({
-          setResults,
-          setHorizontalResults,
-          setVerticalResults,
-          setSelectedHorizontalIndex,
-          setSelectedVerticalIndex,
-          horizontalResultsRef,
-          currentLoadResultsRef
-        });
-        return;
-      }
-    }
-
-    if (e.key === "ArrowDown") {
-      e.preventDefault();
-      
-      // 检查当前焦点是否在输入框
-      const isInputFocused = document.activeElement === inputRef.current;
-      
-      // 如果当前选中的是横向结果，按ArrowDown应该跳转到第一个纵向结果
-      if (selectedHorizontalIndex !== null) {
-        if (verticalResults.length > 0) {
-          // Mark that we just jumped to vertical to prevent results useEffect from resetting
-          justJumpedToVerticalRef.current = true;
-          setSelectedHorizontalIndex(null);
-          setSelectedVerticalIndex(0);
-          // Reset flag after a delay
-          setTimeout(() => {
-            justJumpedToVerticalRef.current = false;
-          }, 200);
-          return;
-        }
-        // No vertical results, stay at horizontal
-        return;
-      }
-      
-      // 如果当前选中的是纵向结果，移动到下一个纵向结果
-      if (selectedVerticalIndex !== null) {
-        if (selectedVerticalIndex < verticalResults.length - 1) {
-          // Ensure horizontal navigation flag is false for vertical navigation
-          isHorizontalNavigationRef.current = false;
-          setSelectedVerticalIndex(selectedVerticalIndex + 1);
-          return;
-        }
-        // No more vertical results, stay at current position
-        return;
-      }
-      
-      // 如果输入框有焦点，且有横向结果，则选中第一个横向结果
-      if (isInputFocused && horizontalResults.length > 0) {
-        selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
-        return;
-      }
-      
-      // 如果输入框有焦点，且有纵向结果，则选中第一个纵向结果
-      if (isInputFocused && verticalResults.length > 0) {
-        selectFirstVertical(setSelectedHorizontalIndex, setSelectedVerticalIndex);
-        return;
-      }
-      
-      return;
-    }
-
-    if (e.key === "ArrowUp") {
-      e.preventDefault();
-      
-      // If we're at the first horizontal result, focus back to the search input
-      if (selectedHorizontalIndex === 0) {
-        // Focus the input and move cursor to the end
-        if (inputRef.current) {
-          inputRef.current.focus();
-          const length = inputRef.current.value.length;
-          inputRef.current.setSelectionRange(length, length);
-        }
-        resetSelectedIndices(setSelectedHorizontalIndex, setSelectedVerticalIndex);
-        return;
-      }
-      
-      // If we're at the first vertical result, focus back to input or jump to first horizontal
-      if (selectedVerticalIndex === 0) {
-        if (horizontalResults.length > 0) {
-          // Jump to first horizontal result
-          selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
-          return;
-        } else {
-          // Focus input
-          if (inputRef.current) {
-            inputRef.current.focus();
-            const length = inputRef.current.value.length;
-            inputRef.current.setSelectionRange(length, length);
-          }
-          resetSelectedIndices(setSelectedHorizontalIndex, setSelectedVerticalIndex);
-          return;
-        }
-      }
-      
-      // If current selection is in vertical results, move to previous vertical result
-      if (selectedVerticalIndex !== null && selectedVerticalIndex > 0) {
-        // Ensure horizontal navigation flag is false for vertical navigation
-        isHorizontalNavigationRef.current = false;
-        setSelectedVerticalIndex(selectedVerticalIndex - 1);
-        return;
-      }
-      
-      // If current selection is in horizontal results (not first), move to previous horizontal
-      if (selectedHorizontalIndex !== null && selectedHorizontalIndex > 0) {
-        setSelectedHorizontalIndex(selectedHorizontalIndex - 1);
-        setSelectedVerticalIndex(null);
-        return;
-      }
-      
-      return;
-    }
-
-    // 横向结果切换（ArrowLeft/ArrowRight）
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      // 检查输入框是否有焦点，以及光标位置
-      const isInputFocused = document.activeElement === inputRef.current;
-      if (isInputFocused && inputRef.current) {
-        const input = inputRef.current;
-        const selectionStart = input.selectionStart ?? 0;
-        const selectionEnd = input.selectionEnd ?? 0;
-        const valueLength = input.value.length;
-        
-        // 如果有文本被选中，允许方向键正常处理（用于取消选中或移动光标）
-        if (selectionStart !== selectionEnd) {
-          return; // 不拦截，让输入框正常处理
-        }
-        
-        // 对于左箭头：只有当横向列表选中的不是第1个元素时，才优先用于横向列表
-        // 如果横向列表选中的是第1个元素（索引0）或没有选中项，允许在输入框内移动光标
-        if (e.key === "ArrowLeft") {
-          // 如果横向列表选中的不是第1个元素，优先用于横向列表导航
-          if (selectedHorizontalIndex !== null && selectedHorizontalIndex !== 0) {
-            // 不返回，继续执行横向列表切换逻辑
-          } else {
-            // 横向列表没有选中项或选中第1个元素，允许在输入框内移动光标
-            // 无论光标在哪里，都让输入框处理（即使光标在开头无法移动，也不应该跳到横向列表）
-            return; // 让输入框处理左箭头
-          }
-        }
-        
-        // 对于右箭头：如果光标不在最右端，优先用于输入框；否则用于横向列表切换
-        if (e.key === "ArrowRight") {
-          // 如果光标不在最右端，优先用于输入框移动光标
-          if (selectionEnd < valueLength) {
-            return; // 光标不在结尾，允许右移
-          }
-          // 如果光标在最右端，不返回，继续执行横向列表切换逻辑
-        }
-      }
-      
-      // 立即阻止默认行为和事件传播，防止页面滚动
-      e.preventDefault();
-      e.stopPropagation();
-      
-      // 如果横向结果为空，不处理但已阻止默认行为
-      if (horizontalResults.length === 0) {
-        return;
-      }
-      
-      // 标记这是横向导航，避免触发 scrollIntoView
-      isHorizontalNavigationRef.current = true;
-      
-      // 如果当前选中的是横向结果
-      if (selectedHorizontalIndex !== null) {
-        // 在横向结果之间切换
-        if (e.key === "ArrowRight") {
-          // 切换到下一个横向结果
-          const nextIndex = selectedHorizontalIndex < horizontalResults.length - 1 
-            ? selectedHorizontalIndex + 1 
-            : 0; // 循环到第一个
-          setSelectedHorizontalIndex(nextIndex);
-          setSelectedVerticalIndex(null);
-        } else if (e.key === "ArrowLeft") {
-          // 如果是在第一个横向结果，跳到最后一个横向结果
-          if (selectedHorizontalIndex === 0) {
-            setSelectedHorizontalIndex(horizontalResults.length - 1);
-            setSelectedVerticalIndex(null);
-            return;
-          }
-          // 否则切换到上一个横向结果
-          const prevIndex = selectedHorizontalIndex > 0 
-            ? selectedHorizontalIndex - 1 
-            : horizontalResults.length - 1; // 循环到最后一个
-          setSelectedHorizontalIndex(prevIndex);
-          setSelectedVerticalIndex(null);
-        }
-      } else {
-        // 当前选中的是纵向结果，切换到横向结果的第一个或最后一个
-        if (e.key === "ArrowRight") {
-          // 切换到横向结果的第一个
-          setSelectedHorizontalIndex(0);
-          setSelectedVerticalIndex(null);
-        } else if (e.key === "ArrowLeft") {
-          // 切换到横向结果的最后一个
-          setSelectedHorizontalIndex(horizontalResults.length - 1);
-          setSelectedVerticalIndex(null);
-        }
-      }
-      
-      // 在下一个 tick 重置标志，允许后续的垂直导航触发滚动
-      setTimeout(() => {
-        isHorizontalNavigationRef.current = false;
-      }, 0);
-      return;
-    }
-
-    if (e.key === "Enter") {
-      e.preventDefault();
-      // Get the selected result from either horizontal or vertical
-      let selectedResult: SearchResult | null = null;
-      if (selectedHorizontalIndex !== null && horizontalResults[selectedHorizontalIndex]) {
-        selectedResult = horizontalResults[selectedHorizontalIndex];
-      } else if (selectedVerticalIndex !== null && verticalResults[selectedVerticalIndex]) {
-        selectedResult = verticalResults[selectedVerticalIndex];
-      }
-      if (selectedResult) {
-        await handleLaunch(selectedResult);
-      }
-      return;
-    }
-  };
+  const handleKeyDown = useCallback(
+    async (e: React.KeyboardEvent) => {
+      await handleKeyDownUtil({
+        e,
+        inputRef,
+        isHorizontalNavigationRef,
+        justJumpedToVerticalRef,
+        horizontalResultsRef,
+        currentLoadResultsRef,
+        query,
+        contextMenu,
+        errorMessage,
+        isPluginListModalOpen,
+        isMemoModalOpen,
+        isRemarkModalOpen,
+        pastedImageDataUrl,
+        selectedHorizontalIndex,
+        selectedVerticalIndex,
+        horizontalResults,
+        verticalResults,
+        setContextMenu,
+        setErrorMessage,
+        setIsPluginListModalOpen,
+        setIsMemoModalOpen,
+        setIsRemarkModalOpen,
+        setEditingRemarkUrl,
+        setRemarkText,
+        setPastedImageDataUrl,
+        setPastedImagePath,
+        setSelectedHorizontalIndex,
+        setSelectedVerticalIndex,
+        setResults,
+        setHorizontalResults,
+        setVerticalResults,
+        hideLauncherAndResetState,
+        resetMemoState,
+        handleLaunch,
+      });
+    },
+    [
+      query,
+      contextMenu,
+      errorMessage,
+      isPluginListModalOpen,
+      isMemoModalOpen,
+      isRemarkModalOpen,
+      pastedImageDataUrl,
+      selectedHorizontalIndex,
+      selectedVerticalIndex,
+      horizontalResults,
+      verticalResults,
+      setContextMenu,
+      setErrorMessage,
+      setIsPluginListModalOpen,
+      setIsMemoModalOpen,
+      setIsRemarkModalOpen,
+      setEditingRemarkUrl,
+      setRemarkText,
+      setPastedImageDataUrl,
+      setPastedImagePath,
+      setSelectedHorizontalIndex,
+      setSelectedVerticalIndex,
+      setResults,
+      setHorizontalResults,
+      setVerticalResults,
+      hideLauncherAndResetState,
+      resetMemoState,
+      handleLaunch,
+    ]
+  );
 
   return (
     <div 
