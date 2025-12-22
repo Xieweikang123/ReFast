@@ -765,7 +765,6 @@ fn main() {
             read_plugin_manifest,
             get_settings,
             save_settings,
-            show_settings_window,
             get_everything_custom_filters,
             save_everything_custom_filters,
             is_startup_enabled,

@@ -11,6 +11,7 @@ export default defineConfig(async () => ({
   server: {
     port: 1420,
     strictPort: true,
+    host: 'localhost',
     watch: {
       // Tell Vite to ignore watching `src-tauri`
       ignored: ["**/src-tauri/**"],

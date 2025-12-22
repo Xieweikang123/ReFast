@@ -254,3 +254,9 @@ export interface OpenHistoryItem {
   is_folder?: boolean | null;
 }
 
+export interface SearchEngineConfig {
+  prefix: string;
+  url: string;
+  name: string;
+}
+

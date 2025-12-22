@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriApi } from "../api/tauri";
 import { trackEvent } from "../api/events";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
@@ -27,6 +27,7 @@ import { getThemeConfig, getLayoutConfig, type ResultStyle } from "../utils/them
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
 import { clearAllResults, resetSelectedIndices, selectFirstHorizontal, selectFirstVertical } from "../utils/resultUtils";
 import { adjustWindowSize, getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
+import { detectSearchIntent, getSearchResultItem } from "../utils/searchUtils";
 
 // 格式化最近使用时间的相对时间显示
 function formatLastUsedTime(timestamp: number): string {
@@ -123,7 +124,7 @@ function processBatchAsync<T, R>(
 }
 
 type SearchResult = {
-  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings";
+  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings" | "search";
   app?: AppInfo;
   file?: FileHistoryItem;
   everything?: EverythingResult;
@@ -198,6 +199,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [isRemarkModalOpen, setIsRemarkModalOpen] = useState(false);
   const [editingRemarkUrl, setEditingRemarkUrl] = useState<string | null>(null);
+  const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>([]);
   const [remarkText, setRemarkText] = useState<string>("");
   const [urlRemarks, setUrlRemarks] = useState<Record<string, string>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
@@ -608,6 +610,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         const closeOnBlurSetting = settings.close_on_blur ?? true;
         setCloseOnBlur(closeOnBlurSetting);
         closeOnBlurRef.current = closeOnBlurSetting;
+        // 加载搜索引擎配置
+        if (settings.search_engines) {
+          setSearchEngines(settings.search_engines);
+        }
       } catch (error) {
         console.error("Failed to load settings:", error);
       }
@@ -1911,8 +1917,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       });
     }
     
+    // 检测搜索意图（优先显示在结果列表顶部）
+    const searchIntent = detectSearchIntent(query, searchEngines);
+    const searchResultItem = searchIntent ? getSearchResultItem(searchIntent.engine, searchIntent.keyword) : null;
+    const searchResult: SearchResult | null = searchResultItem ? {
+      ...searchResultItem,
+      type: "search" as const,
+    } : null;
+    
     let otherResults: SearchResult[] = [
-      // 如果有 AI 回答，将其添加到结果列表的最前面
+      // 如果检测到搜索意图，将其添加到结果列表的最前面
+      ...(searchResult ? [searchResult] : []),
+      // 如果有 AI 回答，将其添加到结果列表的前面
       ...(aiAnswer ? [{
         type: "ai" as const,
         aiAnswer: aiAnswer,
@@ -2720,7 +2736,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     });
     
     return allResultsToSort;
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines]);
 
   // 防抖延迟更新 combinedResults，避免多个搜索结果异步返回时频繁重新排序
   const [debouncedCombinedResults, setDebouncedCombinedResults] = useState<SearchResult[]>([]);
@@ -4726,6 +4742,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         // 注意：历史记录的更新已在开头统一处理
         await hideLauncherAndResetState();
         return;
+      } else if (result.type === "search") {
+        // 处理搜索类型：打开浏览器进行搜索
+        await tauriApi.openUrl(result.path);
+        await hideLauncherAndResetState();
+        return;
       } else if (result.type === "email" && result.email) {
         // 复制邮箱地址到剪贴板
         try {
@@ -4758,14 +4779,17 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         // 不关闭启动器，让用户查看历史访问
         return;
       } else if (result.type === "settings") {
-        // 打开设置窗口，失败时给出可见提示，避免用户感知为“无反应”
+        // 打开应用中心并导航到设置页面
         try {
-          await tauriApi.showSettingsWindow();
-          // 关闭启动器
-          await hideLauncherAndResetState();
+          // 设置标志，让应用中心窗口加载时自动跳转到设置页面
+          localStorage.setItem("appcenter:last-category", "settings");
+          // 先隐藏启动器
+          await tauriApi.hideLauncher();
+          // 打开应用中心窗口
+          await tauriApi.showPluginListWindow();
         } catch (error) {
-          console.error("Failed to open settings window:", error);
-          alert("打开设置窗口失败，请重试（详情见控制台日志）");
+          console.error("Failed to open app center:", error);
+          alert("打开应用中心失败，请重试（详情见控制台日志）");
         }
         return;
       } else if (result.type === "app" && result.app) {

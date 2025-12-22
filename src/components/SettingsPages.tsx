@@ -1,6 +1,7 @@
 import { tauriApi } from "../api/tauri";
 import { useEffect, useState } from "react";
 import { UpdateSection } from "./UpdateSection";
+import type { SearchEngineConfig } from "../types";
 
 interface OllamaSettingsProps {
   settings: {
@@ -339,6 +340,223 @@ export function SystemSettingsPage({
             </div>
           </div>
 
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface LauncherSettingsProps {
+  settings: {
+    search_engines?: SearchEngineConfig[];
+  };
+  onSettingsChange: (settings: any) => void;
+}
+
+export function LauncherSettingsPage({
+  settings,
+  onSettingsChange,
+}: LauncherSettingsProps) {
+  const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>(
+    settings.search_engines || []
+  );
+
+  // 当外部设置更新时同步
+  useEffect(() => {
+    if (settings.search_engines) {
+      setSearchEngines(settings.search_engines);
+    }
+  }, [settings.search_engines]);
+
+  // 当搜索引擎配置变化时，更新设置
+  useEffect(() => {
+    onSettingsChange({
+      ...settings,
+      search_engines: searchEngines,
+    });
+  }, [searchEngines]);
+
+  const handleAddEngine = () => {
+    setSearchEngines([
+      ...searchEngines,
+      {
+        prefix: "",
+        url: "",
+        name: "",
+      },
+    ]);
+  };
+
+  const handleUpdateEngine = (index: number, field: keyof SearchEngineConfig, value: string) => {
+    const updated = [...searchEngines];
+    updated[index] = { ...updated[index], [field]: value };
+    setSearchEngines(updated);
+  };
+
+  const handleDeleteEngine = (index: number) => {
+    setSearchEngines(searchEngines.filter((_, i) => i !== index));
+  };
+
+  const handleAddPreset = (preset: SearchEngineConfig) => {
+    // 检查是否已存在相同前缀的引擎
+    if (searchEngines.some((e) => e.prefix === preset.prefix)) {
+      alert(`前缀 "${preset.prefix}" 已存在，请先删除或修改现有配置`);
+      return;
+    }
+    setSearchEngines([...searchEngines, preset]);
+  };
+
+  const presets: SearchEngineConfig[] = [
+    {
+      prefix: "g ",
+      url: "https://www.google.com/search?q={query}",
+      name: "Google",
+    },
+    {
+      prefix: "bd ",
+      url: "https://www.baidu.com/s?wd={query}",
+      name: "百度",
+    },
+    {
+      prefix: "b ",
+      url: "https://www.bing.com/search?q={query}",
+      name: "必应",
+    },
+    {
+      prefix: "gh ",
+      url: "https://github.com/search?q={query}",
+      name: "GitHub",
+    },
+    {
+      prefix: "so ",
+      url: "https://stackoverflow.com/search?q={query}",
+      name: "Stack Overflow",
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-gray-800 mb-2">启动器设置</h2>
+        <p className="text-sm text-gray-500">配置启动器的行为和功能</p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="space-y-6">
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-gray-700">搜索引擎配置</h3>
+              <button
+                onClick={handleAddEngine}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+              >
+                添加搜索引擎
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">
+              配置搜索引擎前缀，输入特定前缀时可在浏览器中快速搜索。URL 模板中使用 <code className="bg-gray-100 px-1 rounded">{`{query}`}</code> 作为搜索关键词的占位符。
+            </p>
+
+            {/* 预设搜索引擎 */}
+            <div className="mb-4">
+              <p className="text-sm font-medium text-gray-700 mb-2">快速添加预设：</p>
+              <div className="flex flex-wrap gap-2">
+                {presets.map((preset, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleAddPreset(preset)}
+                    disabled={searchEngines.some((e) => e.prefix === preset.prefix)}
+                    className={`px-3 py-1 text-sm rounded transition-colors ${
+                      searchEngines.some((e) => e.prefix === preset.prefix)
+                        ? "bg-gray-200 text-gray-400 cursor-not-allowed"
+                        : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                    }`}
+                  >
+                    {preset.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 搜索引擎列表 */}
+            {searchEngines.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <p>暂无搜索引擎配置</p>
+                <p className="text-sm mt-2">点击"添加搜索引擎"或选择预设来添加</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {searchEngines.map((engine, index) => (
+                  <div
+                    key={index}
+                    className="border border-gray-200 rounded-lg p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium text-gray-700">
+                        搜索引擎 #{index + 1}
+                      </h4>
+                      <button
+                        onClick={() => handleDeleteEngine(index)}
+                        className="text-red-600 hover:text-red-700 text-sm"
+                      >
+                        删除
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          前缀 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={engine.prefix}
+                          onChange={(e) =>
+                            handleUpdateEngine(index, "prefix", e.target.value)
+                          }
+                          placeholder='例如: "s ", "g "'
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          输入此前缀后跟搜索关键词即可触发搜索
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          名称 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={engine.name}
+                          onChange={(e) =>
+                            handleUpdateEngine(index, "name", e.target.value)
+                          }
+                          placeholder='例如: "Google", "百度"'
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          URL 模板 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={engine.url}
+                          onChange={(e) =>
+                            handleUpdateEngine(index, "url", e.target.value)
+                          }
+                          placeholder='例如: "https://www.google.com/search?q={query}"'
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm font-mono"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">
+                          必须包含 <code className="bg-gray-100 px-1 rounded">{`{query}`}</code> 占位符
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

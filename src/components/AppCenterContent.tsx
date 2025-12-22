@@ -3,7 +3,7 @@ import { plugins, executePlugin } from "../plugins";
 import type { PluginContext, IndexStatus, DatabaseBackupInfo, PluginUsage } from "../types";
 import { tauriApi } from "../api/tauri";
 import { listen, emit } from "@tauri-apps/api/event";
-import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage } from "./SettingsPages";
+import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage, LauncherSettingsPage } from "./SettingsPages";
 import { fetchUsersCount } from "../api/events";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AppIndexList } from "./AppIndexList";
@@ -16,7 +16,7 @@ import { formatSimpleDateTime } from "../utils/dateUtils";
 type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
 
 // 设置子页面类型
-type SettingsPage = "system" | "ollama";
+type SettingsPage = "system" | "launcher" | "ollama";
 
 // 设置接口
 interface Settings {
@@ -27,6 +27,11 @@ interface Settings {
   startup_enabled?: boolean;
   result_style?: "compact" | "soft" | "skeuomorphic";
   close_on_blur?: boolean;
+  search_engines?: Array<{
+    prefix: string;
+    url: string;
+    name: string;
+  }>;
 }
 
 interface MenuItem {
@@ -1508,6 +1513,7 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
 
         const settingsMenuItems = [
           { id: "system" as SettingsPage, label: "系统设置", icon: "⚙️" },
+          { id: "launcher" as SettingsPage, label: "启动器设置", icon: "🚀" },
           { id: "ollama" as SettingsPage, label: "Ollama 配置", icon: "🤖" },
         ];
 
@@ -1572,6 +1578,12 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
                     settings={settings}
                     onSettingsChange={setSettings}
                     onOpenHotkeySettings={handleOpenHotkeySettings}
+                  />
+                )}
+                {activeSettingsPage === "launcher" && (
+                  <LauncherSettingsPage
+                    settings={settings}
+                    onSettingsChange={setSettings}
                   />
                 )}
               </div>

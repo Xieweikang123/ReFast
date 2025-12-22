@@ -17,6 +17,7 @@ import type {
   ClipboardItem,
   OpenHistoryItem,
   WordRecord,
+  SearchEngineConfig,
 } from "../types";
 
 export const tauriApi = {
@@ -512,17 +513,14 @@ export const tauriApi = {
 
 
   // Settings APIs
-  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[] }> {
+  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[] }> {
     return invoke("get_settings");
   },
 
-  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[] }): Promise<void> {
+  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[] }): Promise<void> {
     return invoke("save_settings", { settings });
   },
 
-  async showSettingsWindow(): Promise<void> {
-    return invoke("show_settings_window");
-  },
 
   // Startup APIs
   async isStartupEnabled(): Promise<boolean> {

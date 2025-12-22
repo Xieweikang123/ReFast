@@ -32,6 +32,8 @@ pub struct Settings {
     pub clipboard_max_items: u32,
     #[serde(default = "default_translation_tab_order")]
     pub translation_tab_order: Vec<String>,
+    #[serde(default = "default_search_engines")]
+    pub search_engines: Vec<SearchEngineConfig>,
 }
 
 fn default_clipboard_max_items() -> u32 {
@@ -70,6 +72,7 @@ impl Default for Settings {
             ignored_update_version: None,
             clipboard_max_items: default_clipboard_max_items(),
             translation_tab_order: default_translation_tab_order(),
+            search_engines: default_search_engines(),
         }
     }
 }
@@ -93,6 +96,33 @@ impl Default for OllamaSettings {
             base_url: "http://localhost:11434".to_string(),
         }
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SearchEngineConfig {
+    pub prefix: String,  // 触发前缀，如 "s ", "g "
+    pub url: String,     // URL 模板，使用 {query} 作为占位符
+    pub name: String,    // 显示名称，如 "Google", "百度"
+}
+
+fn default_search_engines() -> Vec<SearchEngineConfig> {
+    vec![
+        SearchEngineConfig {
+            prefix: "s ".to_string(),
+            url: "https://www.google.com/search?q={query}".to_string(),
+            name: "Google".to_string(),
+        },
+        SearchEngineConfig {
+            prefix: "bd ".to_string(),
+            url: "https://www.baidu.com/s?wd={query}".to_string(),
+            name: "百度".to_string(),
+        },
+        SearchEngineConfig {
+            prefix: "b ".to_string(),
+            url: "https://www.bing.com/search?q={query}".to_string(),
+            name: "必应".to_string(),
+        },
+    ]
 }
 
 pub fn get_settings_file_path(app_data_dir: &Path) -> PathBuf {
