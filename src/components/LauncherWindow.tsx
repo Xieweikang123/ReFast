@@ -6050,7 +6050,24 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
                   ref={inputRef}
                   type="text"
                   value={query}
+                  onCompositionEnd={(e) => {
+                    // 输入法组合输入结束，更新状态
+                    // 在组合输入结束时，onChange 可能已经触发，但我们在 onChange 中已经忽略了
+                    // 所以这里需要手动更新一次状态
+                    startTransition(() => {
+                      setQuery(e.currentTarget.value);
+                    });
+                  }}
                   onChange={(e) => {
+                    // 检查是否是输入法组合输入事件
+                    // 使用原生事件的 isComposing 属性来判断
+                    // 如果正在进行输入法组合输入，忽略 onChange 事件
+                    // 避免在组合输入过程中重复更新状态，导致字符重复
+                    // 组合输入会在 onCompositionEnd 时统一更新
+                    const nativeEvent = e.nativeEvent as InputEvent;
+                    if (nativeEvent.isComposing === true) {
+                      return;
+                    }
                     // 使用 startTransition 标记 setQuery 为非紧急更新
                     // 这样 React 会优先处理输入事件，延迟处理状态更新和相关的计算
                     // 这样可以避免 combinedResults 的耗时计算（100-130ms）阻塞输入响应
