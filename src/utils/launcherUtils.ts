@@ -382,3 +382,185 @@ export function calculateRelevanceScore(
   return score;
 }
 
+/**
+ * 规范化路径用于历史记录比较（统一大小写和路径分隔符）
+ * 用于在 openHistory 中查找匹配的路径
+ */
+export function normalizePathForHistory(path: string): string {
+  return path.toLowerCase().replace(/\\/g, "/");
+}
+
+/**
+ * 规范化应用名称用于去重（忽略大小写与可执行/快捷方式后缀）
+ */
+export function normalizeAppName(name: string): string {
+  return name.toLowerCase().replace(/\.(exe|lnk)$/i, "").trim();
+}
+
+/**
+ * 判断路径是否为系统文件夹
+ * 系统文件夹包括：控制面板、设置、CLSID 路径（如回收站）等
+ */
+export function isSystemFolder(path: string, isFolder?: boolean | null): boolean {
+  const pathLower = path.toLowerCase();
+  return (
+    pathLower === "control" ||
+    pathLower === "ms-settings:" ||
+    pathLower.startsWith("::{") ||
+    (isFolder === true && pathLower.startsWith("::{"))
+  );
+}
+
+/**
+ * 判断结果是否应该显示在横向列表中
+ * 横向列表包括：可执行文件、快捷方式、UWP 应用、系统文件夹、插件
+ * 
+ * @param result - 搜索结果对象
+ * @param fileIsFolder - 文件是否为文件夹（可选，从 result.file?.is_folder 获取）
+ */
+export function shouldShowInHorizontal(
+  result: { type: string; path: string; file?: { is_folder?: boolean | null; path?: string } }
+): boolean {
+  if (result.type === "app") {
+    const pathLower = result.path.toLowerCase();
+    return (
+      pathLower.endsWith('.exe') ||
+      pathLower.endsWith('.lnk') ||
+      pathLower.startsWith('shell:appsfolder') ||
+      pathLower.startsWith('ms-settings:')
+    );
+  }
+  
+  if (result.type === "file" && result.file) {
+    return isSystemFolder(result.path, result.file.is_folder);
+  }
+  
+  return result.type === "plugin";
+}
+
+/**
+ * 从 openHistory 中获取结果的使用信息
+ * @param result - 搜索结果对象
+ * @param openHistory - 打开历史记录（key: 路径, value: 时间戳（秒））
+ * @returns 使用信息对象，包含 useCount 和 lastUsed（毫秒）
+ */
+export function getResultUsageInfo(
+  result: { path: string; file?: { use_count?: number; last_used?: number } },
+  openHistory: Record<string, number>
+): { useCount?: number; lastUsed: number } {
+  const normalizedPath = normalizePathForHistory(result.path);
+  const lastUsedFromHistory = Object.entries(openHistory).find(
+    ([key]) => normalizePathForHistory(key) === normalizedPath
+  )?.[1];
+  
+  const useCount = result.file?.use_count;
+  // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
+  const lastUsed = (lastUsedFromHistory || result.file?.last_used || 0) * 1000;
+  
+  return { useCount, lastUsed };
+}
+
+/**
+ * Icon extraction failure marker (must match backend constant)
+ */
+export const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
+
+/**
+ * Check if an icon value represents a failed extraction
+ */
+export const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
+  return icon === ICON_EXTRACTION_FAILED_MARKER;
+};
+
+/**
+ * Check if an icon is valid (not empty and not failed)
+ */
+export const isValidIcon = (icon: string | null | undefined): boolean => {
+  return icon !== null && icon !== undefined && icon.trim() !== '' && !isIconExtractionFailed(icon);
+};
+
+/**
+ * 格式化最近使用时间的相对时间显示
+ */
+export function formatLastUsedTime(timestamp: number): string {
+  // 判断时间戳是秒级还是毫秒级（毫秒级时间戳 > 1e12）
+  const ts = timestamp > 1e12 ? timestamp : timestamp * 1000;
+  const now = Date.now();
+  const diff = now - ts;
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  
+  if (seconds < 60) {
+    return "刚刚";
+  } else if (minutes < 60) {
+    return `${minutes}分钟前`;
+  } else if (hours < 24) {
+    return `${hours}小时前`;
+  } else if (days === 1) {
+    return "昨天";
+  } else if (days < 7) {
+    return `${days}天前`;
+  } else {
+    // 超过7天显示具体日期
+    const date = new Date(ts);
+    const today = new Date();
+    const isThisYear = date.getFullYear() === today.getFullYear();
+    if (isThisYear) {
+      return `${date.getMonth() + 1}月${date.getDate()}日`;
+    } else {
+      return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+    }
+  }
+}
+
+/**
+ * 分批处理数组，避免阻塞UI线程
+ * 使用 requestIdleCallback 或 setTimeout 在空闲时处理
+ */
+export function processBatchAsync<T, R>(
+  items: T[],
+  processor: (item: T) => R | null,
+  batchSize: number = 50,
+  timeout: number = 1000
+): Promise<R[]> {
+  return new Promise((resolve) => {
+    const results: R[] = [];
+    let index = 0;
+
+    const processBatch = () => {
+      const end = Math.min(index + batchSize, items.length);
+      
+      // 处理当前批次
+      for (let i = index; i < end; i++) {
+        const result = processor(items[i]);
+        if (result !== null) {
+          results.push(result);
+        }
+      }
+      
+      index = end;
+
+      // 如果还有剩余项，继续处理
+      if (index < items.length) {
+        // 使用 requestIdleCallback 或 setTimeout 让出主线程
+        if (window.requestIdleCallback) {
+          window.requestIdleCallback(processBatch, { timeout });
+        } else {
+          setTimeout(processBatch, 0);
+        }
+      } else {
+        resolve(results);
+      }
+    };
+
+    // 开始处理
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(processBatch, { timeout });
+    } else {
+      setTimeout(processBatch, 0);
+    }
+  });
+}
+

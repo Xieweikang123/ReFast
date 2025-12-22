@@ -20,123 +20,17 @@ import {
   isValidJson,
   highlightText,
   isLikelyAbsolutePath,
-  isLnkPath,
-  calculateRelevanceScore,
+  normalizePathForHistory,
+  formatLastUsedTime,
 } from "../utils/launcherUtils";
 import { getThemeConfig, getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, resetSelectedIndices, selectFirstHorizontal, selectFirstVertical } from "../utils/resultUtils";
+import { clearAllResults, resetSelectedIndices, selectFirstHorizontal, selectFirstVertical, loadResultsIncrementally } from "../utils/resultUtils";
 import { adjustWindowSize, getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
-import { detectSearchIntent, getSearchResultItem } from "../utils/searchUtils";
-
-// 格式化最近使用时间的相对时间显示
-function formatLastUsedTime(timestamp: number): string {
-  // 判断时间戳是秒级还是毫秒级（毫秒级时间戳 > 1e12）
-  const ts = timestamp > 1e12 ? timestamp : timestamp * 1000;
-  const now = Date.now();
-  const diff = now - ts;
-  const seconds = Math.floor(diff / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  
-  if (seconds < 60) {
-    return "刚刚";
-  } else if (minutes < 60) {
-    return `${minutes}分钟前`;
-  } else if (hours < 24) {
-    return `${hours}小时前`;
-  } else if (days === 1) {
-    return "昨天";
-  } else if (days < 7) {
-    return `${days}天前`;
-  } else {
-    // 超过7天显示具体日期
-    const date = new Date(ts);
-    const today = new Date();
-    const isThisYear = date.getFullYear() === today.getFullYear();
-    if (isThisYear) {
-      return `${date.getMonth() + 1}月${date.getDate()}日`;
-    } else {
-      return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
-    }
-  }
-}
-
-// Icon extraction failure marker (must match backend constant)
-const ICON_EXTRACTION_FAILED_MARKER = "__ICON_EXTRACTION_FAILED__";
-
-// Check if an icon value represents a failed extraction
-const isIconExtractionFailed = (icon: string | null | undefined): boolean => {
-  return icon === ICON_EXTRACTION_FAILED_MARKER;
-};
-
-// Check if an icon is valid (not empty and not failed)
-const isValidIcon = (icon: string | null | undefined): boolean => {
-  return icon !== null && icon !== undefined && icon.trim() !== '' && !isIconExtractionFailed(icon);
-};
-
-// 分批处理数组，避免阻塞UI线程
-// 使用 requestIdleCallback 或 setTimeout 在空闲时处理
-function processBatchAsync<T, R>(
-  items: T[],
-  processor: (item: T) => R | null,
-  batchSize: number = 50,
-  timeout: number = 1000
-): Promise<R[]> {
-  return new Promise((resolve) => {
-    const results: R[] = [];
-    let index = 0;
-
-    const processBatch = () => {
-      const end = Math.min(index + batchSize, items.length);
-      
-      // 处理当前批次
-      for (let i = index; i < end; i++) {
-        const result = processor(items[i]);
-        if (result !== null) {
-          results.push(result);
-        }
-      }
-      
-      index = end;
-
-      // 如果还有剩余项，继续处理
-      if (index < items.length) {
-        // 使用 requestIdleCallback 或 setTimeout 让出主线程
-        if (window.requestIdleCallback) {
-          window.requestIdleCallback(processBatch, { timeout });
-        } else {
-          setTimeout(processBatch, 0);
-        }
-      } else {
-        resolve(results);
-      }
-    };
-
-    // 开始处理
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(processBatch, { timeout });
-    } else {
-      setTimeout(processBatch, 0);
-    }
-  });
-}
-
-type SearchResult = {
-  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings" | "search";
-  app?: AppInfo;
-  file?: FileHistoryItem;
-  everything?: EverythingResult;
-  url?: string;
-  email?: string;
-  memo?: MemoItem;
-  plugin?: { id: string; name: string; description?: string };
-  aiAnswer?: string;
-  jsonContent?: string;
-  displayName: string;
-  path: string;
-};
+import { searchMemos, searchSystemFolders, searchApplications, searchFileHistory, searchFileHistoryFrontend } from "../utils/searchUtils";
+import type { SearchResult } from "../utils/resultUtils";
+import { askOllama } from "../utils/ollamaUtils";
+import { computeCombinedResults } from "../utils/combineResultsUtils";
 
 
 interface LauncherWindowProps {
@@ -1202,212 +1096,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const layout = useMemo(() => getLayoutConfig(resultStyle), [resultStyle]);
 
   // Call Ollama API to ask AI (流式请求)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const askOllama = async (prompt: string) => {
-    if (!prompt.trim()) {
-      return;
-    }
-
-    // 清空之前的 AI 回答，并切换到 AI 回答模式
-    setAiAnswer('');
-    setShowAiAnswer(true);
-    setIsAiLoading(true);
-    
-    let accumulatedAnswer = '';
-    let buffer = ''; // 用于处理不完整的行
-    
-    try {
-      const baseUrl = ollamaSettings.base_url || 'http://localhost:11434';
-      const model = ollamaSettings.model || 'llama2';
-      
-      // 尝试使用 chat API (流式)
-      const response = await fetch(`${baseUrl}/api/chat`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: model,
-          messages: [
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          stream: true,
-        }),
-      });
-
-      if (!response.ok) {
-        // 如果chat API失败，尝试使用generate API作为后备
-        const generateResponse = await fetch(`${baseUrl}/api/generate`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: model,
-            prompt: prompt,
-            stream: true,
-          }),
-        });
-
-        if (!generateResponse.ok) {
-          throw new Error(`Ollama API error: ${generateResponse.statusText}`);
-        }
-
-        // 处理 generate API 的流式响应
-        const reader = generateResponse.body?.getReader();
-        const decoder = new TextDecoder();
-        
-        if (!reader) {
-          throw new Error('无法读取响应流');
-        }
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            // 处理剩余的 buffer
-            if (buffer.trim()) {
-              try {
-                const data = JSON.parse(buffer);
-                if (data.response) {
-                  accumulatedAnswer += data.response;
-                  flushSync(() => {
-                    setAiAnswer(accumulatedAnswer);
-                  });
-                }
-              } catch (e) {
-                console.warn('解析最后的数据失败:', e, buffer);
-              }
-            }
-            break;
-          }
-
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
-        const lines = buffer.split('\n');
-        
-        // 保留最后一个不完整的行
-        buffer = lines.pop() || '';
-
-        // 快速处理所有完整的行
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) continue;
-          
-          try {
-            const data = JSON.parse(trimmedLine);
-            if (data.response) {
-              accumulatedAnswer += data.response;
-              // 立即更新 UI，不等待
-              flushSync(() => {
-                setAiAnswer(accumulatedAnswer);
-              });
-            }
-            if (data.done) {
-              setIsAiLoading(false);
-              flushSync(() => {
-                setAiAnswer(accumulatedAnswer);
-              });
-              return;
-            }
-          } catch (e) {
-            // 忽略解析错误，继续处理下一行
-            console.warn('解析流式数据失败:', e, trimmedLine);
-          }
-        }
-        
-        // 立即继续读取下一个 chunk，不阻塞
-        }
-        
-        setIsAiLoading(false);
-        setAiAnswer(accumulatedAnswer);
-        return;
-      }
-
-      // 处理 chat API 的流式响应
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
-      if (!reader) {
-        throw new Error('无法读取响应流');
-      }
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          // 处理剩余的 buffer
-          if (buffer.trim()) {
-            try {
-              const data = JSON.parse(buffer);
-              if (data.message?.content) {
-                accumulatedAnswer += data.message.content;
-                flushSync(() => {
-                  setAiAnswer(accumulatedAnswer);
-                });
-              }
-            } catch (e) {
-              console.warn('解析最后的数据失败:', e, buffer);
-            }
-          }
-          break;
-        }
-
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
-        const lines = buffer.split('\n');
-        
-        // 保留最后一个不完整的行
-        buffer = lines.pop() || '';
-
-        // 快速处理所有完整的行
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (!trimmedLine) continue;
-          
-          try {
-            const data = JSON.parse(trimmedLine);
-            if (data.message?.content) {
-              accumulatedAnswer += data.message.content;
-              // 立即更新 UI，不等待
-              flushSync(() => {
-                setAiAnswer(accumulatedAnswer);
-              });
-            }
-            if (data.done) {
-              setIsAiLoading(false);
-              flushSync(() => {
-                setAiAnswer(accumulatedAnswer);
-              });
-              return;
-            }
-          } catch (e) {
-            // 忽略解析错误，继续处理下一行
-            console.warn('解析流式数据失败:', e, trimmedLine);
-          }
-        }
-        
-        // 立即继续读取下一个 chunk，不阻塞
-      }
-      
-      setIsAiLoading(false);
-      setAiAnswer(accumulatedAnswer);
-    } catch (error: any) {
-      console.error('调用Ollama API失败:', error);
-      setIsAiLoading(false);
-      // 显示错误提示
-      const errorMessage = error.message || '未知错误';
-      const baseUrl = ollamaSettings.base_url || 'http://localhost:11434';
-      const model = ollamaSettings.model || 'llama2';
-      alert(`调用AI失败: ${errorMessage}\n\n请确保:\n1. Ollama服务正在运行\n2. 已安装模型 (例如: ollama pull ${model})\n3. 服务地址为 ${baseUrl}`);
-    }
-  };
+  const askOllamaWrapper = useCallback(async (prompt: string) => {
+    await askOllama(prompt, ollamaSettings, {
+      setAiAnswer,
+      setShowAiAnswer,
+      setIsAiLoading,
+    });
+  }, [ollamaSettings]);
 
   // 将 askOllama 暴露到 window 以避免未使用告警并便于调试
   useEffect(() => {
-    (window as any).__askOllama = askOllama;
-  }, [askOllama]);
+    (window as any).__askOllama = askOllamaWrapper;
+  }, [askOllamaWrapper]);
 
   // Search applications, file history, and Everything when query changes (with debounce)
   useEffect(() => {
@@ -1617,26 +1317,26 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setTimeout(() => {
         // 系统文件夹和文件历史搜索立即执行
         Promise.all([
-          searchSystemFolders(trimmedQuery),
-          searchFileHistory(trimmedQuery),
+          searchSystemFoldersWrapper(trimmedQuery),
+          searchFileHistoryWrapper(trimmedQuery),
         ]).catch((error) => {
           console.error("[搜索错误] 并行搜索失败:", error);
         });
         
         // 应用搜索延迟1秒执行，避免阻塞其他搜索
         // setTimeout(() => {
-        //   searchApplications(trimmedQuery).catch((error) => {
+        //   searchApplicationsWrapper(trimmedQuery).catch((error) => {
         //     console.error("[搜索错误] 应用搜索失败:", error);
         //   });
         // }, 51000);
         
         console.log(`[搜索流程] 准备调用 searchApplications: query="${trimmedQuery}"`);
-        searchApplications(trimmedQuery).catch((error) => {
+        searchApplicationsWrapper(trimmedQuery).catch((error) => {
           console.error("[搜索错误] searchApplications 调用失败:", error);
         });
         
         // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞）
-        searchMemos(trimmedQuery);
+        searchMemosWrapper(trimmedQuery);
         handleSearchPlugins(trimmedQuery);
       }, 0);
     }, debounceTime) as unknown as number;
@@ -1658,43 +1358,14 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
                              filteredPlugins.length > 0 || everythingResults.length > 0;
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults]);
 
-  const searchMemos = async (q: string) => {
-    try {
-      // Don't search if query is empty
-      if (!q || q.trim() === "") {
-        updateSearchResults(setFilteredMemos, []);
-        return;
-      }
-      
-      // 简单策略：前端过滤本地 memos，如果需要更复杂的可以调用后端 search_memos
-      // 使用分批处理避免阻塞UI
-      const lower = q.toLowerCase();
-      const filtered = await processBatchAsync(
-        memos,
-        (m) => {
-          if (m.title.toLowerCase().includes(lower) ||
-              m.content.toLowerCase().includes(lower)) {
-            return m;
-          }
-          return null;
-        },
-        50, // 每批处理50项
-        1000 // 超时时间1秒
-      );
-      
-      // Only update if query hasn't changed
-      if (query.trim() === q.trim()) {
-        updateSearchResults(setFilteredMemos, filtered);
-      } else {
-        updateSearchResults(setFilteredMemos, []);
-      }
-    } catch (error) {
-      console.error("Failed to search memos:", error);
-      if (!q || q.trim() === "") {
-        updateSearchResults(setFilteredMemos, []);
-      }
-    }
-  };
+  const searchMemosWrapper = useCallback(async (q: string) => {
+    await searchMemos(q, {
+      memos,
+      currentQuery: query,
+      updateSearchResults,
+      setFilteredMemos,
+    });
+  }, [memos, query, updateSearchResults]);
 
   const handleSearchPlugins = useCallback((q: string) => {
     // Don't search if query is empty
@@ -1748,1055 +1419,27 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     // 使用 requestIdleCallback 或 setTimeout 延迟计算，避免阻塞输入响应
     // 这样可以让输入框保持响应，不会因为结果计算而卡顿
     const scheduleCompute = () => {
-      const computeCombinedResults = () => {
-    // 如果查询为空且没有 AI 回答，直接返回空数组，不显示任何结果
-    // 如果有 AI 回答，即使查询为空也要显示
-    if (query.trim() === "" && !aiAnswer) {
-      return [];
-    }
-    
-    // 先对 everythingResults 进行去重（基于路径），防止重复触发 useMemo 重新计算
-    const seenEverythingPaths = new Set<string>();
-    const deduplicatedEverythingResults: EverythingResult[] = [];
-    for (const everything of everythingResults) {
-      const normalizedPath = everything.path.toLowerCase().replace(/\\/g, "/");
-      if (!seenEverythingPaths.has(normalizedPath)) {
-        seenEverythingPaths.add(normalizedPath);
-        deduplicatedEverythingResults.push(everything);
-      }
-    }
-    
-    // 使用去重后的 everythingResults
-    const uniqueEverythingResults = deduplicatedEverythingResults;
-    
-    // 预处理 Everything 结果：分离可执行文件和普通文件，并统计过滤情况
-    const executableEverythingResults = uniqueEverythingResults
-      .filter((everything) => {
-        const pathLower = everything.path.toLowerCase();
-        return pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-      });
-    
-    let recycleBinFilteredCount = 0;
-    let duplicateFilteredCount = 0;
-
-    // 规范化应用名称用于去重，忽略大小写与可执行/快捷方式后缀
-    const normalizeAppName = (name: string): string =>
-      name.toLowerCase().replace(/\.(exe|lnk)$/i, "").trim();
-    // 已存在的应用名称集合（含 filteredApps）
-    const normalizedAppNameSet = new Set<string>(
-      filteredApps.map((app) => normalizeAppName(app.name))
-    );
-    
-    const filteredExecutableEverything = executableEverythingResults
-      .filter((everything) => {
-        // 过滤掉回收站中的文件（$RECYCLE.BIN）
-        const pathLower = everything.path.toLowerCase();
-        if (pathLower.includes('$recycle.bin')) {
-          recycleBinFilteredCount++;
-          return false;
-        }
-        return true;
-      })
-      .filter((everything) => {
-        // 检查是否已经在 filteredApps 或 filteredFiles 中，如果已存在则过滤掉
-        const normalizedEverythingPath = everything.path.toLowerCase().replace(/\\/g, "/");
-        const normalizedEverythingName = normalizeAppName(
-          everything.name || normalizedEverythingPath.split("/").pop() || ""
-        );
-        const isInFilteredApps = filteredApps.some(app => {
-          const normalizedAppPath = app.path.toLowerCase().replace(/\\/g, "/");
-          return normalizedAppPath === normalizedEverythingPath;
-        });
-        const isInFilteredFiles = filteredFiles.some(file => {
-          const normalizedFilePath = file.path.toLowerCase().replace(/\\/g, "/");
-          return normalizedFilePath === normalizedEverythingPath;
-        });
-        // 额外通过名称去重，避免同名的 exe 与 lnk 同时出现
-        const isDuplicateByName = normalizedAppNameSet.has(normalizedEverythingName);
-        const shouldInclude = !isInFilteredApps && !isInFilteredFiles && !isDuplicateByName;
-        if (!shouldInclude) {
-          duplicateFilteredCount++;
-        }
-        if (shouldInclude) {
-          normalizedAppNameSet.add(normalizedEverythingName);
-        }
-        return shouldInclude;
-      })
-      .map((everything): SearchResult => {
-        return {
-          type: "app" as const,
-          app: {
-            name: everything.name,
-            path: everything.path,
-            icon: undefined,
-            description: undefined,
-            name_pinyin: undefined,
-            name_pinyin_initials: undefined,
-          },
-          displayName: everything.name,
-          path: everything.path,
-        };
-      });
-    
-    
-    const nonExecutableEverythingResults = uniqueEverythingResults
-      .filter((everything) => {
-        const pathLower = everything.path.toLowerCase();
-        return !pathLower.endsWith('.exe') && !pathLower.endsWith('.lnk');
-      });
-    
-    let recycleBinFilteredCount2 = 0;
-    const filteredNonExecutableEverything = nonExecutableEverythingResults
-      .filter((everything) => {
-        // 过滤掉回收站中的文件（$RECYCLE.BIN）
-        const pathLower = everything.path.toLowerCase();
-        if (pathLower.includes('$recycle.bin')) {
-          recycleBinFilteredCount2++;
-          return false;
-        }
-        return true;
-      })
-      .map((everything) => ({
-        type: "everything" as const,
-        everything,
-        displayName: everything.name,
-        path: everything.path,
-      }));
-    
-    
-    // 从 openHistory 中提取 URL 历史记录（仅在查询不为空时）
-    const historyUrls: Array<{ url: string; timestamp: number }> = [];
-    const queryLower = query.toLowerCase().trim();
-    const detectedUrlsSet = new Set(detectedUrls.map(url => url.toLowerCase()));
-    
-    // 只在有查询时才从历史记录中搜索 URL
-    if (queryLower) {
-      // 遍历 openHistory，提取所有 URL（以 http:// 或 https:// 开头）
-      for (const [key, timestamp] of Object.entries(openHistory)) {
-        const keyLower = key.toLowerCase();
-        if ((keyLower.startsWith('http://') || keyLower.startsWith('https://')) && 
-            !detectedUrlsSet.has(keyLower)) {
-          // URL 包含查询内容，或者备注包含查询内容，则添加到历史 URL 列表
-          const urlMatches = keyLower.includes(queryLower);
-          const remark = urlRemarks[key];
-          const remarkMatches = remark && remark.toLowerCase().includes(queryLower);
-          
-          if (urlMatches || remarkMatches) {
-            historyUrls.push({ url: key, timestamp });
-          }
-        }
-      }
-      
-      // 按最近使用时间排序（最新的在前）
-      historyUrls.sort((a, b) => b.timestamp - a.timestamp);
-    }
-    
-    // 合并检测到的 URL 和历史 URL，去重（检测到的 URL 优先）
-    const allUrlsSet = new Set(detectedUrls.map(url => url.toLowerCase()));
-    const allUrls: string[] = [...detectedUrls];
-    
-    // 添加历史 URL（避免重复）
-    for (const { url } of historyUrls) {
-      if (!allUrlsSet.has(url.toLowerCase())) {
-        allUrls.push(url);
-        allUrlsSet.add(url.toLowerCase());
-      }
-    }
-    
-    const urlResults: SearchResult[] = allUrls.map((url) => ({
-      type: "url" as const,
-      url,
-      displayName: url,
-      path: url,
-    }));
-    
-    // 邮箱结果
-    const emailResults: SearchResult[] = detectedEmails.map((email) => ({
-      type: "email" as const,
-      email,
-      displayName: email,
-      path: `mailto:${email}`,
-    }));
-    
-    // JSON 格式化选项
-    const jsonFormatterResult: SearchResult[] = detectedJson ? [{
-      type: "json_formatter" as const,
-      jsonContent: detectedJson,
-      displayName: "打开 JSON 格式化查看器",
-      path: "json://formatter",
-    }] : [];
-    
-    // 检查是否应该显示"历史访问"结果（只在明确搜索相关关键词时显示）
-    const lowerQuery = query.toLowerCase().trim();
-    const historyKeywords = ["历史访问", "历史", "访问历史", "ls", "history"];
-    const shouldShowHistory = historyKeywords.some(keyword => 
-      lowerQuery.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(lowerQuery)
-    );
-    
-    // 检查是否应该显示"设置"结果（只在明确搜索相关关键词时显示）
-    const settingsKeywords = ["设置", "settings", "配置", "config", "preferences"];
-    const shouldShowSettings = settingsKeywords.some(keyword => 
-      lowerQuery.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(lowerQuery)
-    );
-    
-    // 检查是否是启动相关关键词（这些应该优先显示系统启动文件夹，而不是软件设置）
-    const startupKeywords = ["开机启动", "自启动", "启动项", "startup", "autostart"];
-    const isStartupQuery = startupKeywords.some(keyword => 
-      lowerQuery.includes(keyword.toLowerCase()) || keyword.toLowerCase().includes(lowerQuery)
-    );
-    
-    // 创建文件历史记录的映射，用于关联应用的使用频率数据
-    const fileHistoryMap = new Map<string, FileHistoryItem>();
-    filteredFiles.forEach((file) => {
-      const normalizedPath = file.path.toLowerCase().replace(/\\/g, "/");
-      fileHistoryMap.set(normalizedPath, file);
-    });
-    
-    // 注意：系统文件夹的使用次数主要从 filteredFiles 中获取（通过 fileHistoryMap）
-    // 如果 filteredFiles 中没有，说明该文件夹不在文件历史记录中，使用默认值 0 是合理的
-    // 不需要从 allFileHistoryCacheRef 中查找，因为：
-    // 1. allFileHistoryCacheRef 在组件后面定义，访问会有初始化顺序问题
-    // 2. filteredFiles 已经包含了搜索匹配的文件历史记录，如果系统文件夹在历史记录中且匹配搜索，应该已经在 filteredFiles 中
-    
-
-    
-    // 调试日志：检查系统文件夹
-    if (query.trim() && systemFolders.length > 0) {
-
-      systemFolders.forEach((folder) => {
-        const normalizedPath = folder.path.toLowerCase().replace(/\\/g, "/");
-        fileHistoryMap.get(normalizedPath);
-
-      });
-    }
-    
-    // 检测搜索意图（优先显示在结果列表顶部）
-    const searchIntent = detectSearchIntent(query, searchEngines);
-    
-    // 如果检测到搜索引擎前缀，只返回搜索引擎结果，屏蔽其他所有搜索
-    if (searchIntent) {
-      const searchResultItem = getSearchResultItem(searchIntent.engine, searchIntent.keyword);
-      const searchResult: SearchResult = {
-        ...searchResultItem,
-        type: "search" as const,
-      };
-      return [searchResult];
-    }
-    
-    let otherResults: SearchResult[] = [
-      // 如果有 AI 回答，将其添加到结果列表的前面
-      ...(aiAnswer ? [{
-        type: "ai" as const,
-        aiAnswer: aiAnswer,
-        displayName: "AI 回答",
-        path: "ai://answer",
-      }] : []),
-      // 如果查询匹配历史访问关键词，添加历史访问结果
-      ...(shouldShowHistory ? [{
-        type: "history" as const,
-        displayName: "历史访问",
-        path: "history://shortcuts-config",
-      }] : []),
-      // 绝对路径直达结果（如果存在）
-      ...(directPathResult ? [{
-        type: "file" as const,
-        file: directPathResult,
-        displayName: directPathResult.name || directPathResult.path,
-        path: directPathResult.path,
-      }] : []),
-      // 如果查询匹配启动相关关键词，添加 Windows 系统启动设置页面
-      ...(isStartupQuery ? [{
-        type: "url" as const,
-        url: "ms-settings:startupapps",
-        displayName: "系统启动设置",
-        path: "ms-settings:startupapps",
-      }] : []),
-      // 系统文件夹结果，优先显示
-      ...systemFolders.map((folder) => {
-        // 尝试从文件历史记录中查找对应的使用频率数据
-        const normalizedFolderPath = folder.path.toLowerCase().replace(/\\/g, "/");
-        const fileHistory = fileHistoryMap.get(normalizedFolderPath);
-        
-        // 如果找到文件历史记录，使用历史记录的数据；否则使用默认值
-        const fileData = fileHistory || {
-          path: folder.path,
-          name: folder.name,
-          last_used: 0,
-          use_count: 0,
-          is_folder: folder.is_folder,
-        };
-        
-
-        
-        return {
-          type: "file" as const,
-          file: fileData,
-          displayName: folder.name,
-          path: folder.path,
-        };
-      }),
-      // 如果查询匹配设置关键词，优先显示 Windows 设置应用（通过提高其优先级实现）
-      ...filteredApps.map((app) => {
-        // 尝试从文件历史记录中查找对应的使用频率数据
-        const normalizedAppPath = app.path.toLowerCase().replace(/\\/g, "/");
-        const fileHistory = fileHistoryMap.get(normalizedAppPath);
-        
-        // 如果应用没有图标，尝试从 apps 状态中查找匹配的应用并获取图标
-        let appWithIcon = app;
-        if (!isValidIcon(app.icon)) {
-          const matchedApp = apps.find((a) => {
-            const normalizedPath = a.path.toLowerCase().replace(/\\/g, "/");
-            return normalizedPath === normalizedAppPath;
-          });
-          
-          if (matchedApp && isValidIcon(matchedApp.icon)) {
-            appWithIcon = { ...app, icon: matchedApp.icon! };
-          }
-        }
-        
-        return {
-          type: "app" as const,
-          app: appWithIcon,
-          // 如果找到对应的文件历史记录，设置 file 字段以便排序时使用 use_count 和 last_used
-          file: fileHistory,
-          displayName: app.name,
-          path: app.path,
-        };
-      }),
-      // 从文件历史记录中分离可执行文件
-      ...(filteredFiles
-        .filter((file) => {
-          const pathLower = file.path.toLowerCase();
-          // 过滤掉 WindowsApps 路径
-          if (pathLower.includes("windowsapps")) {
-            return false;
-          }
-          return pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-        })
-        .filter((file) => {
-          // 检查是否已经在 filteredApps 中，如果已存在则过滤掉
-          // 不仅要检查路径完全相同，还要检查 .lnk 文件是否指向已存在的 .exe 文件
-          const normalizedFilePath = file.path.toLowerCase().replace(/\\/g, "/");
-          const filePathLower = file.path.toLowerCase();
-          
-          // 首先检查是否有完全相同的路径
-          const hasExactMatch = filteredApps.some(app => {
-            const normalizedAppPath = app.path.toLowerCase().replace(/\\/g, "/");
-            return normalizedAppPath === normalizedFilePath;
-          });
-          if (hasExactMatch) return false;
-          
-          // 如果是 .lnk 文件，检查是否有对应的 .exe 文件在 filteredApps 中
-          if (filePathLower.endsWith('.lnk')) {
-            // 提取 .lnk 文件的关键信息用于匹配
-            // 策略：提取路径中的公司目录和产品名称，检查是否有 .exe 文件包含这些信息
-            const lnkNormalized = normalizedFilePath;
-            
-            // 查找 "programs/" 之后的目录结构
-            const programsIdx = lnkNormalized.indexOf("/programs/");
-            if (programsIdx !== -1) {
-              const afterPrograms = lnkNormalized.substring(programsIdx + "/programs/".length);
-              const productPart = afterPrograms.replace(/\.lnk$/, "");
-              
-              // 提取公司目录和产品名称
-              const slashIdx = productPart.indexOf('/');
-              if (slashIdx !== -1) {
-                const companyDir = productPart.substring(0, slashIdx);
-                const productName = productPart.substring(slashIdx + 1);
-                
-                // 检查 filteredApps 中是否有 .exe 文件包含这些信息
-                const hasMatchingExe = filteredApps.some(app => {
-                  const appPathLower = app.path.toLowerCase().replace(/\\/g, "/");
-                  if (!appPathLower.endsWith('.exe')) return false;
-                  // 检查 .exe 路径是否同时包含公司目录和产品名称
-                  return appPathLower.includes(companyDir) && appPathLower.includes(productName);
-                });
-                if (hasMatchingExe) return false;
-              } else {
-                // 单层目录结构，检查名称匹配
-                const companyOrProduct = productPart;
-                const lnkNameLower = file.name.toLowerCase().replace(/\.lnk$/, "");
-                const hasMatchingExe = filteredApps.some(app => {
-                  const appPathLower = app.path.toLowerCase().replace(/\\/g, "/");
-                  if (!appPathLower.endsWith('.exe')) return false;
-                  // 检查路径包含目录名，且路径包含 .lnk 名称的核心部分
-                  return appPathLower.includes(companyOrProduct) && appPathLower.includes(lnkNameLower);
-                });
-                if (hasMatchingExe) return false;
-              }
-            }
-          }
-          
-          return true;
-        })
-        // 在 filteredFiles 内部去重：对于 .lnk 文件，检查是否存在对应的 .exe 文件
-        // 优先保留 .exe 文件，如果 .lnk 文件指向相同的应用，则过滤掉 .lnk
-        .reduce((acc: typeof filteredFiles, file) => {
-          const pathLower = file.path.toLowerCase();
-          if (pathLower.endsWith('.exe')) {
-            // 直接添加 .exe 文件
-            acc.push(file);
-          } else if (pathLower.endsWith('.lnk')) {
-            // 对于 .lnk 文件，检查是否已有对应的 .exe 文件
-            const lnkPathLower = file.path.toLowerCase();
-            const lnkName = file.name.toLowerCase().replace(/\.lnk$/, '').trim();
-            
-            // 检查是否已有对应的 .exe 文件（通过名称和路径判断）
-            const hasCorrespondingExe = acc.some(existingFile => {
-              const existingPathLower = existingFile.path.toLowerCase();
-              if (!existingPathLower.endsWith('.exe')) return false;
-              
-              // 提取 .exe 文件的基本名称（不含扩展名）
-              const exeName = existingFile.name.toLowerCase().replace(/\.exe$/, '').trim();
-              
-              // 方法1：名称匹配 - 如果 .lnk 名称包含 .exe 名称，或者 .exe 名称包含 .lnk 名称的核心部分
-              // 例如："Navicat Premium 17.lnk" 包含 "navicat"
-              if (lnkName.includes(exeName) || exeName.includes(lnkName.split(' ')[0])) {
-                return true;
-              }
-              
-              // 方法2：路径匹配 - 检查路径中的目录结构是否匹配
-              // 提取路径中的关键目录名（通常是软件公司名或产品名）
-              // 例如：C:\Program Files\PremiumSoft\Navicat Premium 17\navicat.exe
-              //      C:\ProgramData\Microsoft\Windows\Start Menu\Programs\PremiumSoft\Navicat Premium 17.lnk
-              // 两个路径都包含 "PremiumSoft"，说明可能是同一应用
-              
-              // 从 .exe 路径中提取目录名（排除常见系统目录）
-              // 尝试匹配 Program Files\公司名 或 Program Files\公司名\产品名 的模式
-              const exeDirMatches = existingPathLower.match(/(?:program files|program files \(x86\))\\([^\\/]+)(?:\\[^\\/]+)?\\/i);
-              if (exeDirMatches && exeDirMatches[1]) {
-                const exeDirName = exeDirMatches[1].toLowerCase();
-                // 检查 .lnk 路径中是否也包含这个目录名
-                if (lnkPathLower.includes(exeDirName)) {
-                  // 进一步检查：如果路径中都包含相同的目录名，且 .lnk 名称与 .exe 所在路径相关
-                  // 例如：.exe 在 PremiumSoft\Navicat Premium 17 目录下，.lnk 名称是 "Navicat Premium 17"
-                  const exePathContainsLnkName = existingPathLower.includes(lnkName);
-                  const lnkNameContainsExeDir = lnkName.includes(exeDirName);
-                  if (exePathContainsLnkName || lnkNameContainsExeDir || existingPathLower.includes(lnkName.split(' ')[0])) {
-                    return true;
-                  }
-                }
-              }
-              
-              // 方法3：反向检查 - 从 .lnk 路径中提取目录名（在 Start Menu 中，通常在 Programs 子目录下）
-              // 例如：Programs\PremiumSoft\Navicat Premium 17.lnk
-              const lnkDirMatches = lnkPathLower.match(/programs\\([^\\/]+)/i);
-              if (lnkDirMatches && lnkDirMatches[1]) {
-                const lnkDirName = lnkDirMatches[1].toLowerCase();
-                // 检查 .exe 路径中是否也包含这个目录名
-                // 如果包含，且名称也相关，则认为是同一应用
-                if (existingPathLower.includes(lnkDirName)) {
-                  // 进一步检查名称相关性
-                  const exePathContainsLnkName = existingPathLower.includes(lnkName);
-                  const lnkNameContainsExeName = lnkName.includes(exeName);
-                  if (exePathContainsLnkName || lnkNameContainsExeName) {
-                    return true;
-                  }
-                }
-              }
-              
-              return false;
-            });
-            
-            // 如果没有对应的 .exe 文件，添加该 .lnk 文件
-            if (!hasCorrespondingExe) {
-              acc.push(file);
-            }
-          } else {
-            // 其他类型的文件，直接添加
-            acc.push(file);
-          }
-          return acc;
-        }, [])
-        .filter((file) => {
-          // 同名去重：避免 file history 与 Everything/应用列表名称重复
-          const normalizedName = normalizeAppName(file.name);
-          if (normalizedAppNameSet.has(normalizedName)) {
-            duplicateFilteredCount++;
-            return false;
-          }
-          normalizedAppNameSet.add(normalizedName);
-          return true;
-        })
-        .map((file): SearchResult => {
-          // 尝试从提取的图标缓存中获取图标
-          const extractedIcon = extractedFileIconsRef.current.get(file.path);
-          return {
-            type: "app" as const,
-            app: {
-              name: file.name,
-              path: file.path,
-              icon: extractedIcon, // 优先使用提取的图标，如果没有则尝试从应用列表获取
-              description: undefined,
-              name_pinyin: undefined,
-              name_pinyin_initials: undefined,
-            },
-            displayName: file.name,
-            path: file.path,
-          };
-        })),
-      // 普通文件（非可执行文件）
-      ...filteredFiles
-        .filter((file) => {
-          const pathLower = file.path.toLowerCase();
-          return !pathLower.endsWith('.exe') && !pathLower.endsWith('.lnk');
-        })
-        .map((file) => {
-          // 检查是否是 URL（从历史记录中获取的）
-          const isUrl = file.path.startsWith('http://') || file.path.startsWith('https://');
-          
-          if (isUrl) {
-            return {
-              type: "url" as const,
-              url: file.path,
-              file,
-              displayName: file.name,
-              path: file.path,
-            };
-          }
-
-          return {
-            type: "file" as const,
-            file,
-            displayName: file.name,
-            path: file.path,
-          };
-        }),
-      ...filteredMemos.map((memo) => ({
-        type: "memo" as const,
-        memo,
-        displayName: memo.title || memo.content.slice(0, 50),
-        path: memo.id,
-      })),
-      // 将文件工具箱插件单独提取，优先显示
-      ...filteredPlugins
-        .filter((plugin) => plugin.id === "file_toolbox")
-        .map((plugin) => ({
-          type: "plugin" as const,
-          plugin,
-          displayName: plugin.name,
-          path: plugin.id,
-        })),
-      // 其他插件
-      ...filteredPlugins
-        .filter((plugin) => plugin.id !== "file_toolbox")
-        .map((plugin) => ({
-          type: "plugin" as const,
-          plugin,
-          displayName: plugin.name,
-          path: plugin.id,
-        })),
-      // 从 Everything 结果中分离可执行文件（已在数组外预处理）
-      ...filteredExecutableEverything,
-      // 普通 Everything 结果（非可执行文件，已在数组外预处理）
-      ...filteredNonExecutableEverything,
-    ];
-    
-    // 对结果进行去重：如果同一个路径出现在多个结果源中，只保留一个
-    // 优先保留历史文件结果（因为历史记录包含使用频率和最近使用时间，排序更准确）
-    // 先收集历史文件结果的路径集合
-    const historyFilePaths = new Set<string>();
-    const normalizeNameForResult = (result: SearchResult): string => {
-      const base =
-        result.displayName ||
-        result.path.split(/[\\/]/).pop() ||
-        result.path;
-      return normalizeAppName(base);
-    };
-    // 记录已保留的应用名，用于后续过滤同名的非应用结果（避免“同名文档”覆盖/混淆应用）
-    const seenAppNames = new Set<string>();
-    for (const result of otherResults) {
-      if (result.type === "file") {
-        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-        historyFilePaths.add(normalizedPath);
-      }
-    }
-    
-    // 过滤掉 Everything 结果中与历史文件结果重复的路径
-    const deduplicatedResults: SearchResult[] = [];
-    const addedHistoryPaths = new Set<string>(); // 用于跟踪已添加的历史文件路径，防止历史文件结果之间的重复
-    const addedAppPaths = new Set<string>(); // 用于跟踪已添加的应用路径，防止应用结果之间的重复
-    let everythingFilteredByHistoryCount = 0; // 统计因与历史文件重复而被过滤的 Everything 结果数
-    let appFilteredByHistoryCount = 0; // 统计因与历史文件重复而被过滤的 app 结果数
-    
-    for (const result of otherResults) {
-      // 对于特殊类型（AI、历史、设置等）和 URL，不需要去重
-      if (result.type === "ai" || result.type === "history" || result.type === "settings" || result.type === "url" || result.type === "email" || result.type === "json_formatter" || result.type === "plugin") {
-        deduplicatedResults.push(result);
-        continue;
-      }
-      
-      // 对于历史文件类型，检查是否已经添加过（防止历史文件结果之间的重复）
-      if (result.type === "file") {
-        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-        if (!addedHistoryPaths.has(normalizedPath)) {
-          addedHistoryPaths.add(normalizedPath);
-          // 如果已存在同名应用，跳过非应用结果，避免同名文档/文件干扰
-          const normalizedName = normalizeNameForResult(result);
-          if (seenAppNames.has(normalizedName)) {
-            continue;
-          }
-          deduplicatedResults.push(result);
-        }
-        // 如果路径已添加过，跳过（保留第一次出现的，通常使用频率更高）
-        continue;
-      }
-      
-      // 对于 Everything 类型，检查是否已在历史文件结果中
-      if (result.type === "everything") {
-        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-        const normalizedName = normalizeNameForResult(result);
-        // 如果已有同名应用，跳过 Everything 非应用结果，避免“打开文件夹”指向文档
-        if (seenAppNames.has(normalizedName)) {
-          everythingFilteredByHistoryCount++; // 复用统计
-          continue;
-        }
-        if (!historyFilePaths.has(normalizedPath)) {
-          deduplicatedResults.push(result);
-        } else {
-          everythingFilteredByHistoryCount++;
-        }
-        // 如果路径已在历史文件结果中，跳过（不添加 Everything 结果）
-        continue;
-      }
-      
-      // 对于 app 类型，检查路径是否重复（包括与其他 app 类型结果的重复）
-      if (result.type === "app") {
-        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-        const isInHistoryFilePaths = historyFilePaths.has(normalizedPath);
-        const isInAddedAppPaths = addedAppPaths.has(normalizedPath);
-        const normalizedName = normalizeNameForResult(result);
-        // 检查是否已在历史文件结果中，或者是否已经添加过（防止重复）
-        // 注意：如果同一个路径在 otherResults 中出现多次（比如来自 filteredFiles 和 Everything），只保留第一个
-        if (!isInHistoryFilePaths && !isInAddedAppPaths) {
-          addedAppPaths.add(normalizedPath);
-          seenAppNames.add(normalizedName);
-          deduplicatedResults.push(result);
-        } else {
-          if (isInHistoryFilePaths) {
-            appFilteredByHistoryCount++;
-          }
-        }
-        continue;
-      }
-      
-      // 对于其他类型，检查路径是否重复
-      const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-      if (!historyFilePaths.has(normalizedPath)) {
-        deduplicatedResults.push(result);
-      }
-    }
-    
-    // 使用去重后的结果
-    otherResults = deduplicatedResults;
-    
-    // 统计最终结果列表中的应用数量（包括来自 filteredApps 和 filteredFiles 的应用）
-    let finalAppResults = otherResults.filter(r => r.type === "app");
-    
-    // 对最终应用结果按名称去重：如果多个应用名称相同，优先保留 .exe 文件
-    const seenFinalAppNames = new Set<string>();
-    const deduplicatedAppResults = finalAppResults.reduce((acc: typeof finalAppResults, app) => {
-      const normalizedName = normalizeAppName(app.displayName || app.path.split(/[\\/]/).pop() || "");
-      const pathLower = app.path.toLowerCase();
-      const isExe = pathLower.endsWith('.exe');
-      
-      if (!seenFinalAppNames.has(normalizedName)) {
-        // 第一次遇到这个名称，直接添加
-        seenFinalAppNames.add(normalizedName);
-        acc.push(app);
-      } else {
-        // 已经存在同名应用，检查是否应该替换
-        const existingIndex = acc.findIndex(existing => {
-          const existingNormalizedName = normalizeAppName(existing.displayName || existing.path.split(/[\\/]/).pop() || "");
-          return existingNormalizedName === normalizedName;
-        });
-        
-        if (existingIndex !== -1) {
-          const existing = acc[existingIndex];
-          const existingPathLower = existing.path.toLowerCase();
-          const existingIsLnk = existingPathLower.endsWith('.lnk');
-          
-          // 如果当前是 .exe 而已存在的是 .lnk，替换它
-          if (isExe && existingIsLnk) {
-            acc[existingIndex] = app;
-          }
-          // 如果当前是 .lnk 而已存在的是 .exe，跳过（不替换）
-          // 其他情况保持原样（不添加）
-        }
-      }
-      
-      return acc;
-    }, []);
-    
-    // 将去重后的应用结果更新回 otherResults
-    // 移除原来的应用结果，然后添加去重后的应用结果
-    otherResults = [
-      ...otherResults.filter(r => r.type !== "app"),
-      ...deduplicatedAppResults
-    ];
-    
-    finalAppResults = deduplicatedAppResults;
-    
-
-    
-    // 使用相关性评分系统对所有结果进行排序
-    // 性能优化：当结果数量过多时，只对前1000条进行排序，避免对大量结果排序造成卡顿
-    const MAX_SORT_COUNT = 1000;
-    const needsSorting = otherResults.length > MAX_SORT_COUNT;
-    
-    if (needsSorting) {
-      // 先分离特殊类型（这些总是排在最前面，不需要排序）
-      const specialTypes = ["ai", "history", "settings"];
-      const specialResults: SearchResult[] = [];
-      const regularResults: SearchResult[] = [];
-      
-      for (const result of otherResults) {
-        if (specialTypes.includes(result.type)) {
-          specialResults.push(result);
-        } else {
-          // 插件和应用一起参与排序，不再单独提取
-          regularResults.push(result);
-        }
-      }
-      
-      // 只对前 MAX_SORT_COUNT 条常规结果进行排序
-      const toSort = regularResults.slice(0, MAX_SORT_COUNT);
-      const rest = regularResults.slice(MAX_SORT_COUNT);
-      
-      toSort.sort((a, b) => {
-        // 获取使用频率和最近使用时间
-        // 优先使用 openHistory（最新的实时数据），如果没有才使用 file.last_used（数据库中的历史数据）
-        // 注意：需要规范化路径以确保匹配（统一大小写和斜杠方向）
-        const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
-        const aPathNormalized = normalizePathForHistory(a.path);
-        const bPathNormalized = normalizePathForHistory(b.path);
-        // 在 openHistory 中查找规范化后的路径
-        const aLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-          normalizePathForHistory(key) === aPathNormalized
-        )?.[1];
-        const bLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-          normalizePathForHistory(key) === bPathNormalized
-        )?.[1];
-        const aUseCount = a.file?.use_count;
-        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
-        const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
-        const bUseCount = b.file?.use_count;
-        const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
-        
-
-        // 计算相关性评分
-        const aScore = calculateRelevanceScore(
-          a.displayName,
-          a.path,
-          query,
-          aUseCount,
-          aLastUsed,
-          a.type === "everything",
-          a.type === "app",  // 新增：标识是否是应用
-          a.app?.name_pinyin,  // 新增：应用拼音全拼
-          a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          a.type === "file",  // 新增：标识是否是历史文件
-          a.type === "url"  // 新增：标识是否是 URL
-        );
-        const bScore = calculateRelevanceScore(
-          b.displayName,
-          b.path,
-          query,
-          bUseCount,
-          bLastUsed,
-          b.type === "everything",
-          b.type === "app",  // 新增：标识是否是应用
-          b.app?.name_pinyin,  // 新增：应用拼音全拼
-          b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          b.type === "file",  // 新增：标识是否是历史文件
-          b.type === "url"  // 新增：标识是否是 URL
-        );
-        
-        // 调试：输出排序比较过程
-        if (query.trim() && a.type === "app" && b.type === "app") {
-          console.log(`[排序比较] "${a.displayName}" (${aScore}) vs "${b.displayName}" (${bScore}) => ${bScore - aScore > 0 ? a.displayName : b.displayName} 在前`);
-        }
-
-        // Everything 内部快捷方式 (.lnk) 优先
-        if (a.type === "everything" && b.type === "everything") {
-          const aLnk = isLnkPath(a.path);
-          const bLnk = isLnkPath(b.path);
-          if (aLnk !== bLnk) return aLnk ? -1 : 1;
-        }
-
-        // 历史文件始终优先于 Everything（即使分数更低）
-        if (a.type === "file" && b.type === "everything") return -1;
-        if (a.type === "everything" && b.type === "file") return 1;
-
-        // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
-        // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
-        if (aLastUsed > 0 && bLastUsed > 0) {
-          // 两个都有使用时间，严格按时间降序排序（最近的在前面）
-          // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
-          return bLastUsed - aLastUsed;
-        } else if (aLastUsed > 0) {
-          // 只有 a 有使用时间，a 排在前面
-          return -1;
-        } else if (bLastUsed > 0) {
-          // 只有 b 有使用时间，b 排在前面
-          return 1;
-        }
-
-        // 第二优先级：按评分降序排序（分数高的在前）
-        if (bScore !== aScore) {
-          return bScore - aScore;
-        }
-
-        // 第三优先级：类型优先级（应用 > 历史文件 > Everything > 其他）
-        if (a.type === "app" && b.type !== "app") return -1;
-        if (a.type !== "app" && b.type === "app") return 1;
-        if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先于 Everything
-        if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先于 Everything
-        
-        // 第四优先级：使用频率（使用次数多的在前）
-        if (aUseCount !== undefined && bUseCount !== undefined && aUseCount !== bUseCount) {
-          return bUseCount - aUseCount;
-        }
-        
-        // 最后：按名称排序（保持稳定排序）
-        return a.displayName.localeCompare(b.displayName);
-      });
-      
-      // 重新组合：特殊类型 + 排序后的前部分 + 未排序的后部分（插件已包含在排序结果中）
-      otherResults = [...specialResults, ...toSort, ...rest];
-      
-      // 调试日志：combinedResults 排序后的应用结果
-    } else {
-      // 结果数量较少时，直接排序所有结果
-      otherResults.sort((a, b) => {
-        // 特殊类型的结果保持最高优先级（AI、历史、设置等）
-        const specialTypes = ["ai", "history", "settings"];
-        const aIsSpecial = specialTypes.includes(a.type);
-        const bIsSpecial = specialTypes.includes(b.type);
-        
-        if (aIsSpecial && !bIsSpecial) return -1;
-        if (!aIsSpecial && bIsSpecial) return 1;
-        if (aIsSpecial && bIsSpecial) {
-          // 特殊类型之间保持原有顺序
-          return 0;
-        }
-        
-        // 插件不再有特殊优先级，和应用一起按最近使用时间排序
-
-        // Windows 设置应用优先级处理（当搜索设置相关关键词时）
-        const aAppName = (a.app?.name || a.displayName || '').toLowerCase();
-        const aAppPath = (a.path || '').toLowerCase();
-        const aIsSettingsApp = (a.type === "app" && ((aAppName === '设置' || aAppName === 'settings') || 
-                         aAppPath.startsWith('shell:appsfolder') || 
-                         aAppPath.startsWith('ms-settings:')));
-        const bAppName = (b.app?.name || b.displayName || '').toLowerCase();
-        const bAppPath = (b.path || '').toLowerCase();
-        const bIsSettingsApp = (b.type === "app" && ((bAppName === '设置' || bAppName === 'settings') || 
-                         bAppPath.startsWith('shell:appsfolder') || 
-                         bAppPath.startsWith('ms-settings:')));
-        
-        // 如果查询匹配设置关键词，Windows 设置应用优先级最高（仅次于特殊类型）
-        if (shouldShowSettings) {
-          if (aIsSettingsApp && !bIsSettingsApp && !bIsSpecial) return -1;
-          if (!aIsSettingsApp && bIsSettingsApp && !aIsSpecial) return 1;
-        }
-
-        // 获取使用频率和最近使用时间
-        // 优先使用 openHistory（最新的实时数据），如果没有才使用 file.last_used（数据库中的历史数据）
-        // 注意：需要规范化路径以确保匹配（统一大小写和斜杠方向）
-        const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
-        const aPathNormalized = normalizePathForHistory(a.path);
-        const bPathNormalized = normalizePathForHistory(b.path);
-        // 在 openHistory 中查找规范化后的路径
-        const aLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-          normalizePathForHistory(key) === aPathNormalized
-        )?.[1];
-        const bLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-          normalizePathForHistory(key) === bPathNormalized
-        )?.[1];
-        const aUseCount = a.file?.use_count;
-        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
-        const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
-        const bUseCount = b.file?.use_count;
-        const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
-        
-
-        // 计算相关性评分
-        const aScore = calculateRelevanceScore(
-          a.displayName,
-          a.path,
-          query,
-          aUseCount,
-          aLastUsed,
-          a.type === "everything",
-          a.type === "app",  // 新增：标识是否是应用
-          a.app?.name_pinyin,  // 新增：应用拼音全拼
-          a.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          a.type === "file",  // 新增：标识是否是历史文件
-          a.type === "url"  // 新增：标识是否是 URL
-        );
-        const bScore = calculateRelevanceScore(
-          b.displayName,
-          b.path,
-          query,
-          bUseCount,
-          bLastUsed,
-          b.type === "everything",
-          b.type === "app",  // 新增：标识是否是应用
-          b.app?.name_pinyin,  // 新增：应用拼音全拼
-          b.app?.name_pinyin_initials,  // 新增：应用拼音首字母
-          b.type === "file",  // 新增：标识是否是历史文件
-          b.type === "url"  // 新增：标识是否是 URL
-        );
-
-        // Everything 内部快捷方式 (.lnk) 优先
-        if (a.type === "everything" && b.type === "everything") {
-          const aLnk = isLnkPath(a.path);
-          const bLnk = isLnkPath(b.path);
-          if (aLnk !== bLnk) return aLnk ? -1 : 1;
-        }
-
-        // 历史文件始终优先于 Everything（即使分数更低）
-        if (a.type === "file" && b.type === "everything") return -1;
-        if (a.type === "everything" && b.type === "file") return 1;
-
-        // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
-        // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
-        if (aLastUsed > 0 && bLastUsed > 0) {
-          // 两个都有使用时间，严格按时间降序排序（最近的在前面）
-          // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
-          return bLastUsed - aLastUsed;
-        } else if (aLastUsed > 0) {
-          // 只有 a 有使用时间，a 排在前面
-          return -1;
-        } else if (bLastUsed > 0) {
-          // 只有 b 有使用时间，b 排在前面
-          return 1;
-        }
-
-        // 第二优先级：按评分降序排序（分数高的在前）
-        if (bScore !== aScore) {
-          // 如果查询匹配设置关键词，Windows 设置应用优先（即使分数稍低）
-          if (shouldShowSettings) {
-            const scoreDiff = Math.abs(bScore - aScore);
-            if (scoreDiff <= 500) { // 允许更大的分数差距
-              if (aIsSettingsApp && !bIsSettingsApp && !bIsSpecial) return -1;
-              if (!aIsSettingsApp && bIsSettingsApp && !aIsSpecial) return 1;
-            }
-          }
-          return bScore - aScore;
-        }
-
-        // 第三优先级：类型优先级（Windows 设置应用 > 应用 > 历史文件 > Everything > 其他）
-        if (shouldShowSettings) {
-          if (aIsSettingsApp && !bIsSettingsApp && !bIsSpecial) return -1;
-          if (!aIsSettingsApp && bIsSettingsApp && !aIsSpecial) return 1;
-        }
-        if (a.type === "app" && b.type !== "app") return -1;
-        if (a.type !== "app" && b.type === "app") return 1;
-        if (a.type === "file" && b.type === "everything") return -1; // 历史文件优先于 Everything
-        if (a.type === "everything" && b.type === "file") return 1; // 历史文件优先于 Everything
-        
-        // 第四优先级：使用频率（使用次数多的在前）
-        if (aUseCount !== undefined && bUseCount !== undefined && aUseCount !== bUseCount) {
-          return bUseCount - aUseCount;
-        }
-        
-        // 最后：按名称排序（保持稳定排序）
-        return a.displayName.localeCompare(b.displayName);
-      });
-    }
-    
-    // 合并所有结果，然后统一排序（确保最近使用时间优先）
-    const allResultsToSort = [
-      ...otherResults,
-      ...urlResults,
-      ...emailResults,
-      ...jsonFormatterResult
-    ];
-    
-    // 对所有结果统一排序，确保最近使用时间优先
-    const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
-    allResultsToSort.sort((a, b) => {
-      const aPathNormalized = normalizePathForHistory(a.path);
-      const bPathNormalized = normalizePathForHistory(b.path);
-      const aLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-        normalizePathForHistory(key) === aPathNormalized
-      )?.[1];
-      const bLastUsedFromHistory = Object.entries(openHistory).find(([key]) => 
-        normalizePathForHistory(key) === bPathNormalized
-      )?.[1];
-      const aUseCount = a.file?.use_count;
-      // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
-      const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
-      const bUseCount = b.file?.use_count;
-      const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
-      
-      // 第一优先级：最近使用时间（最近打开的始终排在前面，严格按时间排序）
-      if (aLastUsed > 0 && bLastUsed > 0) {
-        // 两个都有使用时间，严格按时间降序排序（最近的在前面）
-        return bLastUsed - aLastUsed;
-      } else if (aLastUsed > 0) {
-        // 只有 a 有使用时间，a 排在前面
-        return -1;
-      } else if (bLastUsed > 0) {
-        // 只有 b 有使用时间，b 排在前面
-        return 1;
-      }
-      
-      // 第二优先级：按评分降序排序（分数高的在前）
-      const aScore = calculateRelevanceScore(
-        a.displayName,
-        a.path,
-        query,
-        aUseCount,
-        aLastUsed,
-        a.type === "everything",
-        a.type === "app",
-        a.app?.name_pinyin,
-        a.app?.name_pinyin_initials,
-        a.type === "file",
-        a.type === "url"
-      );
-      const bScore = calculateRelevanceScore(
-        b.displayName,
-        b.path,
-        query,
-        bUseCount,
-        bLastUsed,
-        b.type === "everything",
-        b.type === "app",
-        b.app?.name_pinyin,
-        b.app?.name_pinyin_initials,
-        b.type === "file",
-        b.type === "url"
-      );
-      
-      if (bScore !== aScore) {
-        return bScore - aScore;
-      }
-      
-      // 第三优先级：类型优先级（应用 > 历史文件 > Everything > 其他）
-      if (a.type === "app" && b.type !== "app") return -1;
-      if (a.type !== "app" && b.type === "app") return 1;
-      if (a.type === "file" && b.type === "everything") return -1;
-      if (a.type === "everything" && b.type === "file") return 1;
-      
-      // 第四优先级：使用频率（使用次数多的在前）
-      if (aUseCount !== undefined && bUseCount !== undefined && aUseCount !== bUseCount) {
-        return bUseCount - aUseCount;
-      }
-      
-      // 最后：按名称排序（保持稳定排序）
-      return a.displayName.localeCompare(b.displayName);
-    });
-    
-    return allResultsToSort;
-      };
-      
       // 使用 startTransition 标记状态更新为非紧急更新
       startTransition(() => {
-        const results = computeCombinedResults();
+        const results = computeCombinedResults({
+          query,
+          aiAnswer,
+          filteredApps,
+          filteredFiles,
+          filteredMemos,
+          systemFolders,
+          everythingResults,
+          filteredPlugins,
+          detectedUrls,
+          detectedEmails,
+          detectedJson,
+          directPathResult,
+          openHistory,
+          urlRemarks,
+          searchEngines,
+          apps,
+          extractedFileIconsRef,
+        });
         setCombinedResultsRaw(results);
       });
     };
@@ -2807,7 +1450,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     } else {
       setTimeout(scheduleCompute, 0);
     }
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef]);
 
   // 使用 useDeferredValue 延迟 combinedResults 的更新，让输入框保持响应
   // 当用户快速输入时，React 会延迟更新 combinedResults，优先处理输入事件
@@ -2852,235 +1495,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     queryRef.current = query;
   }, [query]);
 
-  // Helper function to split results into horizontal and vertical
-  const splitResults = (allResults: SearchResult[], openHistoryData: Record<string, number> = {}, searchQuery: string = "") => {
-    const executableResults = allResults.filter(result => {
-      if (result.type === "app") {
-        const pathLower = result.path.toLowerCase();
-        // 包含可执行文件、快捷方式，以及 UWP 应用 URI（shell:AppsFolder 和 ms-settings:）
-        return pathLower.endsWith('.exe') || 
-               pathLower.endsWith('.lnk') ||
-               pathLower.startsWith('shell:appsfolder') ||
-               pathLower.startsWith('ms-settings:');
-      }
-      return false;
-    });
-    
-    
-    // 对应用结果按规范化路径去重（统一路径分隔符）
-    // 对于"设置"应用，需要特殊处理：即使路径不同，也只保留一个
-    const normalizedPathMap = new Map<string, SearchResult>();
-    let hasSettingsApp = false;
-    
-    for (const result of executableResults) {
-      if (result.type === "app") {
-        const currentName = (result.app?.name || result.displayName || '').toLowerCase();
-        const currentPath = result.path.toLowerCase();
-        // 只对名称完全匹配"设置"/"Settings"或路径是 Windows 系统设置的应用进行特殊处理
-        const isSettingsApp = (currentName === '设置' || currentName === 'settings') || 
-                             currentPath.startsWith('shell:appsfolder') || 
-                             currentPath.startsWith('ms-settings:');
-        
-        // 对于"设置"应用，只保留第一个（优先 shell:AppsFolder，其次 ms-settings:）
-        if (isSettingsApp) {
-          if (!hasSettingsApp) {
-            // 第一个"设置"应用，直接添加
-            const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-            normalizedPathMap.set(normalizedPath, result);
-            hasSettingsApp = true;
-          } else {
-            // 已经有"设置"应用了，检查当前这个是否更好
-            const existingSettings = Array.from(normalizedPathMap.values()).find(r => {
-              const name = (r.app?.name || r.displayName || '').toLowerCase();
-              const path = r.path.toLowerCase();
-              return (name === '设置' || name === 'settings') || 
-                     path.startsWith('shell:appsfolder') || 
-                     path.startsWith('ms-settings:');
-            });
-            
-            if (existingSettings) {
-              const existingPath = existingSettings.path.toLowerCase();
-              const currentPath = result.path.toLowerCase();
-              
-              // 优先保留 shell:AppsFolder，其次 ms-settings:
-              const currentIsShell = currentPath.startsWith('shell:appsfolder');
-              const existingIsMsSettings = existingPath.startsWith('ms-settings:');
-              
-              // 如果当前是 shell:AppsFolder 而已有的是 ms-settings:，替换
-              if (currentIsShell && existingIsMsSettings) {
-                const existingNormalizedPath = existingSettings.path.toLowerCase().replace(/\\/g, "/");
-                normalizedPathMap.delete(existingNormalizedPath);
-                const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-                normalizedPathMap.set(normalizedPath, result);
-              }
-              // 否则跳过（已有更好的版本）
-            }
-          }
-          continue; // 跳过后续的普通去重逻辑
-        }
-        
-        // 普通应用的去重逻辑
-        // 规范化路径：统一使用正斜杠，转小写
-        const normalizedPath = result.path.toLowerCase().replace(/\\/g, "/");
-        
-        if (!normalizedPathMap.has(normalizedPath)) {
-          // 路径不存在，直接添加
-          normalizedPathMap.set(normalizedPath, result);
-        } else {
-          // 路径已存在，比较并保留更好的版本
-          const existing = normalizedPathMap.get(normalizedPath)!;
-          const existingName = existing.app?.name || existing.displayName;
-          
-          // 优先保留名称不包含 .lnk 后缀的（更简洁）
-          const currentHasLnkSuffix = currentName.toLowerCase().endsWith('.lnk');
-          const existingHasLnkSuffix = existingName.toLowerCase().endsWith('.lnk');
-          
-          if (!currentHasLnkSuffix && existingHasLnkSuffix) {
-            normalizedPathMap.set(normalizedPath, result);
-          }
-          // 如果名称后缀相同，优先保留有图标的
-          else if (currentHasLnkSuffix === existingHasLnkSuffix) {
-            if (result.app?.icon && !existing.app?.icon) {
-              normalizedPathMap.set(normalizedPath, result);
-            }
-          }
-        }
-      }
-    }
-    
-    const deduplicatedExecutableResults = Array.from(normalizedPathMap.values());
-    
-    // 系统文件夹（如回收站、设置等）也应该显示在横向列表中
-    const systemFolderResults = allResults.filter(result => {
-      if (result.type === "file" && result.file) {
-        const pathLower = result.path.toLowerCase();
-        // 识别系统文件夹：回收站、设置等特殊路径
-        // 设置路径是 "ms-settings:"
-        // 回收站路径是 "::{645FF040-5081-101B-9F08-00AA002F954E}"（不区分大小写）
-        return pathLower === "ms-settings:" ||
-               pathLower.startsWith("::{") || // CLSID 路径（如回收站）
-               (result.file.is_folder === true && result.file.path.toLowerCase().startsWith("::{"));
-      }
-      return false;
-    });
-    
-    const pluginResults = allResults.filter(result => result.type === "plugin");
-    const horizontalUnsorted = [...deduplicatedExecutableResults, ...systemFolderResults, ...pluginResults];
-    
-    // 对横向列表按相关性评分、使用频率和最近使用时间排序
-    // 对横向列表按相关性评分、使用频率和最近使用时间排序
-    const horizontal = horizontalUnsorted.sort((a, b) => {
-      // 插件不再有特殊优先级，和应用一起按最近使用时间排序
-      
-      // 获取使用频率和最近使用时间
-      // 优先使用 openHistoryData（最新的实时数据），如果没有才使用 file.last_used（数据库中的历史数据）
-      // 注意：需要规范化路径以确保匹配（统一大小写和斜杠方向）
-      const normalizePathForHistory = (path: string) => path.toLowerCase().replace(/\\/g, "/");
-      // 对于所有类型（应用、插件、文件等），都尝试从 openHistory 中获取最近使用时间
-      const aPathNormalized = normalizePathForHistory(a.path);
-      const bPathNormalized = normalizePathForHistory(b.path);
-      // 在 openHistoryData 中查找规范化后的路径
-      const aLastUsedFromHistory = Object.entries(openHistoryData).find(([key]) => 
-        normalizePathForHistory(key) === aPathNormalized
-      )?.[1];
-      const bLastUsedFromHistory = Object.entries(openHistoryData).find(([key]) => 
-        normalizePathForHistory(key) === bPathNormalized
-      )?.[1];
-      const aUseCount = a.file?.use_count;
-      // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
-      const aLastUsed = (aLastUsedFromHistory || a.file?.last_used || 0) * 1000;
-      const bUseCount = b.file?.use_count;
-      const bLastUsed = (bLastUsedFromHistory || b.file?.last_used || 0) * 1000;
-      
-      
-      // 第一优先级：最近使用时间（最近打开的始终排在前面，无论是否有查询）
-      // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
-      if (aLastUsed > 0 && bLastUsed > 0) {
-        // 两个都有使用时间，严格按时间降序排序（最近的在前面）
-        // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
-        return bLastUsed - aLastUsed;
-      } else if (aLastUsed > 0) {
-        // 只有 a 有使用时间，a 排在前面
-        return -1;
-      } else if (bLastUsed > 0) {
-        // 只有 b 有使用时间，b 排在前面
-        return 1;
-      }
-      
-      // 如果有查询，第二优先级：按相关性评分排序（评分高的在前）
-      if (searchQuery.trim()) {
-        const aScore = calculateRelevanceScore(
-          a.displayName,
-          a.path,
-          searchQuery,
-          aUseCount,
-          aLastUsed,
-          a.type === "everything",
-          a.type === "app",
-          a.app?.name_pinyin,
-          a.app?.name_pinyin_initials,
-          a.type === "file"
-        );
-        const bScore = calculateRelevanceScore(
-          b.displayName,
-          b.path,
-          searchQuery,
-          bUseCount,
-          bLastUsed,
-          b.type === "everything",
-          b.type === "app",
-          b.app?.name_pinyin,
-          b.app?.name_pinyin_initials,
-          b.type === "file"
-        );
-        
-        // 第二优先级：按评分降序排序（分数高的在前）
-        if (bScore !== aScore) {
-          return bScore - aScore;
-        }
-      }
-      
-      // 再次按使用频率排序（使用次数多的在前）
-      if (aUseCount !== undefined && bUseCount !== undefined) {
-        if (aUseCount !== bUseCount) {
-          return bUseCount - aUseCount; // 降序：使用次数多的在前
-        }
-      } else if (aUseCount !== undefined && bUseCount === undefined) {
-        return -1; // a 有使用次数，b 没有，a 在前
-      } else if (aUseCount === undefined && bUseCount !== undefined) {
-        return 1; // b 有使用次数，a 没有，b 在前
-      }
-      
-      // 最后按名称排序（保持稳定排序）
-      return (a.displayName || "").localeCompare(b.displayName || "");
-    });
-    
-    
-    const vertical = allResults.filter(result => {
-      // Not an executable app, not a plugin, and not a system folder
-      if (result.type === "app") {
-        const pathLower = result.path.toLowerCase();
-        // 排除可执行文件、快捷方式，以及 UWP 应用 URI（这些应该在横向列表中）
-        return !pathLower.endsWith('.exe') && 
-               !pathLower.endsWith('.lnk') &&
-               !pathLower.startsWith('shell:appsfolder') &&
-               !pathLower.startsWith('ms-settings:');
-      }
-      // 排除系统文件夹（它们应该在横向列表中）
-      if (result.type === "file" && result.file) {
-        const pathLower = result.path.toLowerCase();
-        const isSystemFolder = pathLower === "control" || 
-                              pathLower === "ms-settings:" ||
-                              pathLower.startsWith("::{") ||
-                              (result.file.is_folder === true && result.file.path.toLowerCase().startsWith("::{"));
-        return !isSystemFolder;
-      }
-      return result.type !== "plugin";
-    });
-    
-    
-    return { horizontal, vertical };
-  };
 
   // 使用 ref 跟踪最后一次加载结果时的查询，用于验证结果是否仍然有效
   const lastLoadQueryRef = useRef<string>("");
@@ -3088,219 +1502,24 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const debouncedResultsQueryRef = useRef<string>("");
   
   // 分批加载结果的函数
-  const loadResultsIncrementally = (allResults: SearchResult[]) => {
-    const currentQuery = queryRef.current;
-    
-    // 重要：如果查询已经变化，说明这些结果是过时的，不应该加载
-    // 这样可以避免快速输入时使用旧查询的结果导致卡顿和显示错误
-    // 注意：如果 lastLoadQueryRef 为空字符串，说明是第一次加载，应该允许
-    if (lastLoadQueryRef.current !== "" && currentQuery.trim() !== lastLoadQueryRef.current.trim()) {
-      return;
-    }
-    
-    // 更新最后一次加载的查询（在检查之后更新，确保下次检查能正确工作）
-    lastLoadQueryRef.current = currentQuery;
-    
-    // 取消之前的增量加载（包括 animationFrame 和 setTimeout）
-    if (incrementalLoadRef.current !== null) {
-      cancelAnimationFrame(incrementalLoadRef.current);
-      incrementalLoadRef.current = null;
-    }
-    if (incrementalTimeoutRef.current !== null) {
-      clearTimeout(incrementalTimeoutRef.current);
-      incrementalTimeoutRef.current = null;
-    }
-
-    // 如果 query 为空且没有结果（包括 AI 回答），直接清空结果并返回
-    if (currentQuery.trim() === "" && allResults.length === 0) {
-      clearAllResults({
-        setResults,
-        setHorizontalResults,
-        setVerticalResults,
-        setSelectedHorizontalIndex,
-        setSelectedVerticalIndex,
-        horizontalResultsRef,
-        currentLoadResultsRef,
-        logMessage: '[horizontalResults] 清空横向结果 (查询为空)',
-      });
-      return;
-    }
-
-    // 如果查询不为空但结果为空，可能是搜索还在进行中（防抖导致 debouncedCombinedResults 尚未更新）
-    // 在这种情况下，清空旧结果，等待新的 debouncedCombinedResults 更新
-    if (queryRef.current.trim() !== "" && allResults.length === 0) {
-      // 清空结果，避免显示旧查询的结果
-      clearAllResults({
-        setResults,
-        setHorizontalResults,
-        setVerticalResults,
-        setSelectedHorizontalIndex,
-        setSelectedVerticalIndex,
-        horizontalResultsRef,
-        currentLoadResultsRef,
-      });
-      return;
-    }
-
-    // 保存当前要加载的结果引用，用于后续验证
-    currentLoadResultsRef.current = allResults;
-
-    // Split results into horizontal and vertical
-    // 再次检查查询是否仍然匹配（可能在 splitResults 计算期间查询已变化）
-    if (queryRef.current.trim() !== currentQuery.trim()) {
-      return;
-    }
-    const { horizontal, vertical } = splitResults(allResults, openHistory, currentQuery);
-
-    const INITIAL_COUNT = 100; // 初始显示100条
-    const INCREMENT = 50; // 每次增加50条
-    const DELAY_MS = 16; // 每帧延迟（约60fps）
-    // 如果结果数量少于或等于初始数量，直接设置所有结果（避免先设置初始结果再覆盖）
-    if (allResults.length <= INITIAL_COUNT) {
-      // 如果当前已经有横向结果，且新的结果中没有横向结果，保留当前的横向结果
-      // 这样可以确保应用结果（通常是横向结果）不会被Everything结果覆盖
-      // 重要：始终使用新排序的 horizontal，不要使用旧的 currentHorizontalRef
-      // 这样可以确保横向列表始终按照最新的排序显示
-      const finalHorizontal = horizontal; // 直接使用排序后的结果，不使用旧的引用
-      
-      setResults(allResults);
-      setHorizontalResults(finalHorizontal);
-      setVerticalResults(vertical);
-      // 更新ref以跟踪当前的横向结果
-      horizontalResultsRef.current = finalHorizontal;
-      // Auto-select first horizontal result if available
-      if (finalHorizontal.length > 0) {
-        setSelectedHorizontalIndex(0);
-        setSelectedVerticalIndex(null);
-      } else if (vertical.length > 0) {
-        setSelectedHorizontalIndex(null);
-        setSelectedVerticalIndex(0);
-      }
-      currentLoadResultsRef.current = [];
-      // 成功加载后，更新 lastLoadQueryRef 为当前查询
-      // 这样下次查询变化时，检查才能正确工作
-      lastLoadQueryRef.current = currentQuery;
-      return;
-    }
-
-    // 重置显示数量（如果有结果就显示，即使查询为空）
-    // 只有在结果数量 > INITIAL_COUNT 时才需要增量加载
-    if (allResults.length > 0) {
-      // 重要：使用完整的 allResults 进行排序，而不是只使用前100条
-      // 这样可以确保横向列表的排序是基于所有结果的，而不是部分结果
-      // 横向列表应该显示所有应用，按最近使用时间排序
-      const finalHorizontal = horizontal; // 使用完整排序后的横向结果
-      const initialResults = allResults.slice(0, INITIAL_COUNT);
-      const { vertical: initialVertical } = splitResults(initialResults, openHistory, query);
-      const finalVertical = initialVertical.length > 0 ? initialVertical : vertical;
-      setResults(initialResults);
-      // 使用完整排序后的横向结果，而不是只基于前100条的结果
-      setHorizontalResults(finalHorizontal);
-      setVerticalResults(finalVertical);
-      // 更新ref以跟踪当前的横向结果
-      horizontalResultsRef.current = finalHorizontal;
-      
-      // Auto-select first horizontal result if available
-      if (finalHorizontal.length > 0) {
-        setSelectedHorizontalIndex(0);
-        setSelectedVerticalIndex(null);
-      } else if (finalVertical.length > 0) {
-        setSelectedHorizontalIndex(null);
-        setSelectedVerticalIndex(0);
-      }
-    }
-
-    // 逐步加载更多结果
-    let currentCount = INITIAL_COUNT;
-    const loadMore = () => {
-      // 在每次更新前检查：query 是否为空，以及结果是否已过时
-      if (queryRef.current.trim() === "" || 
-          currentLoadResultsRef.current !== allResults) {
-        // 结果已过时或查询已清空，停止加载
-        clearAllResults({
-          setResults,
-          setHorizontalResults,
-          setVerticalResults,
-          setSelectedHorizontalIndex,
-          setSelectedVerticalIndex,
-          currentLoadResultsRef,
-          logMessage: '[horizontalResults] 清空横向结果 (结果已过时或查询已清空)',
-        });
-        incrementalLoadRef.current = null;
-        incrementalTimeoutRef.current = null;
-        return;
-      }
-
-      if (currentCount < allResults.length) {
-        currentCount = Math.min(currentCount + INCREMENT, allResults.length);
-        
-        // 再次检查结果是否仍然有效
-        if (queryRef.current.trim() !== "" && 
-            currentLoadResultsRef.current === allResults) {
-          const currentResults = allResults.slice(0, currentCount);
-          // 重要：横向列表应该始终使用完整排序后的结果，而不是只基于当前加载的部分结果
-          // 这样可以确保横向列表的排序是基于所有结果的，保持一致性
-          const { vertical: currentVertical } = splitResults(currentResults, openHistory, query);
-          setResults(currentResults);
-          // 横向列表使用完整排序后的结果（horizontal），而不是只基于当前加载的部分结果
-          // 这样可以确保横向列表的排序不会因为增量加载而改变
-          setHorizontalResults(horizontal);
-          setVerticalResults(currentVertical);
-          // 更新ref以跟踪当前的横向结果
-          horizontalResultsRef.current = horizontal;
-          // 打印横向结果列表（增量加载中）
-        } else {
-          // 结果已过时，停止加载
-          clearAllResults({
-            setResults,
-            setHorizontalResults,
-            setVerticalResults,
-            setSelectedHorizontalIndex,
-            setSelectedVerticalIndex,
-            currentLoadResultsRef,
-            logMessage: '[horizontalResults] 清空横向结果 (增量加载中结果已过时)',
-          });
-          incrementalLoadRef.current = null;
-          incrementalTimeoutRef.current = null;
-          return;
-        }
-        
-        if (currentCount < allResults.length) {
-          // 使用嵌套的 requestAnimationFrame 和 setTimeout 来确保正确的取消机制
-          incrementalLoadRef.current = requestAnimationFrame(() => {
-            // 再次检查是否仍然有效
-            if (currentLoadResultsRef.current !== allResults) {
-              incrementalLoadRef.current = null;
-              return;
-            }
-            incrementalTimeoutRef.current = setTimeout(loadMore, DELAY_MS) as unknown as number;
-          });
-        } else {
-          // 加载完成
-          incrementalLoadRef.current = null;
-          incrementalTimeoutRef.current = null;
-          currentLoadResultsRef.current = [];
-        }
-      } else {
-        // 加载完成
-        incrementalLoadRef.current = null;
-        incrementalTimeoutRef.current = null;
-        currentLoadResultsRef.current = [];
-        // 成功加载后，更新 lastLoadQueryRef 为当前查询
-        lastLoadQueryRef.current = currentQuery;
-      }
-    };
-
-    // 开始增量加载
-    incrementalLoadRef.current = requestAnimationFrame(() => {
-      // 再次检查结果是否仍然有效
-      if (currentLoadResultsRef.current !== allResults) {
-        incrementalLoadRef.current = null;
-        return;
-      }
-      incrementalTimeoutRef.current = setTimeout(loadMore, DELAY_MS) as unknown as number;
+  const loadResultsIncrementallyWrapper = useCallback((allResults: SearchResult[]) => {
+    loadResultsIncrementally({
+      allResults,
+      currentQuery: queryRef.current,
+      openHistory,
+      setResults,
+      setHorizontalResults,
+      setVerticalResults,
+      setSelectedHorizontalIndex,
+      setSelectedVerticalIndex,
+      queryRef,
+      lastLoadQueryRef,
+      incrementalLoadRef,
+      incrementalTimeoutRef,
+      currentLoadResultsRef,
+      horizontalResultsRef,
     });
-  };
+  }, [openHistory]);
 
   // 使用 ref 跟踪上一次的查询，用于检测查询变化
   const lastQueryInEffectRef = useRef<string>("");
@@ -3369,7 +1588,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       // 检查 debouncedCombinedResults 是否与当前查询匹配
       // 如果不匹配，说明这些结果是过时的，不应该加载
       if (debouncedResultsQueryRef.current.trim() === query.trim() || query.trim() === "") {
-        loadResultsIncrementally(debouncedCombinedResults);
+        loadResultsIncrementallyWrapper(debouncedCombinedResults);
       }
     }
     
@@ -3910,10 +2129,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const allAppsCacheRef = useRef<AppInfo[]>([]);
   const allAppsCacheLoadedRef = useRef<boolean>(false);
 
-  // 检查是否包含中文字符（简化版，用于判断是否为拼音查询）
-  const containsChinese = (str: string): boolean => {
-    return /[\u4e00-\u9fa5]/.test(str);
-  };
 
 
 
@@ -3934,212 +2149,30 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, []);
 
   // 搜索系统文件夹（前端搜索，避免每次调用后端）- 异步分批处理，避免阻塞UI
-  const searchSystemFolders = async (searchQuery: string) => {
-    try {
-      if (!searchQuery || searchQuery.trim() === "") {
-        updateSearchResults(setSystemFolders, []);
-        return;
-      }
-      
-      // 如果列表未加载，先加载
-      if (!systemFoldersListLoadedRef.current) {
-        const folders = await tauriApi.searchSystemFolders("");
-        systemFoldersListRef.current = folders;
-        systemFoldersListLoadedRef.current = true;
-      }
-      
-      // 前端搜索（支持拼音匹配）- 使用分批处理避免阻塞UI
-      const queryLower = searchQuery.trim().toLowerCase();
-      const queryIsPinyin = !containsChinese(queryLower);
-      
-      // 使用分批处理过滤，避免阻塞UI
-      const results = await processBatchAsync(
-        systemFoldersListRef.current,
-        (folder) => {
-          const nameLower = folder.name.toLowerCase();
-          const displayLower = folder.display_name.toLowerCase();
-          const pathLower = folder.path.toLowerCase();
-          
-          // 直接文本匹配
-          if (nameLower.includes(queryLower) || 
-              displayLower.includes(queryLower) || 
-              pathLower.includes(queryLower)) {
-            return folder;
-          }
-          
-          // 拼音匹配（如果查询是拼音，且文件夹有拼音字段）
-          if (queryIsPinyin && (folder.name_pinyin || folder.name_pinyin_initials)) {
-            // 拼音全拼匹配
-            if (folder.name_pinyin) {
-              if (folder.name_pinyin === queryLower ||
-                  folder.name_pinyin.startsWith(queryLower) ||
-                  folder.name_pinyin.includes(queryLower)) {
-                return folder;
-              }
-            }
-            
-            // 拼音首字母匹配
-            if (folder.name_pinyin_initials) {
-              if (folder.name_pinyin_initials === queryLower ||
-                  folder.name_pinyin_initials.startsWith(queryLower) ||
-                  folder.name_pinyin_initials.includes(queryLower)) {
-                return folder;
-              }
-            }
-          }
-          
-          return null;
-        },
-        50, // 每批处理50项
-        1000 // 超时时间1秒
-      );
-      
-      if (query.trim() === searchQuery.trim()) {
-        updateSearchResults(setSystemFolders, results);
-      } else {
-        updateSearchResults(setSystemFolders, []);
-      }
-    } catch (error) {
-      console.error("Failed to search system folders:", error);
-      setSystemFolders([]);
-    }
-  };
+  const searchSystemFoldersWrapper = useCallback(async (searchQuery: string) => {
+    await searchSystemFolders(searchQuery, {
+      currentQuery: query,
+      updateSearchResults,
+      setSystemFolders,
+      systemFoldersListRef,
+      systemFoldersListLoadedRef,
+    });
+  }, [query, updateSearchResults]);
 
-  // 前端搜索应用（基于缓存的应用列表）- 异步分批处理，避免阻塞UI
-  const searchApplicationsFrontend = async (query: string, apps: AppInfo[]): Promise<AppInfo[]> => {
-    if (!query || query.trim() === "") {
-      // 返回前10个应用
-      return apps.slice(0, 10);
-    }
-
-    const queryLower = query.trim().toLowerCase();
-    const queryIsPinyin = !containsChinese(queryLower);
-
-    // 优化：直接同步处理，应用搜索的字符串匹配操作非常快，不需要分批处理
-    const scoredResults: Array<{ item: AppInfo; score: number }> = [];
-    
-    // 同步处理所有应用（对于342个应用的字符串匹配，通常只需要几毫秒）
-    for (const app of apps) {
-      let score = 0;
-      const nameLower = app.name.toLowerCase();
-
-      // 直接文本匹配（最高优先级）
-      if (nameLower === queryLower) {
-        score += 1000;
-      } else if (nameLower.startsWith(queryLower)) {
-        score += 500;
-      } else if (nameLower.includes(queryLower)) {
-        score += 100;
-      }
-
-      // 拼音匹配（如果查询是拼音，且应用有拼音字段）
-      if (queryIsPinyin && (app.name_pinyin || app.name_pinyin_initials)) {
-        // 拼音全拼匹配
-        if (app.name_pinyin) {
-          if (app.name_pinyin === queryLower) {
-            score += 800; // 高分数用于完整拼音匹配
-          } else if (app.name_pinyin.startsWith(queryLower)) {
-            score += 400;
-          } else if (app.name_pinyin.includes(queryLower)) {
-            score += 150;
-          }
-        }
-
-        // 拼音首字母匹配
-        if (app.name_pinyin_initials) {
-          if (app.name_pinyin_initials === queryLower) {
-            score += 600; // 高分数用于首字母匹配
-          } else if (app.name_pinyin_initials.startsWith(queryLower)) {
-            score += 300;
-          } else if (app.name_pinyin_initials.includes(queryLower)) {
-            score += 120;
-          }
-        }
-      }
-
-      // 描述匹配
-      if (score === 0 && app.description) {
-        const descLower = app.description.toLowerCase();
-        if (descLower.includes(queryLower)) {
-          score += 150;
-        }
-      }
-
-      if (score > 0) {
-        scoredResults.push({ item: app, score });
-      }
-    }
-
-    // 排序操作（同步执行，排序结果非常快）
-    // 按分数排序
-    scoredResults.sort((a, b) => b.score - a.score);
-    
-    // 限制结果数量并返回（最多返回50个）
-    return scoredResults.slice(0, 50).map((r) => r.item);
-  };
 
   // 主搜索函数：优先使用前端搜索，如果缓存未加载则回退到后端搜索
-  const searchApplications = async (searchQuery: string) => {
-    try {
-      // 清空旧结果，避免显示上一个搜索的结果
-      updateSearchResults(setFilteredApps, []);
-      
-      // 验证查询
-      if (!searchQuery || searchQuery.trim() === "") {
-        return;
-      }
-
-      // 如果缓存未加载，先尝试加载
-      if (!allAppsCacheLoadedRef.current || allAppsCacheRef.current.length === 0) {
-        // 如果 apps 状态已有数据，使用它
-        if (apps.length > 0) {
-          allAppsCacheRef.current = apps;
-          allAppsCacheLoadedRef.current = true;
-        } else {
-          // 否则尝试从后端加载
-          try {
-            const allApps = await tauriApi.scanApplications();
-            const filteredApps = filterWindowsApps(allApps);
-            allAppsCacheRef.current = filteredApps;
-            allAppsCacheLoadedRef.current = true;
-            setApps(filteredApps);
-          } catch (error) {
-            console.error("Failed to load applications for search:", error);
-            // 如果加载失败，回退到后端搜索
-            const results = await tauriApi.searchApplications(searchQuery);
-            if (query.trim() === searchQuery.trim()) {
-              updateSearchResults(setFilteredApps, results);
-            } else {
-              updateSearchResults(setFilteredApps, []);
-            }
-            return;
-          }
-        }
-      }
-
-      // 使用前端搜索（异步分批处理）
-      const results = await searchApplicationsFrontend(searchQuery, allAppsCacheRef.current);
-
-      // 验证查询未改变，更新结果
-      if (query.trim() === searchQuery.trim()) {
-        updateSearchResults(setFilteredApps, results);
-        
-        // 检查是否有缺少图标的应用，触发图标提取（异步，不阻塞）
-        const appsWithoutIcons = results.filter(app => !app.icon);
-        if (appsWithoutIcons.length > 0) {
-          // 异步触发图标提取，不等待结果
-          tauriApi.searchApplications(searchQuery).catch((error) => {
-            console.warn("Background icon extraction failed:", error);
-          });
-        }
-      } else {
-        updateSearchResults(setFilteredApps, []);
-      }
-    } catch (error) {
-      console.error("Search applications failed:", error);
-      updateSearchResults(setFilteredApps, []);
-    }
-  };
+  const searchApplicationsWrapper = useCallback(async (searchQuery: string) => {
+    await searchApplications(searchQuery, {
+      currentQuery: query,
+      updateSearchResults,
+      setFilteredApps,
+      setApps,
+      allAppsCacheRef,
+      allAppsCacheLoadedRef,
+      apps,
+      filterWindowsApps,
+    });
+  }, [query, updateSearchResults, apps, filterWindowsApps]);
 
   // 监听图标更新事件，收到后刷新搜索结果中的图标
   useEffect(() => {
@@ -4201,188 +2234,18 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     }
   }, []);
 
-  // 前端搜索文件历史（基于缓存的文件历史列表）- 异步分批处理，避免阻塞UI
-  const searchFileHistoryFrontend = async (query: string, fileHistory: FileHistoryItem[]): Promise<FileHistoryItem[]> => {
-    if (!query || query.trim() === "") {
-      // 返回所有文件，按最后使用时间排序（使用异步排序避免阻塞）
-      return new Promise((resolve) => {
-        const worker = () => {
-          const sorted = [...fileHistory].sort((a, b) => b.last_used - a.last_used);
-          resolve(sorted.slice(0, 100)); // 限制返回数量
-        };
-        if (window.requestIdleCallback) {
-          window.requestIdleCallback(worker, { timeout: 1000 });
-        } else {
-          setTimeout(worker, 0);
-        }
-      });
-    }
 
-    const queryLower = query.trim().toLowerCase();
-
-    // 使用分批处理搜索，避免阻塞UI
-    const scoredResults = await processBatchAsync<FileHistoryItem, { item: FileHistoryItem; score: number }>(
-      fileHistory,
-      (item) => {
-        const nameLower = item.name.toLowerCase();
-        const pathLower = item.path.toLowerCase();
-        let score = 0;
-
-        // 名称匹配（最高优先级）
-        if (nameLower === queryLower) {
-          score += 1000;
-        } else if (nameLower.startsWith(queryLower)) {
-          score += 500;
-        } else if (nameLower.includes(queryLower)) {
-          score += 100;
-        }
-
-        // 路径匹配（较低优先级）
-        if (score === 0 && pathLower.includes(queryLower)) {
-          score += 10;
-        }
-
-        return score > 0 ? { item, score } : null;
-      },
-      50, // 每批处理50项
-      1000 // 超时时间1秒
-    );
-
-    // 排序操作也异步执行
-    return new Promise((resolve) => {
-      const worker = () => {
-        // 按分数排序，然后按最后使用时间排序
-        scoredResults.sort((a, b) => {
-          if (b.score !== a.score) {
-            return b.score - a.score;
-          }
-          return b.item.last_used - a.item.last_used;
-        });
-
-        // 限制结果数量并返回
-        resolve(scoredResults.slice(0, 100).map((r) => r.item));
-      };
-      if (window.requestIdleCallback) {
-        window.requestIdleCallback(worker, { timeout: 1000 });
-      } else {
-        setTimeout(worker, 0);
-      }
+  const searchFileHistoryWrapper = useCallback(async (searchQuery: string) => {
+    await searchFileHistory(searchQuery, {
+      currentQuery: query,
+      updateSearchResults,
+      setFilteredFiles,
+      allFileHistoryCacheRef,
+      allFileHistoryCacheLoadedRef,
+      extractedFileIconsRef,
+      apps,
     });
-  };
-
-  const searchFileHistory = async (searchQuery: string) => {
-    try {
-      // Don't search if query is empty
-      if (!searchQuery || searchQuery.trim() === "") {
-        updateSearchResults(setFilteredFiles, []);
-        return;
-      }
-
-      // 如果缓存未加载，先加载所有文件历史
-      if (!allFileHistoryCacheLoadedRef.current || allFileHistoryCacheRef.current.length === 0) {
-        try {
-          const allFileHistory = await tauriApi.getAllFileHistory();
-          allFileHistoryCacheRef.current = allFileHistory;
-          allFileHistoryCacheLoadedRef.current = true;
-        } catch (error) {
-          console.error("Failed to load file history for search:", error);
-          // 如果加载失败，回退到后端搜索
-          const results = await tauriApi.searchFileHistory(searchQuery);
-          if (query.trim() === searchQuery.trim()) {
-            updateSearchResults(setFilteredFiles, results);
-          } else {
-            updateSearchResults(setFilteredFiles, []);
-          }
-          return;
-        }
-      }
-
-      // 使用前端搜索（异步分批处理）
-      const results = await searchFileHistoryFrontend(searchQuery, allFileHistoryCacheRef.current);
-
-      // Only update if query hasn't changed
-      const currentQueryTrimmed = query.trim();
-      const searchQueryTrimmed = searchQuery.trim();
-      if (currentQueryTrimmed === searchQueryTrimmed) {
-        updateSearchResults(setFilteredFiles, results);
-        
-        // 检查 filteredFiles 中是否有可执行文件（.exe/.lnk），如果有，触发图标提取
-        const executableFiles = results.filter(file => {
-          const pathLower = file.path.toLowerCase();
-          return (pathLower.endsWith('.exe') || pathLower.endsWith('.lnk')) && 
-                 !pathLower.includes("windowsapps");
-        });
-        
-        if (executableFiles.length > 0) {
-
-          
-          // 过滤出需要提取图标的文件（没有图标或图标无效的文件）
-          const filesToExtract = executableFiles
-            .slice(0, 10) // 限制最多提取前10个文件，避免过多请求
-            .filter((file) => {
-              // 检查 extractedFileIconsRef 中是否已有图标
-              const extractedIcon = extractedFileIconsRef.current.get(file.path);
-              if (isValidIcon(extractedIcon)) {
-
-                return false;
-              }
-              
-              // 检查应用列表中是否已有该路径的应用及其有效图标
-              const normalizedPath = file.path.toLowerCase().replace(/\\/g, "/");
-              const matchedApp = apps.find((app) => {
-                const appPath = app.path.toLowerCase().replace(/\\/g, "/");
-                return appPath === normalizedPath;
-              });
-              
-              if (matchedApp && isValidIcon(matchedApp.icon)) {
-                // 将应用列表中的图标也保存到 extractedFileIconsRef，避免重复检查
-                extractedFileIconsRef.current.set(file.path, matchedApp.icon!);
-                return false;
-              }
-              
-              return true; // 需要提取图标
-            });
-          
-          if (filesToExtract.length > 0) {
-
-            filesToExtract.forEach((file) => {
-
-              tauriApi.extractIconFromPath(file.path)
-                .then((icon) => {
-                  if (icon) {
-
-                    // 将提取的图标保存到缓存中
-                    extractedFileIconsRef.current.set(file.path, icon);
-                    // 更新 filteredFiles 中对应文件的显示（通过重新设置 filteredFiles 触发重新渲染）
-                    setFilteredFiles((prevFiles) => {
-                      // 返回相同的数组，但会触发重新渲染，SearchResult 构建时会使用新的图标
-                      return [...prevFiles];
-                    });
-                  } else {
-
-                  }
-                })
-                .catch(() => {
-
-                });
-            });
-          } else {
-
-          }
-          
-          // 注意：不再调用后端搜索，避免重复调用
-          // 后端搜索会在 searchApplications 函数中统一调用
-        }
-      } else {
-        setFilteredFiles([]);
-      }
-    } catch (error) {
-      console.error("Failed to search file history:", error);
-      if (!searchQuery || searchQuery.trim() === "") {
-        setFilteredFiles([]);
-      }
-    }
-  };
+  }, [query, updateSearchResults, apps]);
 
 
   // 会话模式相关的 ref（完全复刻 EverythingSearchWindow）
@@ -4781,8 +2644,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         
         const existingItem = allFileHistoryCacheRef.current.find(item => {
           const itemNormalized = normalizePathForMatch(item.path);
-          const path1 = itemNormalized.toLowerCase().replace(/\\/g, '/');
-          const path2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
+          const path1 = normalizePathForHistory(itemNormalized);
+          const path2 = normalizePathForHistory(normalizedPath);
           return path1 === path2;
         });
         
@@ -4795,8 +2658,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           setFilteredFiles(prevFiles => {
             return prevFiles.map(file => {
               const fileNormalized = normalizePathForMatch(file.path);
-              const filePath1 = fileNormalized.toLowerCase().replace(/\\/g, '/');
-              const filePath2 = normalizedPath.toLowerCase().replace(/\\/g, '/');
+              const filePath1 = normalizePathForHistory(fileNormalized);
+              const filePath2 = normalizePathForHistory(normalizedPath);
               if (filePath1 === filePath2) {
                 return {
                   ...file,
@@ -4842,7 +2705,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             void refreshFileHistoryCache().then(() => {
               // 如果当前有查询，重新搜索以更新结果列表中的使用次数
               if (query.trim()) {
-                void searchFileHistory(query);
+                void searchFileHistoryWrapper(query);
               }
             });
           })
@@ -5066,7 +2929,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             .then(() => {
               // 如果当前有查询，重新搜索以更新结果列表
               if (query.trim()) {
-                void searchFileHistory(query);
+                void searchFileHistoryWrapper(query);
               }
             })
             .catch((error) => {
@@ -5085,9 +2948,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
                 await refreshFileHistoryCache();
                 // 重新搜索以更新结果列表
                 if (query.trim()) {
-                  await searchFileHistory(query);
+                  await searchFileHistoryWrapper(query);
                 } else {
-                  await searchFileHistory("");
+                  await searchFileHistoryWrapper("");
                 }
                 // 显示提示信息
                 setErrorMessage(`文件不存在：${filePath}\n\n已自动从历史记录中删除该文件。`);
@@ -5124,7 +2987,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             .then(() => {
               // 如果当前有查询，重新搜索以更新结果列表
               if (query.trim()) {
-                void searchFileHistory(query);
+                void searchFileHistoryWrapper(query);
               }
             })
             .catch((error) => {
@@ -5244,9 +3107,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
               await refreshFileHistoryCache();
               // 重新搜索以更新结果列表
               if (query.trim()) {
-                await searchFileHistory(query);
+                await searchFileHistoryWrapper(query);
               } else {
-                await searchFileHistory("");
+                await searchFileHistoryWrapper("");
               }
               // 显示提示信息
               setErrorMessage(`文件不存在，已自动从历史记录中删除该文件。`);

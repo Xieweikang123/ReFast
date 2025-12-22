@@ -17,20 +17,7 @@ const normalizePathForComparison = (path: string): string => {
   return path.toLowerCase().replace(/\\/g, "/");
 };
 
-type SearchResult = {
-  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings";
-  app?: AppInfo;
-  file?: FileHistoryItem;
-  everything?: EverythingResult;
-  url?: string;
-  email?: string;
-  memo?: MemoItem;
-  plugin?: { id: string; name: string; description?: string };
-  aiAnswer?: string;
-  jsonContent?: string;
-  displayName: string;
-  path: string;
-};
+import type { SearchResult } from "../utils/resultUtils";
 
 interface ResultIconProps {
   result: SearchResult;
