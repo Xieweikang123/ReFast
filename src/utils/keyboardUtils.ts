@@ -4,7 +4,7 @@
  */
 
 import type React from "react";
-import type { RefObject } from "react";
+import type { RefObject, MutableRefObject } from "react";
 import type { SearchResult } from "./resultUtils";
 import {
   clearAllResults,
@@ -22,10 +22,10 @@ export interface HandleKeyDownOptions {
 
   // Refs
   inputRef: RefObject<HTMLInputElement>;
-  isHorizontalNavigationRef: RefObject<boolean>;
-  justJumpedToVerticalRef: RefObject<boolean>;
-  horizontalResultsRef: RefObject<SearchResult[]>;
-  currentLoadResultsRef: RefObject<SearchResult[]>;
+  isHorizontalNavigationRef: MutableRefObject<boolean>;
+  justJumpedToVerticalRef: MutableRefObject<boolean>;
+  horizontalResultsRef: MutableRefObject<SearchResult[]>;
+  currentLoadResultsRef: MutableRefObject<SearchResult[]>;
 
   // States
   query: string;
@@ -94,7 +94,6 @@ export async function handleKeyDown(
     setContextMenu,
     setErrorMessage,
     setIsPluginListModalOpen,
-    setIsMemoModalOpen,
     setIsRemarkModalOpen,
     setEditingRemarkUrl,
     setRemarkText,

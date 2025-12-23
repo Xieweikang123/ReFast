@@ -3,7 +3,7 @@
  * 负责处理窗口大小的自动调整和手动调整
  */
 
-import { useEffect, type RefObject } from "react";
+import { useEffect, type RefObject, type MutableRefObject } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { adjustWindowSize } from "../utils/windowUtils";
@@ -14,11 +14,11 @@ import type { SearchResult } from "../utils/resultUtils";
  */
 export interface UseWindowSizeAdjustmentOptions {
   // Refs
-  shouldPreserveScrollRef: RefObject<boolean>;
+  shouldPreserveScrollRef: MutableRefObject<boolean>;
   listRef: RefObject<HTMLElement>;
-  resizeRafId: RefObject<number | null>;
-  resizeStartX: RefObject<number>;
-  resizeStartWidth: RefObject<number>;
+  resizeRafId: MutableRefObject<number | null>;
+  resizeStartX: MutableRefObject<number>;
+  resizeStartWidth: MutableRefObject<number>;
 
   // States
   isMemoModalOpen: boolean;

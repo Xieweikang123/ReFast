@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem } from "../types";
+import type { AppInfo } from "../types";
 import type { ThemeConfig, ResultStyle } from "../utils/themeConfig";
 import { isFolderLikePath } from "../utils/launcherUtils";
 // import { tauriApi } from "../api/tauri"; // 已禁用前端图标提取

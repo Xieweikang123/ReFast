@@ -1920,9 +1920,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         setPastedImagePath,
         setPastedImageDataUrl,
         setErrorMessage,
-        setFilteredFiles,
-        allFileHistoryCacheRef,
-        refreshFileHistoryCache,
         processPastedPath,
         tauriApi,
       });
@@ -1932,9 +1929,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setPastedImagePath,
       setPastedImageDataUrl,
       setErrorMessage,
-      setFilteredFiles,
-      allFileHistoryCacheRef,
-      refreshFileHistoryCache,
       processPastedPath,
       tauriApi,
     ]

@@ -90,9 +90,6 @@ export interface HandlePasteOptions {
   setPastedImagePath: (path: string | null) => void;
   setPastedImageDataUrl: (dataUrl: string | null) => void;
   setErrorMessage: (message: string | null) => void;
-  setFilteredFiles: (files: FileHistoryItem[]) => void;
-  allFileHistoryCacheRef: React.MutableRefObject<FileHistoryItem[]>;
-  refreshFileHistoryCache: () => Promise<void>;
   processPastedPath: (path: string) => Promise<void>;
   tauriApi: typeof tauriApi;
 }
@@ -107,9 +104,6 @@ export async function handlePaste(options: HandlePasteOptions): Promise<void> {
     setPastedImagePath,
     setPastedImageDataUrl,
     setErrorMessage,
-    setFilteredFiles,
-    allFileHistoryCacheRef,
-    refreshFileHistoryCache,
     processPastedPath,
     tauriApi,
   } = options;

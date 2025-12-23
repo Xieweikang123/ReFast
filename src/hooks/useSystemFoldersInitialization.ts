@@ -3,7 +3,7 @@
  * 负责初始化系统文件夹列表缓存
  */
 
-import { useEffect, type RefObject } from "react";
+import { useEffect, type MutableRefObject } from "react";
 import { tauriApi } from "../api/tauri";
 
 /**
@@ -23,8 +23,8 @@ export type SystemFolder = {
  * 系统文件夹初始化 Hook 的选项接口
  */
 export interface UseSystemFoldersInitializationOptions {
-  systemFoldersListRef: RefObject<SystemFolder[]>;
-  systemFoldersListLoadedRef: RefObject<boolean>;
+  systemFoldersListRef: MutableRefObject<SystemFolder[]>;
+  systemFoldersListLoadedRef: MutableRefObject<boolean>;
 }
 
 /**

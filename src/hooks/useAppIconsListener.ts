@@ -3,7 +3,7 @@
  * 负责监听图标更新事件并更新应用列表中的图标
  */
 
-import { useEffect, type RefObject } from "react";
+import { useEffect, type MutableRefObject } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type { AppInfo } from "../types";
 
@@ -13,7 +13,7 @@ import type { AppInfo } from "../types";
 export interface UseAppIconsListenerOptions {
   setFilteredApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
   setApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
-  allAppsCacheRef: RefObject<AppInfo[]>;
+  allAppsCacheRef: MutableRefObject<AppInfo[]>;
 }
 
 /**
