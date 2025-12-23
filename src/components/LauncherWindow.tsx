@@ -1244,6 +1244,59 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     };
   }, [debouncedCombinedResults, query]);
 
+  // 为 Everything 搜索结果中的可执行文件提取图标
+  useEffect(() => {
+    if (!everythingResults || everythingResults.length === 0) {
+      return;
+    }
+
+    // 过滤出可执行文件（.exe 或 .lnk）
+    const executableFiles = everythingResults.filter((result) => {
+      const pathLower = result.path.toLowerCase();
+      return (pathLower.endsWith(".exe") || pathLower.endsWith(".lnk")) && 
+             !pathLower.includes("windowsapps");
+    });
+
+    // 为每个可执行文件提取图标（如果还没有图标）
+    executableFiles.slice(0, 10).forEach((file) => {
+      // 检查是否已有图标
+      const existingIcon = extractedFileIconsRef.current.get(file.path);
+      if (existingIcon && existingIcon !== "__ICON_EXTRACTION_FAILED__") {
+        return; // 已有图标，跳过
+      }
+
+      // 检查应用列表中是否已有该路径的应用及其有效图标
+      const normalizedPath = file.path.toLowerCase().replace(/\\/g, "/");
+      const matchedApp = apps.find((app) => {
+        const appPath = app.path.toLowerCase().replace(/\\/g, "/");
+        return appPath === normalizedPath && app.icon && app.icon !== "__ICON_EXTRACTION_FAILED__";
+      });
+
+      if (matchedApp) {
+        // 应用列表中已有图标，保存到缓存
+        extractedFileIconsRef.current.set(file.path, matchedApp.icon!);
+        return;
+      }
+
+      // 触发图标提取（异步，不阻塞）
+      tauriApi.extractIconFromPath(file.path)
+        .then((icon) => {
+          if (icon) {
+            extractedFileIconsRef.current.set(file.path, icon);
+            // 触发重新渲染（通过更新 combinedResults）
+            setCombinedResultsRaw((prev) => [...prev]);
+          } else {
+            // 标记为提取失败，避免重复尝试
+            extractedFileIconsRef.current.set(file.path, "__ICON_EXTRACTION_FAILED__");
+          }
+        })
+        .catch(() => {
+          // 标记为提取失败，避免重复尝试
+          extractedFileIconsRef.current.set(file.path, "__ICON_EXTRACTION_FAILED__");
+        });
+    });
+  }, [everythingResults, apps, extractedFileIconsRef]);
+
   // Watch results changes and set selectedIndex to first horizontal result
   useEffect(() => {
     

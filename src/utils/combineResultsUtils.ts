@@ -147,19 +147,41 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       return shouldInclude;
     })
     .map(
-      (everything): SearchResult => ({
-        type: "app" as const,
-        app: {
-          name: everything.name,
+      (everything): SearchResult => {
+        // 尝试从提取的图标缓存中获取图标
+        const extractedIcon = extractedFileIconsRef.current.get(everything.path);
+        
+        // 如果没有提取的图标，尝试从应用列表中匹配
+        let icon = extractedIcon;
+        if (!icon || !isValidIcon(icon)) {
+          const normalizedEverythingPath = normalizePathForHistory(everything.path);
+          const matchedApp = filteredApps.find((app) => {
+            const normalizedAppPath = normalizePathForHistory(app.path);
+            return normalizedAppPath === normalizedEverythingPath;
+          }) || apps.find((app) => {
+            const normalizedAppPath = normalizePathForHistory(app.path);
+            return normalizedAppPath === normalizedEverythingPath;
+          });
+          
+          if (matchedApp && matchedApp.icon && isValidIcon(matchedApp.icon)) {
+            icon = matchedApp.icon;
+          }
+        }
+        
+        return {
+          type: "app" as const,
+          app: {
+            name: everything.name,
+            path: everything.path,
+            icon: icon || undefined,
+            description: undefined,
+            name_pinyin: undefined,
+            name_pinyin_initials: undefined,
+          },
+          displayName: everything.name,
           path: everything.path,
-          icon: undefined,
-          description: undefined,
-          name_pinyin: undefined,
-          name_pinyin_initials: undefined,
-        },
-        displayName: everything.name,
-        path: everything.path,
-      })
+        };
+      }
     );
 
   const nonExecutableEverythingResults = uniqueEverythingResults.filter((everything) => {
