@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, startTransition, useDeferredValue } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, startTransition } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriApi } from "../api/tauri";
@@ -9,23 +9,15 @@ import { plugins, executePlugin } from "../plugins";
 import { AppCenterContent } from "./AppCenterContent";
 import { MemoModal } from "./MemoModal";
 import { ContextMenu } from "./ContextMenu";
-import { ResultIcon } from "./ResultIcon";
 import { ErrorDialog } from "./ErrorDialog";
-import {
-  extractUrls,
-  extractEmails,
-  isValidJson,
-  highlightText,
-  isLikelyAbsolutePath,
-  formatLastUsedTime,
-} from "../utils/launcherUtils";
-import { getThemeConfig, getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
+import { LauncherStatusBar } from "./LauncherStatusBar";
+import { ResultList } from "./ResultList";
+import { getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
 import { clearAllResults, loadResultsIncrementally } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import { askOllama } from "../utils/ollamaUtils";
-import { computeCombinedResults } from "../utils/combineResultsUtils";
 import { handleLaunch as handleLaunchUtil } from "../utils/launchUtils";
 import {
   startEverythingSearchSession,
@@ -39,6 +31,8 @@ import { useWindowSizeAdjustment } from "../hooks/useWindowSizeAdjustment";
 import { useSystemFoldersInitialization } from "../hooks/useSystemFoldersInitialization";
 import { useAppIconsListener } from "../hooks/useAppIconsListener";
 import { useSearchWrappers } from "../hooks/useSearchWrappers";
+import { useCombinedResults } from "../hooks/useCombinedResults";
+import { useSearch } from "../hooks/useSearch";
 import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
@@ -155,7 +149,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const incrementalTimeoutRef = useRef<number | null>(null); // 用于取消增量加载的 setTimeout
   const lastSearchQueryRef = useRef<string>(""); // 用于去重，避免相同查询重复搜索
   const debounceTimeoutRef = useRef<number | null>(null); // 用于跟踪防抖定时器
-  const combinedResultsUpdateTimeoutRef = useRef<number | null>(null); // 用于防抖延迟更新 combinedResults
   const hasResultsRef = useRef(false); // 用于跟踪是否有结果，避免读取状态导致不必要的重新渲染
   
   // 辅助函数：使用 startTransition 包装状态更新，避免阻塞输入框
@@ -785,8 +778,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
 
 
-  const theme = useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
-
   const layout = useMemo(() => getLayoutConfig(resultStyle), [resultStyle]);
   
   // 缓存输入框的 className 和 style，避免每次渲染都创建新对象
@@ -815,249 +806,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     (window as any).__askOllama = askOllamaWrapper;
   }, [askOllamaWrapper]);
 
-  // Search applications, file history, and Everything when query changes (with debounce)
-  useEffect(() => {
-    const trimmedQuery = query.trim();
-    
-    // 优化：如果 trimmedQuery 没有真正变化（例如 "a " → "a"），直接返回，避免不必要的操作
-    // 这样可以避免退格时因为空格变化导致的卡顿
-    if (trimmedQuery === lastSearchQueryRef.current) {
-      // 如果查询为空且之前也为空，直接返回
-      if (trimmedQuery === "") {
-        return;
-      }
-      // 如果查询相同且有结果，直接返回，不重置防抖定时器
-      if (hasResultsRef.current) {
-        return;
-      }
-      // 如果查询相同但没有结果，继续执行搜索逻辑（可能是结果被清空了）
-    }
-    
-    // 清除之前的防抖定时器（只有在查询真正变化时才清除）
-    if (debounceTimeoutRef.current !== null) {
-      clearTimeout(debounceTimeoutRef.current);
-      debounceTimeoutRef.current = null;
-    }
-    
-    if (trimmedQuery === "") {
-      // 关闭当前 Everything 搜索会话
-      const oldSessionId = pendingSessionIdRef.current;
-      if (oldSessionId) {
-        closeSessionSafe(oldSessionId);
-      }
-      pendingSessionIdRef.current = null;
-      currentSearchQueryRef.current = "";
-      displayedSearchQueryRef.current = "";
-      lastSearchQueryRef.current = "";
-      
-      // React 会自动批处理 useEffect 中的状态更新，不需要 flushSync
-      setFilteredApps([]);
-      setFilteredFiles([]);
-      setFilteredMemos([]);
-      setFilteredPlugins([]);
-      setEverythingResults([]);
-      setEverythingTotalCount(null);
-      setEverythingCurrentCount(0);
-      setDetectedUrls([]);
-      setDetectedEmails([]);
-      setDetectedJson(null);
-      setAiAnswer(null); // 清空 AI 回答
-      setShowAiAnswer(false); // 退出 AI 回答模式
-      setResults([]);
-      setSelectedIndex(0);
-      setIsSearchingEverything(false);
-      hasResultsRef.current = false;
-      return;
-    }
-    
-    // If user is typing new content while in AI answer mode, exit AI answer mode
-    if (showAiAnswer) {
-      setShowAiAnswer(false);
-      setAiAnswer(null);
-      setIsAiLoading(false);
-    }
-    
-    // 优化：不在输入时立即清空结果，而是在防抖定时器触发时清空
-    // 这样可以避免每次输入都触发大量状态更新导致的卡顿
-    // 输入框的响应会更流畅
-    
-    // Debounce search to avoid too many requests
-    // 优化防抖时间：与 EverythingSearchWindow 保持一致，提升响应速度
-    // Short queries (1-2 chars): 320ms (与 EverythingSearchWindow 一致)
-    // Medium queries (3-5 chars): 300ms
-    // Long queries (6+ chars): 200ms (仍然较快响应长查询)
-    const queryLength = trimmedQuery.length;
-    let debounceTime = 320; // default for short queries (与 EverythingSearchWindow 一致)
-    if (queryLength >= 3 && queryLength <= 5) {
-      debounceTime = 300; // medium queries
-    } else if (queryLength >= 6) {
-      debounceTime = 200; // long queries
-    }
-
-    
-    const timeoutId = setTimeout(() => {
-      
-      // 再次检查查询是否仍然有效（可能在防抖期间已被清空或改变）
-      const currentQuery = query.trim();
-      if (currentQuery === "" || currentQuery !== trimmedQuery) {
-
-        return;
-      }
-      
-      // 在防抖定时器触发时清空结果，而不是在输入时清空
-      // 使用 startTransition 包装清空操作，避免阻塞后续的输入
-      if (trimmedQuery !== lastSearchQueryRef.current) {
-        startTransition(() => {
-          setFilteredApps([]);
-          setFilteredFiles([]);
-          setFilteredMemos([]);
-          setFilteredPlugins([]);
-          setEverythingResults([]);
-          setEverythingTotalCount(null);
-          setEverythingCurrentCount(0);
-          setDirectPathResult(null);
-        });
-        hasResultsRef.current = false;
-      }
-      
-      // Extract URLs from query（移到防抖内部，避免每次输入都执行）
-      // 使用 startTransition 包装，避免阻塞后续的输入
-      startTransition(() => {
-        const urls = extractUrls(query);
-        setDetectedUrls(urls);
-        
-        // Extract email addresses from query（移到防抖内部）
-        const emails = extractEmails(query);
-        setDetectedEmails(emails);
-        
-        // Check if query is valid JSON（移到防抖内部）
-        if (isValidJson(query)) {
-          setDetectedJson(query.trim());
-        } else {
-          setDetectedJson(null);
-        }
-      });
-      
-      const isPathQuery = isLikelyAbsolutePath(trimmedQuery);
-      
-      // 检查是否已有相同查询的活跃会话（快速检查，避免重复搜索）
-      const hasActiveSession = pendingSessionIdRef.current && currentSearchQueryRef.current === trimmedQuery;
-      // 使用 ref 而不是直接读取状态，避免触发不必要的重新渲染
-      const hasResults = hasResultsRef.current;
-      
-      // 如果已有相同查询的活跃会话且有结果，跳过重复搜索
-      if (hasActiveSession && hasResults) {
-
-        return;
-      }
-      
-      // 如果查询不同，关闭旧会话（不阻塞，异步执行）
-      if (pendingSessionIdRef.current && currentSearchQueryRef.current !== trimmedQuery) {
-
-        const oldSessionId = pendingSessionIdRef.current;
-        // 不阻塞等待，立即开始新搜索
-        closeSessionSafe(oldSessionId).catch(() => {
-
-        });
-        pendingSessionIdRef.current = null;
-        currentSearchQueryRef.current = "";
-        displayedSearchQueryRef.current = "";
-      }
-      
-      // 如果会话存在但结果为空，说明结果被清空了，需要重新搜索
-      if (hasActiveSession && !hasResults) {
-
-        // 重置会话状态，强制重新搜索
-        const oldSessionId = pendingSessionIdRef.current;
-        if (oldSessionId) {
-          closeSessionSafe(oldSessionId).catch(() => {
-
-          });
-        }
-        pendingSessionIdRef.current = null;
-        currentSearchQueryRef.current = "";
-        displayedSearchQueryRef.current = "";
-      }
-      
-      // 标记当前查询为已搜索
-      lastSearchQueryRef.current = trimmedQuery;
-
-      
-      // 处理绝对路径查询
-      if (isPathQuery) {
-        handleDirectPathLookup(trimmedQuery);
-        // 绝对路径查询不需要 Everything 结果
-        setEverythingResults([]);
-        setEverythingTotalCount(null);
-        setEverythingCurrentCount(0);
-        setIsSearchingEverything(false);
-        hasResultsRef.current = false;
-        // 关闭当前会话
-        const oldSessionId = pendingSessionIdRef.current;
-        if (oldSessionId) {
-          closeSessionSafe(oldSessionId).catch(() => {
-
-          });
-        }
-        pendingSessionIdRef.current = null;
-        currentSearchQueryRef.current = "";
-        displayedSearchQueryRef.current = "";
-      } else {
-        // 使用 startTransition 包装，避免阻塞后续的输入
-        startTransition(() => {
-          setDirectPathResult(null);
-        });
-        
-        // Everything 搜索立即执行，不延迟
-        if (isEverythingAvailable) {
-
-          startSearchSession(trimmedQuery).catch(() => {
-
-          });
-        }
-      }
-      
-      // ========== 性能优化：并行执行所有搜索 ==========
-      // 使用 setTimeout(0) 将搜索操作推迟到下一个事件循环，避免阻塞防抖定时器
-      // 这样可以让输入框更快响应，即使搜索函数正在执行
-      setTimeout(() => {
-        // 系统文件夹和文件历史搜索立即执行
-        Promise.all([
-          searchSystemFoldersWrapper(trimmedQuery),
-          searchFileHistoryWrapper(trimmedQuery),
-        ]).catch((error) => {
-          console.error("[搜索错误] 并行搜索失败:", error);
-        });
-        
-        // 应用搜索延迟1秒执行，避免阻塞其他搜索
-        // setTimeout(() => {
-        //   searchApplicationsWrapper(trimmedQuery).catch((error) => {
-        //     console.error("[搜索错误] 应用搜索失败:", error);
-        //   });
-        // }, 51000);
-        
-        console.log(`[搜索流程] 准备调用 searchApplications: query="${trimmedQuery}"`);
-        searchApplicationsWrapper(trimmedQuery).catch((error) => {
-          console.error("[搜索错误] searchApplications 调用失败:", error);
-        });
-        
-        // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞）
-        searchMemosWrapper(trimmedQuery);
-        handleSearchPlugins(trimmedQuery);
-      }, 0);
-    }, debounceTime) as unknown as number;
-    
-    debounceTimeoutRef.current = timeoutId;
-    
-    return () => {
-      if (debounceTimeoutRef.current !== null) {
-        clearTimeout(debounceTimeoutRef.current);
-        debounceTimeoutRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, isEverythingAvailable]);
-
   // 同步更新 hasResultsRef，用于优化查询去重检查
   useEffect(() => {
     hasResultsRef.current = filteredApps.length > 0 || filteredFiles.length > 0 || filteredMemos.length > 0 || 
@@ -1065,96 +813,29 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults]);
 
 
-  // Combine apps, files, Everything results, and URLs into results when they change
-  // 使用 useState + useEffect 替代 useMemo，在 useEffect 中使用 startTransition 异步计算
-  // 这样可以避免 useMemo 的同步计算阻塞输入响应
-  const [combinedResultsRaw, setCombinedResultsRaw] = useState<SearchResult[]>([]);
-  
-  useEffect(() => {
-    // 使用 requestIdleCallback 或 setTimeout 延迟计算，避免阻塞输入响应
-    // 这样可以让输入框保持响应，不会因为结果计算而卡顿
-    const scheduleCompute = () => {
-      // 使用 startTransition 标记状态更新为非紧急更新
-      startTransition(() => {
-        const results = computeCombinedResults({
-          query,
-          aiAnswer,
-          filteredApps,
-          filteredFiles,
-          filteredMemos,
-          systemFolders,
-          everythingResults,
-          filteredPlugins,
-          detectedUrls,
-          detectedEmails,
-          detectedJson,
-          directPathResult,
-          openHistory,
-          urlRemarks,
-          searchEngines,
-          apps,
-          extractedFileIconsRef,
-        });
-        setCombinedResultsRaw(results);
-      });
-    };
-    
-    // 使用 requestIdleCallback 或 setTimeout 延迟计算，避免阻塞输入响应
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(scheduleCompute, { timeout: 100 });
-    } else {
-      setTimeout(scheduleCompute, 0);
-    }
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef]);
-
-  // 使用 useDeferredValue 延迟 combinedResults 的更新，让输入框保持响应
-  // 当用户快速输入时，React 会延迟更新 combinedResults，优先处理输入事件
-  // 这样可以避免 combinedResults 的耗时计算（66-76ms）阻塞输入响应
-  const combinedResults = useDeferredValue(combinedResultsRaw);
-  
-  // 防抖延迟更新 debouncedCombinedResults，避免多个搜索结果异步返回时频繁重新排序
-  const [debouncedCombinedResults, setDebouncedCombinedResults] = useState<SearchResult[]>([]);
-  
-  useEffect(() => {
-    // 清除之前的定时器
-    if (combinedResultsUpdateTimeoutRef.current !== null) {
-      clearTimeout(combinedResultsUpdateTimeoutRef.current);
-      combinedResultsUpdateTimeoutRef.current = null;
-    }
-    
-    // 优化：如果有应用搜索结果，立即更新（0ms延迟），让应用列表快速显示
-    // 如果没有应用搜索结果，使用5ms延迟等待其他搜索结果
-    const delay = filteredApps.length > 0 ? 0 : 5;
-    
-    combinedResultsUpdateTimeoutRef.current = setTimeout(() => {
-      // 使用 startTransition 标记结果更新为非紧急更新
-      // 这样可以让输入框保持响应，不会因为结果列表更新而卡顿
-      startTransition(() => {
-        setDebouncedCombinedResults(combinedResults);
-        // 更新 debouncedResultsQueryRef 为当前查询，用于验证结果是否与当前查询匹配
-        debouncedResultsQueryRef.current = queryRef.current;
-      });
-    }, delay) as unknown as number;
-    
-    return () => {
-      if (combinedResultsUpdateTimeoutRef.current !== null) {
-        clearTimeout(combinedResultsUpdateTimeoutRef.current);
-        combinedResultsUpdateTimeoutRef.current = null;
-      }
-    };
-  }, [combinedResults, filteredApps.length]);
-
-  // 使用 ref 来跟踪当前的 query，避免闭包问题
-  const queryRef = useRef(query);
-  useEffect(() => {
-    queryRef.current = query;
-  }, [query]);
-
+  // 使用自定义 Hook 合并搜索结果
+  const { combinedResults: debouncedCombinedResults, queryRef, debouncedResultsQueryRef } = useCombinedResults({
+    query,
+    aiAnswer,
+    filteredApps,
+    filteredFiles,
+    filteredMemos,
+    systemFolders,
+    everythingResults,
+    filteredPlugins,
+    detectedUrls,
+    detectedEmails,
+    detectedJson,
+    directPathResult,
+    openHistory,
+    urlRemarks,
+    searchEngines,
+    apps,
+    extractedFileIconsRef,
+  });
 
   // 使用 ref 跟踪最后一次加载结果时的查询，用于验证结果是否仍然有效
   const lastLoadQueryRef = useRef<string>("");
-  // 使用 ref 跟踪 debouncedCombinedResults 对应的查询，用于验证结果是否与当前查询匹配
-  const debouncedResultsQueryRef = useRef<string>("");
   
   // 分批加载结果的函数
   const loadResultsIncrementallyWrapper = useCallback((allResults: SearchResult[]) => {
@@ -1300,8 +981,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         .then((icon) => {
           if (icon) {
             extractedFileIconsRef.current.set(file.path, icon);
-            // 触发重新渲染（通过更新 combinedResults）
-            setCombinedResultsRaw((prev) => [...prev]);
+            // extractedFileIconsRef 是 useCombinedResults 的依赖项，更新后会自动触发重新计算
           } else {
             // 标记为提取失败，避免重复尝试
             extractedFileIconsRef.current.set(file.path, "__ICON_EXTRACTION_FAILED__");
@@ -1809,6 +1489,44 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       }
     };
   }, [closeSessionSafe]);
+
+  // 使用自定义 Hook 处理搜索逻辑（必须在所有依赖变量定义之后）
+  useSearch({
+    query,
+    isEverythingAvailable,
+    setFilteredApps,
+    setFilteredFiles,
+    setFilteredMemos,
+    setFilteredPlugins,
+    setEverythingResults,
+    setEverythingTotalCount,
+    setEverythingCurrentCount,
+    setDirectPathResult,
+    setDetectedUrls,
+    setDetectedEmails,
+    setDetectedJson,
+    setAiAnswer,
+    setShowAiAnswer,
+    setIsAiLoading,
+    setResults,
+    setSelectedIndex,
+    setIsSearchingEverything,
+    showAiAnswer,
+    lastSearchQueryRef,
+    debounceTimeoutRef,
+    hasResultsRef,
+    pendingSessionIdRef,
+    currentSearchQueryRef,
+    displayedSearchQueryRef,
+    searchSystemFoldersWrapper,
+    searchFileHistoryWrapper,
+    searchApplicationsWrapper,
+    searchMemosWrapper,
+    handleSearchPlugins,
+    handleDirectPathLookup,
+    startSearchSession,
+    closeSessionSafe,
+  });
 
   const handleCheckAgain = useCallback(async () => {
     await checkEverythingStatus({
@@ -2503,344 +2221,26 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
               })}
             </div>
           ) : results.length > 0 ? (
-            <div
-              ref={listRef}
-              className="flex-1 min-h-0 results-list-scroll py-2"
-              style={{ maxHeight: '500px' }}
-            >
-              {(() => {
-                return (
-                  <>
-                    {/* 可执行文件和插件横向排列在第一行 */}
-                    {horizontalResults.length > 0 && (
-                      <div className="px-4 py-3 mb-2 border-b border-gray-200">
-                        <div
-                          ref={horizontalScrollContainerRef}
-                          className="flex gap-3 pb-2 executable-scroll-container"
-                        >
-                          {horizontalResults.map((result, execIndex) => {
-                            const isSelected = selectedHorizontalIndex === execIndex;
-                            const isLaunching = result.type === "app" && launchingAppPath === result.path;
-                            return (
-                              <div
-                                key={`executable-${result.path}-${execIndex}`}
-                                onMouseDown={async (e) => {
-                                  if (e.button !== 0) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  await handleLaunch(result);
-                                }}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                }}
-                                onContextMenu={(e) => handleContextMenu(e, result)}
-                                className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl cursor-pointer transition-all duration-200 relative ${
-                                  isSelected 
-                                    ? resultStyle === "soft"
-                                      ? "bg-blue-50 border-2 border-blue-400 shadow-md shadow-blue-200/50 scale-[1.2]"
-                                      : resultStyle === "skeuomorphic"
-                                      ? "bg-gradient-to-br from-[#f0f5fb] to-[#e5edf9] border-2 border-[#a8c0e0] shadow-[0_4px_12px_rgba(20,32,50,0.12)] scale-[1.2]"
-                                      : "bg-indigo-50 border-2 border-indigo-400 shadow-md shadow-indigo-200/50 scale-[1.2]"
-                                    : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
-                                } ${isLaunching ? 'rocket-launching' : ''}`}
-                                style={{
-                                  animation: isLaunching 
-                                    ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-                                    : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${execIndex * 0.04}s both`,
-                                  marginLeft: execIndex === 0 && isSelected ? '10px' : '0px', // 第一个item选中时添加左边距，防止放大后被裁剪
-                                  width: '80px',
-                                  height: '80px',
-                                  minWidth: '80px',
-                                  minHeight: '80px',
-                                }}
-                                title={result.type === "app" ? result.path : undefined}
-                              >
-                                {isSelected && (
-                                  <div 
-                                    className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full ${
-                                      resultStyle === "soft"
-                                        ? "bg-blue-500"
-                                        : resultStyle === "skeuomorphic"
-                                        ? "bg-[#6b8fc4]"
-                                        : "bg-indigo-500"
-                                    }`}
-                                  />
-                                )}
-                                <div className="flex-shrink-0 flex items-center justify-center" >
-                                  <ResultIcon
-                                    result={result}
-                                    isSelected={isSelected}
-                                    theme={theme}
-                                    apps={apps}
-                                    filteredApps={filteredApps}
-                                    resultStyle={resultStyle}
-                                    getPluginIcon={getPluginIcon}
-                                    size="horizontal"
-                                  />
-                                </div>
-                                <div 
-                                  className={`text-xs text-center leading-tight ${
-                                    isSelected 
-                                      ? resultStyle === "soft"
-                                        ? "text-blue-700 font-medium"
-                                        : resultStyle === "skeuomorphic"
-                                        ? "text-[#2a3f5f] font-medium"
-                                        : "text-indigo-700 font-medium"
-                                      : "text-gray-700"
-                                  }`}
-                                  style={{ 
-                                    display: '-webkit-box',
-                                    WebkitLineClamp: 2,
-                                    WebkitBoxOrient: 'vertical',
-                                    overflow: 'hidden',
-                                    wordBreak: 'break-word',
-                                    textOverflow: 'ellipsis',
-                                    lineHeight: '1.3',
-                                    maxHeight: '2.4em',
-                                    minHeight: '2.4em',
-                                    width: '65px',
-                                    textAlign: 'center'
-                                  }}
-                                  dangerouslySetInnerHTML={{ __html: highlightText(result.displayName, query) }}
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                    {/* 其他结果垂直排列 */}
-                    {verticalResults.map((result, index) => {
-                      const isSelected = selectedVerticalIndex === index;
-                      // 计算垂直结果的序号（从1开始，只计算垂直结果）
-                      const verticalIndex = index + 1;
-                      const isLaunching = result.type === "app" && launchingAppPath === result.path;
-                      return (
-                <div
-                  key={`${result.type}-${result.path}-${index}`}
-                  data-item-key={`${result.type}-${result.path}-${index}`}
-                  onMouseDown={async (e) => {
-                    // 左键按下即触发，避免某些环境下 click 被吞掉
-                    if (e.button !== 0) return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    await handleLaunch(result);
-                  }}
-                  onClick={(e) => {
-                    // 保底处理，若 onMouseDown 已触发则阻止重复
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                  onContextMenu={(e) => handleContextMenu(e, result)}
-                  className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''}`}
-                  style={{
-                    animation: isLaunching 
-                      ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-                      : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`,
-                  }}
-                  title={result.type === "app" ? result.path : undefined}
-                >
-                  <div className={theme.indicator(isSelected)} />
-                  <div className="flex items-center gap-3">
-                    {/* 序号 - 使用垂直结果的序号（从1开始） */}
-                    <div className={theme.indexBadge(isSelected)}>
-                      {verticalIndex}
-                    </div>
-                    <div className={theme.iconWrap(isSelected)}>
-                      <ResultIcon
-                        result={result}
-                        isSelected={isSelected}
-                        theme={theme}
-                        apps={apps}
-                        filteredApps={filteredApps}
-                        resultStyle={resultStyle}
-                        getPluginIcon={getPluginIcon}
-                        size="vertical"
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                    <div 
-                        className={`font-semibold truncate mb-0.5 ${theme.title(isSelected)}`}
-                        dangerouslySetInnerHTML={{ __html: highlightText(result.displayName, query) }}
-                      />
-                      {result.type === "ai" && result.aiAnswer && (
-                        <div
-                          className={`text-sm mt-1.5 leading-relaxed ${theme.aiText(isSelected)}`}
-                          style={{
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            maxHeight: "200px",
-                            overflowY: "auto",
-                          }}
-                        >
-                          {result.aiAnswer}
-                        </div>
-                      )}
-                      {result.path && result.type !== "memo" && result.type !== "history" && result.type !== "ai" && (
-                        <div
-                          className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
-                          dangerouslySetInnerHTML={{ __html: highlightText(result.path, query) }}
-                        />
-                      )}
-                      {result.type === "memo" && result.memo && (
-                        <div
-                          className={`text-xs mt-0.5 ${theme.metaText(isSelected)}`}
-                        >
-                          {new Date(result.memo.updated_at * 1000).toLocaleDateString("zh-CN")}
-                        </div>
-                      )}
-                      {result.type === "plugin" && result.plugin?.description && (
-                        <div
-                          className={`text-xs mt-0.5 leading-relaxed ${theme.descText(isSelected)}`}
-                          dangerouslySetInnerHTML={{ __html: highlightText(result.plugin.description, query) }}
-                        />
-                      )}
-                      {result.type === "file" && result.file && (() => {
-                        // 获取最近使用时间（优先使用 openHistory 最新数据，否则使用 file.last_used）
-                        // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
-                        const lastUsed = (openHistory[result.path] || result.file?.last_used || 0) * 1000;
-                        const useCount = result.file.use_count || 0;
-                        
-                        // 只有在有使用记录（使用次数 > 0 或最后使用时间 > 0）时才显示
-                        if (useCount === 0 && lastUsed === 0) {
-                          return null;
-                        }
-                        
-                        return (
-                          <div
-                            className={`text-xs mt-0.5 ${theme.usageText(isSelected)}`}
-                          >
-                            {useCount > 0 && `使用 ${useCount} 次`}
-                            {useCount > 0 && lastUsed > 0 && <span className="mx-1">·</span>}
-                            {lastUsed > 0 && <span>{formatLastUsedTime(lastUsed)}</span>}
-                          </div>
-                        );
-                      })()}
-                      {/* 粘贴图片的保存选项 */}
-                      {result.type === "file" && result.path === pastedImagePath && (
-                        <div 
-                          className="flex items-center gap-2 mt-1.5"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                          }}
-                          onMouseDown={(e) => {
-                            e.stopPropagation();
-                            e.preventDefault();
-                          }}
-                        >
-                          <button
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                              await handleSaveImageToDownloads(result.path);
-                            }}
-                            onMouseDown={(e) => {
-                              e.stopPropagation();
-                              e.preventDefault();
-                            }}
-                            className="text-xs px-3 py-1.5 rounded-md font-medium transition-all text-white hover:bg-blue-600"
-                            style={{ backgroundColor: '#3b82f6' }}
-                            title="保存到下载目录"
-                          >
-                            <div className="flex items-center gap-1.5">
-                              <svg
-                                className="w-3.5 h-3.5"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                                />
-                              </svg>
-                              <span>保存到下载目录</span>
-                            </div>
-                          </button>
-                        </div>
-                      )}
-                      {result.type === "url" && (
-                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("url", isSelected)}`}
-                            title="URL 历史记录"
-                          >
-                            URL 历史
-                          </span>
-                          {result.url && urlRemarks[result.url] && (
-                            <span
-                              className={`text-xs px-2 py-1 rounded-md ${theme.metaText(isSelected)} bg-gray-100`}
-                              title={`备注: ${urlRemarks[result.url]}`}
-                            >
-                              📝 {urlRemarks[result.url]}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {result.type === "email" && (
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("email", isSelected)}`}
-                            title="可打开的邮箱地址"
-                          >
-                            邮箱
-                          </span>
-                        </div>
-                      )}
-                      {result.type === "json_formatter" && (
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("json_formatter", isSelected)}`}
-                            title="JSON 格式化查看器"
-                          >
-                            JSON
-                          </span>
-                        </div>
-                      )}
-                      {result.type === "memo" && result.memo && (
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("memo", isSelected)}`}
-                            title="备忘录"
-                          >
-                            备忘录
-                          </span>
-                          {result.memo.content && (
-                            <span
-                              className={`text-xs truncate ${theme.metaText(isSelected)}`}
-                              dangerouslySetInnerHTML={{ 
-                                __html: highlightText(
-                                  result.memo.content.slice(0, 50) + (result.memo.content.length > 50 ? "..." : ""),
-                                  query
-                                )
-                              }}
-                            />
-                          )}
-                        </div>
-                      )}
-                      {result.type === "everything" && (
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span
-                            className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("everything", isSelected)}`}
-                            title="来自 Everything 搜索结果"
-                          >
-                            Everything
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                      );
-                    })}
-                  </>
-                );
-              })()}
-            </div>
+            <ResultList
+              horizontalResults={horizontalResults}
+              verticalResults={verticalResults}
+              selectedHorizontalIndex={selectedHorizontalIndex}
+              selectedVerticalIndex={selectedVerticalIndex}
+              query={query}
+              resultStyle={resultStyle}
+              apps={apps}
+              filteredApps={filteredApps}
+              launchingAppPath={launchingAppPath}
+              pastedImagePath={pastedImagePath}
+              openHistory={openHistory}
+              urlRemarks={urlRemarks}
+              getPluginIcon={getPluginIcon}
+              onLaunch={handleLaunch}
+              onContextMenu={handleContextMenu}
+              onSaveImageToDownloads={handleSaveImageToDownloads}
+              horizontalScrollContainerRef={horizontalScrollContainerRef}
+              listRef={listRef}
+            />
           ) : null}
 
           {/* Loading or Empty State */}
@@ -2916,146 +2316,21 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           </div>
 
           {/* Footer */}
-          <div 
-            className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0 gap-2 min-w-0"
-            onMouseDown={(e) => {
-              // 阻止 footer 区域的点击事件被 header 的拖动处理器捕获
-              const target = e.target as HTMLElement;
-              const isButton = target.tagName === 'BUTTON' || target.closest('button');
-              const isUpdateNotice = target.closest('[data-update-notice]');
-              if (isButton || isUpdateNotice) {
-                // 如果是按钮或更新提示，阻止事件冒泡到 header，让其自己的 onClick 处理
-                e.stopPropagation();
-              }
-            }}
-          >
-            <div className="flex items-center gap-3 min-w-0 flex-1">
-              {!showAiAnswer && results.length > 0 && <span className="whitespace-nowrap">{results.length} 个结果</span>}
-              {showAiAnswer && <span className="whitespace-nowrap">AI 回答模式</span>}
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <div 
-                  className="flex items-center gap-1.5 cursor-help whitespace-nowrap" 
-                  title={everythingPath ? `Everything 路径: ${everythingPath}` : 'Everything 未安装或未在 PATH 中'}
-                >
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isEverythingAvailable ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
-                  <span className={`text-xs ${isEverythingAvailable ? 'text-emerald-600' : 'text-gray-500'}`}>
-                    {isEverythingAvailable ? 'Everything 已启用' : (
-                      everythingError?.startsWith("NOT_INSTALLED") 
-                        ? 'Everything 未安装' 
-                        : everythingError?.startsWith("SERVICE_NOT_RUNNING")
-                        ? 'Everything 服务未运行'
-                        : 'Everything 未检测到'
-                    )}
-                  </span>
-                  {everythingError && !isEverythingAvailable && !everythingError.startsWith("NOT_INSTALLED") && !everythingError.startsWith("SERVICE_NOT_RUNNING") && (
-                    <span className="text-xs text-red-500 ml-2 whitespace-nowrap" title={everythingError}>
-                      ({everythingError.split(':')[0]})
-                    </span>
-                  )}
-                </div>
-                {!isEverythingAvailable && (
-                  <div className="flex items-center gap-2 flex-shrink-0">
-
-                    {everythingError && everythingError.startsWith("SERVICE_NOT_RUNNING") && (
-                      <button
-                        onClick={handleStartEverything}
-                        className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors whitespace-nowrap"
-                        title="启动 Everything"
-                      >
-                        启动
-                      </button>
-                    )}
-                    {(!everythingError || !everythingError.startsWith("SERVICE_NOT_RUNNING")) && (
-                      <button
-                        ref={downloadButtonRef}
-                        onPointerDown={() => {}}
-                        onClick={(e) => {
-
-                          if (!isDownloadingEverything) {
-
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleDownloadEverything().catch(() => {
-
-                            });
-                          } else {
-
-                          }
-                        }}
-                        disabled={isDownloadingEverything}
-                        className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
-                          isDownloadingEverything
-                            ? 'bg-gray-400 text-white cursor-not-allowed'
-                            : 'bg-blue-500 text-white hover:bg-blue-600'
-                        }`}
-                        style={{ pointerEvents: 'auto', zIndex: 1000, position: 'relative' }}
-                        title="下载并安装 Everything"
-                        data-testid="download-everything-button"
-                      >
-                        {isDownloadingEverything ? `下载中 ${everythingDownloadProgress}%` : '下载'}
-                      </button>
-                    )}
-                    <button
-                      onMouseDown={(e) => {
-                        console.log("[Everything刷新] onMouseDown 触发", {
-                          button: e.button,
-                        });
-                      }}
-                      onClick={(e) => {
-                        console.log("[Everything刷新] onClick 触发");
-                        e.preventDefault();
-                        e.stopPropagation();
-                        console.log("[Everything刷新] 调用 handleCheckAgain");
-                        handleCheckAgain().catch((error) => {
-                          console.error("[Everything刷新] handleCheckAgain 抛出错误:", error);
-                        });
-                      }}
-                      className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors whitespace-nowrap"
-                      title="重新检测 Everything"
-                    >
-                      刷新
-                    </button>
-                  </div>
-                )}
-                {/* 更新提示 - 放在按钮后面 */}
-                {updateInfo?.has_update && (
-                  <div 
-                    data-update-notice
-                    className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap hover:opacity-80 transition-opacity" 
-                    title={`发现新版本 ${updateInfo.latest_version}，点击查看详情`}
-                    onClick={async (e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      try {
-                        console.log("点击更新提示，准备打开应用中心窗口");
-                        // 设置标志，让应用中心窗口加载时自动跳转到关于页面
-                        localStorage.setItem("appcenter:open-to-about", "true");
-                        // 先隐藏启动器
-                        await tauriApi.hideLauncher();
-                        console.log("启动器已隐藏");
-                        // 打开独立的应用中心窗口
-                        await tauriApi.showPluginListWindow();
-                        console.log("应用中心窗口已打开");
-                      } catch (error) {
-                        console.error("Failed to open app center window:", error);
-                      }
-                    }}
-                  >
-                    <div className="w-2 h-2 rounded-full flex-shrink-0 bg-orange-500 animate-pulse"></div>
-                    <span className="text-xs text-orange-600 font-medium">
-                      发现新版本 {updateInfo.latest_version}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-            {!showAiAnswer && results.length > 0 && (
-              <span className="whitespace-nowrap flex-shrink-0">↑↓ 选择 · Enter 打开 · Esc 关闭</span>
-            )}
-            {showAiAnswer && (
-              <span className="whitespace-nowrap flex-shrink-0">Esc 返回搜索结果</span>
-            )}
-          </div>
+          <LauncherStatusBar
+            resultsCount={results.length}
+            showAiAnswer={showAiAnswer}
+            isEverythingAvailable={isEverythingAvailable}
+            everythingError={everythingError}
+            everythingPath={everythingPath}
+            everythingVersion={everythingVersion}
+            isDownloadingEverything={isDownloadingEverything}
+            everythingDownloadProgress={everythingDownloadProgress}
+            updateInfo={updateInfo}
+            onStartEverything={handleStartEverything}
+            onDownloadEverything={handleDownloadEverything}
+            onCheckAgain={handleCheckAgain}
+            downloadButtonRef={downloadButtonRef}
+          />
         </div>
         {/* Resize Handle */}
         <div

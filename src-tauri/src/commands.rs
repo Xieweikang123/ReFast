@@ -5483,10 +5483,45 @@ pub fn read_text_file(path: String) -> Result<String, String> {
         return Err("文件不存在".to_string());
     }
     
-    let content = fs::read_to_string(&file_path)
-        .map_err(|e| format!("读取文件失败: {}", e))?;
+    // 先尝试读取文件元数据，检查文件大小
+    let metadata = fs::metadata(&file_path)
+        .map_err(|e| format!("获取文件信息失败: {}", e))?;
+    let file_size = metadata.len();
     
-    Ok(content)
+    // 如果文件大小为0，直接返回空字符串
+    if file_size == 0 {
+        return Ok(String::new());
+    }
+    
+    // 尝试读取文件内容
+    // 首先尝试 UTF-8
+    match fs::read_to_string(&file_path) {
+        Ok(content) => Ok(content),
+        Err(e) => {
+            // 如果 UTF-8 读取失败，尝试读取原始字节并检测编码
+            let bytes = fs::read(&file_path)
+                .map_err(|e2| format!("读取文件失败: {} (原始错误: {})", e2, e))?;
+            
+            // 检查是否是 UTF-16 LE/BE
+            if bytes.len() >= 2 {
+                // 检查 BOM
+                if bytes[0] == 0xFF && bytes[1] == 0xFE {
+                    // UTF-16 LE with BOM
+                    return Err("文件编码为 UTF-16 LE，请转换为 UTF-8".to_string());
+                } else if bytes[0] == 0xFE && bytes[1] == 0xFF {
+                    // UTF-16 BE with BOM
+                    return Err("文件编码为 UTF-16 BE，请转换为 UTF-8".to_string());
+                }
+            }
+            
+            // 尝试使用 UTF-8 lossy 转换
+            let content = String::from_utf8_lossy(&bytes).to_string();
+            if content.is_empty() && !bytes.is_empty() {
+                return Err(format!("文件无法解析为文本（可能是二进制文件或编码不支持）: {}", e));
+            }
+            Ok(content)
+        }
+    }
 }
 
 #[tauri::command]

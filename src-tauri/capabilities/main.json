@@ -12,6 +12,7 @@
     "core:window:allow-create",
     "core:window:allow-set-size",
     "core:window:allow-set-decorations",
+    "core:window:allow-set-title",
     "core:window:allow-start-dragging",
     "core:window:allow-close",
     "core:window:allow-hide",
