@@ -3,7 +3,7 @@
  * 负责将各种搜索结果合并为统一的结果列表
  */
 
-import { useState, useEffect, useRef, useDeferredValue, useCallback } from "react";
+import { useState, useEffect, useRef, useDeferredValue } from "react";
 import { startTransition } from "react";
 import { computeCombinedResults } from "../utils/combineResultsUtils";
 import type { SearchResult } from "../utils/resultUtils";

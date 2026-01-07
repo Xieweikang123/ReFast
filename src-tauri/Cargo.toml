@@ -1,6 +1,6 @@
 [package]
 name = "re-fast"
-version = "1.0.57"
+version = "1.0.59"
 description = "基于 Tauri 2 的 Windows 快速启动器"
 authors = ["Xieweikang123"]
 license = "MIT"

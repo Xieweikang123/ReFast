@@ -29,7 +29,7 @@ export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
   isEverythingAvailable,
   everythingError,
   everythingPath,
-  everythingVersion,
+  everythingVersion: _everythingVersion,
   isDownloadingEverything,
   everythingDownloadProgress,
   updateInfo,

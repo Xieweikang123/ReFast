@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   clearAllResults,
   resetSelectedIndices,
@@ -142,7 +142,7 @@ describe("resultUtils", () => {
         },
       ];
 
-      const { horizontal, vertical } = splitResults(results);
+      const { horizontal } = splitResults(results);
 
       expect(horizontal.length).toBe(1);
       expect(horizontal[0].path.toLowerCase()).toContain(".lnk");

@@ -55,7 +55,6 @@ describe("contextMenuUtils", () => {
 
     it("应该调整菜单位置当接近右边界时", () => {
       const setContextMenu = vi.fn();
-      const menuWidth = 160;
       const windowWidth = 800;
       const clientX = windowWidth - 50; // 接近右边界
 
@@ -81,7 +80,6 @@ describe("contextMenuUtils", () => {
 
     it("应该调整菜单位置当接近下边界时", () => {
       const setContextMenu = vi.fn();
-      const menuHeight = 50;
       const windowHeight = 600;
       const clientY = windowHeight - 20; // 接近下边界
 

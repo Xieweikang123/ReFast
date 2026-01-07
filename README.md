@@ -163,6 +163,12 @@ npm run build:tauri
 
 ## 更新历史
 
+2026年1月7日
+
+新增markdown查看 插件
+修复json过长在搜索框报错问题。
+
+
 ### v1.0.56
 - 🎨 **动画效果优化**
   - 优化 fadeInUp 动画，调整时长为 0.35s，使用 cubic-bezier 缓动函数，提升视觉流畅度

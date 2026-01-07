@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   detectSearchIntent,
   buildSearchUrl,
@@ -7,7 +7,6 @@ import {
   searchFileHistoryFrontend,
 } from "../searchUtils";
 import type { SearchEngineConfig, AppInfo, FileHistoryItem } from "../../types";
-import { tauriApi } from "../../api/tauri";
 
 // Mock tauriApi
 vi.mock("../../api/tauri", () => ({
@@ -21,30 +20,30 @@ describe("searchUtils", () => {
   describe("detectSearchIntent", () => {
     it("应该检测搜索引擎前缀", () => {
       const engines: SearchEngineConfig[] = [
-        { id: "google", name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
-        { id: "baidu", name: "百度", prefix: "b ", url: "https://baidu.com/s?wd={query}" },
+        { name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
+        { name: "百度", prefix: "b ", url: "https://baidu.com/s?wd={query}" },
       ];
 
       const result = detectSearchIntent("g test query", engines);
       expect(result).not.toBeNull();
-      expect(result?.engine.id).toBe("google");
+      expect(result?.engine.name).toBe("Google");
       expect(result?.keyword).toBe("test query");
     });
 
     it("应该优先匹配更长的前缀", () => {
       const engines: SearchEngineConfig[] = [
-        { id: "short", name: "Short", prefix: "s ", url: "https://short.com?q={query}" },
-        { id: "long", name: "Long", prefix: "search ", url: "https://long.com?q={query}" },
+        { name: "Short", prefix: "s ", url: "https://short.com?q={query}" },
+        { name: "Long", prefix: "search ", url: "https://long.com?q={query}" },
       ];
 
       const result = detectSearchIntent("search test", engines);
       expect(result).not.toBeNull();
-      expect(result?.engine.id).toBe("long");
+      expect(result?.engine.name).toBe("Long");
     });
 
     it("应该返回 null 当没有匹配时", () => {
       const engines: SearchEngineConfig[] = [
-        { id: "google", name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
+        { name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
       ];
 
       expect(detectSearchIntent("no match", engines)).toBeNull();
@@ -52,7 +51,7 @@ describe("searchUtils", () => {
 
     it("应该返回 null 当查询为空时", () => {
       const engines: SearchEngineConfig[] = [
-        { id: "google", name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
+        { name: "Google", prefix: "g ", url: "https://google.com/search?q={query}" },
       ];
 
       expect(detectSearchIntent("", engines)).toBeNull();
@@ -80,7 +79,6 @@ describe("searchUtils", () => {
   describe("getSearchResultItem", () => {
     it("应该生成搜索结果项", () => {
       const engine: SearchEngineConfig = {
-        id: "google",
         name: "Google",
         prefix: "g ",
         url: "https://google.com/search?q={query}",
