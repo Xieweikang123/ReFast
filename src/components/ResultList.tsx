@@ -81,7 +81,7 @@ const HorizontalResultItem = React.memo<{
         '--target-opacity': !isStable ? 0.6 : 1,
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`,
+          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.1}s both`,
         marginLeft: index === 0 && isSelected ? '10px' : '0px',
         width: '80px',
         height: '80px',
