@@ -3,6 +3,7 @@ import type { IndexStatus, FileHistoryItem } from "../types";
 import { tauriApi } from "../api/tauri";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatSimpleDateTime } from "../utils/dateUtils";
+import { isFolderLikePath } from "../utils/launcherUtils";
 
 interface FileHistoryPanelProps {
   indexStatus?: IndexStatus | null;
@@ -45,6 +46,22 @@ const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, errorMessage: s
   ]);
 };
 
+// 判断是否是文件夹的辅助函数（优先使用 is_folder，如果为 null 则使用 isFolderLikePath）
+const isItemFolder = (item: FileHistoryItem): boolean => {
+  if (item.is_folder !== null && item.is_folder !== undefined) {
+    return item.is_folder;
+  }
+  // 如果 is_folder 为 null/undefined，使用路径特征判断
+  return isFolderLikePath(item.path);
+};
+
+// 判断是否是图片文件的辅助函数
+const isImageFile = (path: string): boolean => {
+  const pathLower = path.toLowerCase();
+  const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif', '.heic', '.heif'];
+  return imageExtensions.some(ext => pathLower.endsWith(ext));
+};
+
 export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded-lg border border-gray-200 shadow-sm", onRefresh, refreshKey }: FileHistoryPanelProps & { refreshKey?: number }) {
   const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -52,7 +69,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
   const [historyEndDate, setHistoryEndDate] = useState<string>("");
   const [historyDaysAgo, setHistoryDaysAgo] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [categoryFilter, setCategoryFilter] = useState<"all" | "url" | "exe" | "folder" | "other">("all");
+  const [categoryFilter, setCategoryFilter] = useState<"all" | "url" | "exe" | "folder" | "image" | "other">("all");
   const [isDeletingHistory, setIsDeletingHistory] = useState(false);
   const [historyMessage, setHistoryMessage] = useState<string | null>(null);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
@@ -282,13 +299,17 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
             return false;
           }
         } else if (categoryFilter === "folder") {
-          if (!item.is_folder) {
+          if (!isItemFolder(item)) {
+            return false;
+          }
+        } else if (categoryFilter === "image") {
+          if (!isImageFile(item.path)) {
             return false;
           }
         } else if (categoryFilter === "other") {
-          // 其他类型：既不是 URL，也不是 exe，也不是文件夹
+          // 其他类型：既不是 URL，也不是 exe，也不是文件夹，也不是图片
           if (pathLower.startsWith("http://") || pathLower.startsWith("https://") || 
-              pathLower.endsWith(".exe") || item.is_folder) {
+              pathLower.endsWith(".exe") || isItemFolder(item) || isImageFile(item.path)) {
             return false;
           }
         }
@@ -635,6 +656,16 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                 文件夹
               </button>
               <button
+                onClick={() => setCategoryFilter("image")}
+                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
+                  categoryFilter === "image"
+                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
+                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
+                }`}
+              >
+                图片
+              </button>
+              <button
                 onClick={() => setCategoryFilter("other")}
                 className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
                   categoryFilter === "other"
@@ -790,9 +821,14 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                           EXE
                         </span>
                       )}
-                      {item.is_folder && (
+                      {isItemFolder(item) && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-100 shrink-0 font-medium uppercase tracking-wide">
                           DIR
+                        </span>
+                      )}
+                      {item.path && isImageFile(item.path) && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-pink-50 text-pink-600 border border-pink-100 shrink-0 font-medium uppercase tracking-wide">
+                          图片
                         </span>
                       )}
                     </div>
