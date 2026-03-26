@@ -117,9 +117,17 @@ const menuItems: MenuItem[] = [
 interface AppCenterContentProps {
   onPluginClick?: (pluginId: string) => Promise<void>;
   onClose?: () => void;
+  /** 从启动器传入：打开应用索引列表并预填搜索（同名） */
+  openAppIndexWithSearch?: string | null;
+  onOpenAppIndexSearchConsumed?: () => void;
 }
 
-export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenterContentProps) {
+export function AppCenterContent({
+  onPluginClick,
+  onClose: _onClose,
+  openAppIndexWithSearch,
+  onOpenAppIndexSearchConsumed,
+}: AppCenterContentProps) {
   // 从 localStorage 读取上次的标签页，默认为 "plugins"
   const [activeCategory, setActiveCategory] = useState<MenuCategory>(() => {
     const savedCategory = localStorage.getItem("appcenter:last-category");
@@ -380,6 +388,13 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
       unlisten.then((fn) => fn());
     };
   }, []);
+
+  // 从启动器「查看同名索引」：打开应用索引列表弹窗
+  useEffect(() => {
+    if (openAppIndexWithSearch != null && openAppIndexWithSearch.trim() !== "") {
+      setIsAppIndexModalOpen(true);
+    }
+  }, [openAppIndexWithSearch]);
 
   const indexSummaryCards = useMemo(
     () => {
@@ -1730,6 +1745,8 @@ export function AppCenterContent({ onPluginClick, onClose: _onClose }: AppCenter
         onClose={handleCloseAppIndexModal}
         appHotkeys={appHotkeys}
         onHotkeysChange={setAppHotkeys}
+        initialSearchQuery={openAppIndexWithSearch}
+        onInitialSearchConsumed={onOpenAppIndexSearchConsumed}
       />
     </>
   );

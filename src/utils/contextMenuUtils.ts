@@ -4,8 +4,14 @@
  */
 
 import type React from "react";
+import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import type { AppInfo } from "../types";
 import type { SearchResult } from "./resultUtils";
 import { tauriApi } from "../api/tauri";
+
+function normalizePathForCompare(path: string): string {
+  return path.toLowerCase().replace(/\//g, "\\");
+}
 
 /**
  * 处理上下文菜单的选项接口
@@ -168,6 +174,63 @@ export async function revealInFolder(
       alert(`打开文件夹失败: ${errorMsg}`);
     }
     setContextMenu(null);
+  }
+}
+
+/**
+ * 从应用索引移除（不删除磁盘文件）
+ */
+export interface RemoveAppFromIndexOptions {
+  appPath: string;
+  allAppsCacheRef: MutableRefObject<AppInfo[]>;
+  setApps: Dispatch<SetStateAction<AppInfo[]>>;
+  setFilteredApps: Dispatch<SetStateAction<AppInfo[]>>;
+  query: string;
+  searchApplicationsWrapper: (searchQuery: string) => Promise<void>;
+}
+
+export async function removeAppFromIndexMenu(
+  options: RemoveAppFromIndexOptions
+): Promise<void> {
+  const {
+    appPath,
+    allAppsCacheRef,
+    setApps,
+    setFilteredApps,
+    query,
+    searchApplicationsWrapper,
+  } = options;
+
+  const normalized = normalizePathForCompare(appPath);
+
+  try {
+    await tauriApi.removeAppFromIndex(appPath);
+    try {
+      await tauriApi.saveAppHotkey(appPath, null);
+    } catch (hotkeyErr) {
+      console.warn("清除应用快捷键失败（可忽略）:", hotkeyErr);
+    }
+
+    allAppsCacheRef.current = allAppsCacheRef.current.filter(
+      (a) => normalizePathForCompare(a.path) !== normalized
+    );
+
+    setApps((prev) =>
+      prev.filter((a) => normalizePathForCompare(a.path) !== normalized)
+    );
+    setFilteredApps((prev) =>
+      prev.filter((a) => normalizePathForCompare(a.path) !== normalized)
+    );
+
+    const q = query.trim();
+    if (q) {
+      await searchApplicationsWrapper(q);
+    }
+  } catch (error) {
+    console.error("Failed to remove app from index:", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    alert(`从应用索引删除失败: ${msg}`);
+    throw error;
   }
 }
 

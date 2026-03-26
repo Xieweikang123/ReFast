@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
 import type { AppInfo } from "../types";
@@ -21,9 +22,19 @@ interface AppIndexListProps {
   onClose: () => void;
   appHotkeys: Record<string, { modifiers: string[]; key: string }>;
   onHotkeysChange: (hotkeys: Record<string, { modifiers: string[]; key: string }>) => void;
+  /** 打开时预填搜索框（用于「查看同名索引」等入口），应用后由 onInitialSearchConsumed 通知父级清除 */
+  initialSearchQuery?: string | null;
+  onInitialSearchConsumed?: () => void;
 }
 
-export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: AppIndexListProps) {
+export function AppIndexList({
+  isOpen,
+  onClose,
+  appHotkeys,
+  onHotkeysChange,
+  initialSearchQuery,
+  onInitialSearchConsumed,
+}: AppIndexListProps) {
   const [appIndexLoading, setAppIndexLoading] = useState(false);
   const [appIndexError, setAppIndexError] = useState<string | null>(null);
   const [appIndexList, setAppIndexList] = useState<AppInfo[]>([]);
@@ -52,6 +63,15 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
   const appLastModifierTimeRef = useRef(0);
   const appIsCompletingRef = useRef(false);
   const appFinalKeysRef = useRef<string[] | null>(null);
+
+  /** Portal + fixed 相对视口居中；拖动时偏移（px） */
+  const [panelDragOffset, setPanelDragOffset] = useState({ x: 0, y: 0 });
+  const panelDragRef = useRef<{
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
 
   // 超时保护辅助函数
   const withTimeout = <T,>(promise: Promise<T>, timeoutMs: number, errorMessage: string): Promise<T> => {
@@ -108,6 +128,44 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
     if (isOpen && appIndexList.length === 0 && !appIndexLoading) {
       loadAppIndexList();
     }
+  }, [isOpen]);
+
+  // 外部入口（如启动器右键）预填同名搜索
+  useEffect(() => {
+    if (!isOpen) return;
+    if (initialSearchQuery == null || initialSearchQuery.trim() === "") return;
+    setAppIndexSearch(initialSearchQuery.trim());
+    onInitialSearchConsumed?.();
+  }, [isOpen, initialSearchQuery, onInitialSearchConsumed]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setPanelDragOffset({ x: 0, y: 0 });
+      panelDragRef.current = null;
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onMove = (e: PointerEvent) => {
+      const d = panelDragRef.current;
+      if (!d) return;
+      setPanelDragOffset({
+        x: d.originX + (e.clientX - d.startX),
+        y: d.originY + (e.clientY - d.startY),
+      });
+    };
+    const endDrag = () => {
+      panelDragRef.current = null;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+    };
   }, [isOpen]);
 
   // 监听应用重新扫描进度和完成事件
@@ -688,12 +746,57 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col border border-gray-200">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
+  const onTitleBarPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    panelDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: panelDragOffset.x,
+      originY: panelDragOffset.y,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const onTitleBarPointerUp = (e: React.PointerEvent) => {
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return createPortal(
+    <>
+      <div
+        className="fixed inset-0 z-[200] bg-black/30 backdrop-blur-sm"
+        onClick={handleClose}
+        aria-hidden
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="app-index-list-title"
+        className="fixed z-[201] flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+        style={{
+          left: "50%",
+          /* 略高于视口几何中心：大弹窗用 50%+translate(-50%) 时视觉容易显偏下 */
+          top: "calc(50% - clamp(1.25rem, 5.5vh, 3rem))",
+          width: "min(56rem, calc(100vw - 2rem))",
+          maxHeight: "min(80vh, calc(100vh - 2rem))",
+          transform: `translate(calc(-50% + ${panelDragOffset.x}px), calc(-50% + ${panelDragOffset.y}px))`,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+          <div
+            id="app-index-list-title"
+            className="min-w-0 flex-1 cursor-grab touch-none select-none active:cursor-grabbing"
+            onPointerDown={onTitleBarPointerDown}
+            onPointerUp={onTitleBarPointerUp}
+            onPointerCancel={onTitleBarPointerUp}
+          >
             <div className="text-lg font-semibold text-gray-900">应用索引列表</div>
+            <div className="text-xs text-gray-400">拖动标题栏可移动窗口</div>
             <div className="text-sm text-gray-500">
               共 {appIndexList.length} 条{appIndexSearch ? `，筛选后 ${filteredAppIndexList.length} 条` : ""}
               {filteredAppIndexList.length > 0 && (
@@ -704,7 +807,10 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div
+            className="flex flex-shrink-0 items-center gap-2"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
             <button
               onClick={handleBatchExtractIcons}
               className="px-3 py-2 text-xs rounded-lg bg-purple-50 text-purple-700 border border-purple-200 hover:border-purple-300 hover:shadow-sm transition"
@@ -830,11 +936,11 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
                       style={{ width: `${(batchExtractProgress.current / batchExtractProgress.total) * 100}%` }}
                     />
                   </div>
-                </div>
-              )}
             </div>
+          )}
+        </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {appIndexLoading && !appIndexProgress ? (
             <div className="flex items-center justify-center py-12 text-gray-600 text-sm">加载中...</div>
           ) : appIndexLoading && appIndexProgress ? (
@@ -951,6 +1057,7 @@ export function AppIndexList({ isOpen, onClose, appHotkeys, onHotkeysChange }: A
           )}
         </div>
       </div>
-    </div>
+    </>,
+    document.body
   );
 }

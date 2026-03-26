@@ -1,10 +1,26 @@
 import { useRef, useEffect } from "react";
 import type { SearchResult } from "../utils/resultUtils";
 
+function getAppIndexSearchQueryFromResult(result: SearchResult): string {
+  const raw =
+    result.app?.name ||
+    result.displayName ||
+    result.path.split(/[/\\]/).pop() ||
+    "";
+  return raw.replace(/\.(exe|lnk)$/i, "").trim();
+}
+
 interface ContextMenuProps {
   menu: { x: number; y: number; result: SearchResult } | null;
   onClose: () => void;
   onRevealInFolder: () => Promise<void>;
+  /** 应用类型：请求从索引删除（由父级展示确认框后再执行） */
+  onRequestRemoveFromAppIndex?: (info: {
+    path: string;
+    displayName: string;
+  }) => void;
+  /** 应用类型：打开应用中心 → 应用索引列表，并按名称筛选 */
+  onRequestOpenAppIndexSameName?: (info: { searchQuery: string }) => void;
   onEditMemo: () => void;
   onDeleteMemo: (memoId: string) => Promise<void>;
   onOpenUrl: (url: string) => Promise<void>;
@@ -22,6 +38,8 @@ export function ContextMenu({
   menu,
   onClose,
   onRevealInFolder,
+  onRequestRemoveFromAppIndex,
+  onRequestOpenAppIndexSameName,
   onEditMemo,
   onDeleteMemo,
   onOpenUrl,
@@ -71,6 +89,12 @@ export function ContextMenu({
   // 检查是否是 UWP 应用（shell:AppsFolder 路径），UWP 应用没有传统意义上的所在文件夹
   const isUwpApp = menu.result.path.toLowerCase().startsWith("shell:appsfolder");
   const canRevealInFolder = hasFileMenu && !isUwpApp;
+
+  const canRemoveFromAppIndex =
+    menu.result.type === "app" && Boolean(onRequestRemoveFromAppIndex);
+
+  const canOpenAppIndexSameName =
+    menu.result.type === "app" && Boolean(onRequestOpenAppIndexSameName);
   
   const hasMemoMenu = menu.result.type === "memo" && menu.result.memo;
   const hasUrlMenu = menu.result.type === "url" && menu.result.url;
@@ -78,7 +102,15 @@ export function ContextMenu({
   const hasAiMenu = menu.result.type === "ai" && menu.result.aiAnswer;
 
   // 如果没有菜单项，不显示菜单
-  if (!canRevealInFolder && !hasMemoMenu && !hasUrlMenu && !hasJsonMenu && !hasAiMenu) {
+  if (
+    !canRevealInFolder &&
+    !canOpenAppIndexSameName &&
+    !canRemoveFromAppIndex &&
+    !hasMemoMenu &&
+    !hasUrlMenu &&
+    !hasJsonMenu &&
+    !hasAiMenu
+  ) {
     return null;
   }
 
@@ -113,22 +145,65 @@ export function ContextMenu({
       }}
     >
       {canRevealInFolder && (
-        <>
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onRevealInFolder();
-            }}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-            }}
-            className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
-          >
-            打开所在文件夹
-          </button>
-        </>
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onRevealInFolder();
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+        >
+          打开所在文件夹
+        </button>
+      )}
+      {canOpenAppIndexSameName && (
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const q = getAppIndexSearchQueryFromResult(menu.result);
+            if (q) {
+              onRequestOpenAppIndexSameName!({ searchQuery: q });
+            }
+            onClose();
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+          title="打开应用中心中的应用索引列表，并搜索与当前项同名的条目"
+        >
+          查看同名索引…
+        </button>
+      )}
+      {canRemoveFromAppIndex && (
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const displayName =
+              menu.result.displayName ||
+              menu.result.path.split(/[/\\]/).pop() ||
+              "该应用";
+            onRequestRemoveFromAppIndex!({
+              path: menu.result.path,
+              displayName,
+            });
+            onClose();
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+        >
+          从应用索引删除
+        </button>
       )}
       {hasMemoMenu && (
         <>

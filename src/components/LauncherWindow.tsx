@@ -42,6 +42,7 @@ import {
 import {
   handleContextMenuWithResult,
   revealInFolder as revealInFolderUtil,
+  removeAppFromIndexMenu,
   deleteHistory as deleteHistoryUtil,
   editRemark as editRemarkUtil,
   saveRemark as saveRemarkUtil,
@@ -95,6 +96,13 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   // 成功提示弹窗
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; result: SearchResult } | null>(null);
+  /** 从应用索引删除前的确认（避免用 window.confirm，防止与右键菜单事件顺序冲突） */
+  const [appIndexRemoveConfirm, setAppIndexRemoveConfirm] = useState<{
+    path: string;
+    displayName: string;
+  } | null>(null);
+  const [appIndexRemoveLoading, setAppIndexRemoveLoading] = useState(false);
+  const appIndexRemoveRunningRef = useRef(false);
   const [selectedMemo, setSelectedMemo] = useState<MemoItem | null>(null);
   const [isMemoModalOpen, setIsMemoModalOpen] = useState(false);
   const [memoEditTitle, setMemoEditTitle] = useState("");
@@ -106,6 +114,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   // 待发送到 JSON 查看器的内容队列
   const pendingJsonContentRef = useRef<string | null>(null);
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
+  /** 打开应用中心内「应用索引列表」时预填的同名搜索词 */
+  const [openAppIndexWithSearch, setOpenAppIndexWithSearch] = useState<string | null>(null);
   const [openHistory, setOpenHistory] = useState<Record<string, number>>({});
   const [isRemarkModalOpen, setIsRemarkModalOpen] = useState(false);
   const [editingRemarkUrl, setEditingRemarkUrl] = useState<string | null>(null);
@@ -1450,6 +1460,57 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     tauriApi,
   ]);
 
+  const handleRequestRemoveFromAppIndex = useCallback(
+    (info: { path: string; displayName: string }) => {
+      setAppIndexRemoveConfirm(info);
+    },
+    []
+  );
+
+  const handleOpenAppIndexSearchConsumed = useCallback(() => {
+    setOpenAppIndexWithSearch(null);
+  }, []);
+
+  const handleRequestOpenAppIndexSameName = useCallback(
+    (info: { searchQuery: string }) => {
+      const q = info.searchQuery.trim();
+      if (!q) return;
+      setIsPluginListModalOpen(true);
+      setOpenAppIndexWithSearch(q);
+    },
+    []
+  );
+
+  const handleConfirmRemoveAppIndex = useCallback(async () => {
+    if (!appIndexRemoveConfirm || appIndexRemoveRunningRef.current) return;
+    appIndexRemoveRunningRef.current = true;
+    setAppIndexRemoveLoading(true);
+    const appPath = appIndexRemoveConfirm.path;
+    try {
+      await removeAppFromIndexMenu({
+        appPath,
+        allAppsCacheRef,
+        setApps,
+        setFilteredApps,
+        query,
+        searchApplicationsWrapper,
+      });
+      setAppIndexRemoveConfirm(null);
+    } catch {
+      // 失败时 removeAppFromIndexMenu 已 alert
+    } finally {
+      appIndexRemoveRunningRef.current = false;
+      setAppIndexRemoveLoading(false);
+    }
+  }, [
+    appIndexRemoveConfirm,
+    allAppsCacheRef,
+    setApps,
+    setFilteredApps,
+    query,
+    searchApplicationsWrapper,
+  ]);
+
   const handleDeleteHistory = useCallback(
     async (key: string) => {
       await deleteHistoryUtil({
@@ -1822,6 +1883,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
         onRevealInFolder={handleRevealInFolder}
+        onRequestRemoveFromAppIndex={handleRequestRemoveFromAppIndex}
+        onRequestOpenAppIndexSameName={handleRequestOpenAppIndexSameName}
         onEditMemo={() => {
           if (!contextMenu?.result.memo) return;
           setSelectedMemo(contextMenu.result.memo);
@@ -1902,9 +1965,12 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       <PluginListModal
         isOpen={isPluginListModalOpen}
         onClose={async () => {
+          setOpenAppIndexWithSearch(null);
           closePluginModalAndHide(setIsPluginListModalOpen, hideLauncherAndResetState);
         }}
         onPluginClick={handlePluginClick}
+        openAppIndexWithSearch={openAppIndexWithSearch}
+        onOpenAppIndexSearchConsumed={handleOpenAppIndexSearchConsumed}
       />
 
       {/* 错误提示弹窗 */}
@@ -1927,6 +1993,41 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         onClose={() => {
           setSuccessMessage(null);
         }}
+      />
+
+      {/* 从应用索引删除确认 */}
+      <ErrorDialog
+        isOpen={!!appIndexRemoveConfirm}
+        type="warning"
+        title="从应用索引删除"
+        overlayClassName="fixed inset-0 bg-black/50 backdrop-blur-[2px] flex items-center justify-center z-[100]"
+        message={
+          appIndexRemoveConfirm
+            ? `将从应用索引中移除「${appIndexRemoveConfirm.displayName}」。\n\n不会删除磁盘上的文件。若该项来自开始菜单等，重新扫描应用后可能会再次出现。\n\n完整路径：\n${appIndexRemoveConfirm.path}`
+            : ""
+        }
+        messageClassName="break-all"
+        onClose={() => {
+          if (appIndexRemoveLoading) return;
+          setAppIndexRemoveConfirm(null);
+        }}
+        actions={[
+          {
+            label: "取消",
+            variant: "secondary",
+            onClick: () => {
+              if (appIndexRemoveLoading) return;
+              setAppIndexRemoveConfirm(null);
+            },
+          },
+          {
+            label: appIndexRemoveLoading ? "删除中…" : "从索引删除",
+            variant: "danger",
+            onClick: () => {
+              void handleConfirmRemoveAppIndex();
+            },
+          },
+        ]}
       />
     </div>
   );

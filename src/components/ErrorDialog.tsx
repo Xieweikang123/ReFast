@@ -15,6 +15,10 @@ interface ErrorDialogProps {
   message: string;
   onClose: () => void;
   actions?: DialogAction[];
+  /** 覆盖根遮罩层 class（含 z-index），用于需盖过右键菜单等场景 */
+  overlayClassName?: string;
+  /** 追加到正文容器的 class（如 break-all 等） */
+  messageClassName?: string;
 }
 
 export function ErrorDialog({
@@ -24,8 +28,14 @@ export function ErrorDialog({
   message,
   onClose,
   actions,
+  overlayClassName,
+  messageClassName,
 }: ErrorDialogProps) {
   if (!isOpen) return null;
+
+  const overlayClass =
+    overlayClassName ??
+    "fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50";
 
   // 根据类型设置样式
   const getTypeStyles = () => {
@@ -120,10 +130,7 @@ export function ErrorDialog({
   }, [isOpen, onClose]);
 
   return (
-    <div
-      className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50"
-      onClick={onClose}
-    >
+    <div className={overlayClass} onClick={onClose}>
       <div
         className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[calc(100vh-32px)] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
@@ -146,7 +153,9 @@ export function ErrorDialog({
           </button>
         </div>
         <div className="px-5 py-4 flex-1 overflow-y-auto">
-          <div className="text-sm text-gray-700 whitespace-pre-wrap break-words">
+          <div
+            className={`text-sm text-gray-700 whitespace-pre-wrap break-words ${messageClassName ?? ""}`}
+          >
             {message}
           </div>
         </div>

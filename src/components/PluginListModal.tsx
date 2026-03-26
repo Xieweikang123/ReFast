@@ -4,12 +4,16 @@ interface PluginListModalProps {
   isOpen: boolean;
   onClose: () => void;
   onPluginClick: (pluginId: string) => Promise<void>;
+  openAppIndexWithSearch?: string | null;
+  onOpenAppIndexSearchConsumed?: () => void;
 }
 
 export function PluginListModal({
   isOpen,
   onClose,
   onPluginClick,
+  openAppIndexWithSearch,
+  onOpenAppIndexSearchConsumed,
 }: PluginListModalProps) {
   if (!isOpen) return null;
 
@@ -32,6 +36,8 @@ export function PluginListModal({
           <AppCenterContent
             onPluginClick={onPluginClick}
             onClose={onClose}
+            openAppIndexWithSearch={openAppIndexWithSearch}
+            onOpenAppIndexSearchConsumed={onOpenAppIndexSearchConsumed}
           />
         </div>
       </div>

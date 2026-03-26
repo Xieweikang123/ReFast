@@ -879,6 +879,15 @@ pub async fn remove_app_from_index(app_path: String, app: tauri::AppHandle) -> R
         let cache = get_app_cache();
         let mut cache_guard = lock_app_cache_safe(&cache);
 
+        if cache_guard.is_none() {
+            let app_data_dir = get_app_data_dir(&app_clone)?;
+            if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
+                if !disk_cache.is_empty() {
+                    *cache_guard = Some(Arc::new(disk_cache));
+                }
+            }
+        }
+
         let apps_arc = cache_guard.as_ref().ok_or_else(|| {
             "Applications not scanned yet. Call scan_applications first.".to_string()
         })?;
