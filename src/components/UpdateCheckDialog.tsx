@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
 import { tauriApi } from "../api/tauri";
 import type { UpdateCheckResult, DownloadProgress } from "../types";
 import { formatDateString } from "../utils/dateUtils";
@@ -169,8 +172,59 @@ export function UpdateCheckDialog({
             {updateInfo.release_notes && (
               <div>
                 <h4 className="text-sm font-medium text-gray-700 mb-2">更新内容:</h4>
-                <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700 whitespace-pre-wrap max-h-64 overflow-y-auto">
-                  {updateInfo.release_notes}
+                <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700 max-h-64 overflow-y-auto">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw]}
+                    className="prose prose-sm max-w-none"
+                    components={{
+                      // 自定义标题样式
+                      h1: ({ node, children, ...props }) => (
+                        <h1 className="text-xl font-bold mt-4 mb-2 text-gray-800" {...props}>{children}</h1>
+                      ),
+                      h2: ({ node, children, ...props }) => (
+                        <h2 className="text-lg font-bold mt-3 mb-2 text-gray-800" {...props}>{children}</h2>
+                      ),
+                      h3: ({ node, children, ...props }) => (
+                        <h3 className="text-base font-bold mt-2 mb-1 text-gray-800" {...props}>{children}</h3>
+                      ),
+                      // 自定义列表样式
+                      ul: ({ node, children, ...props }) => (
+                        <ul className="list-disc pl-5 mt-1 mb-2 space-y-1" {...props}>{children}</ul>
+                      ),
+                      ol: ({ node, children, ...props }) => (
+                        <ol className="list-decimal pl-5 mt-1 mb-2 space-y-1" {...props}>{children}</ol>
+                      ),
+                      li: ({ node, children, ...props }) => (
+                        <li className="mb-0.5" {...props}>{children}</li>
+                      ),
+                      // 自定义代码块样式
+                      code: ({ children, ...props }) => (
+                        <code className="bg-gray-200 px-1 py-0.5 rounded text-sm font-mono" {...props}>{children}</code>
+                      ),
+                      pre: ({ children, ...props }) => (
+                        <pre className="bg-gray-200 p-3 rounded overflow-x-auto text-sm font-mono mb-2" {...props}>{children}</pre>
+                      ),
+                      // 自定义链接样式
+                      a: ({ node, children, ...props }) => (
+                        <a className="text-blue-600 hover:underline" {...props}>{children}</a>
+                      ),
+                      // 自定义加粗样式
+                      strong: ({ node, children, ...props }) => (
+                        <strong className="font-semibold" {...props}>{children}</strong>
+                      ),
+                      // 自定义换行样式
+                      br: ({ node, ...props }) => (
+                        <br {...props} />
+                      ),
+                      // 自定义段落样式
+                      p: ({ node, children, ...props }) => (
+                        <p className="mb-2" {...props}>{children}</p>
+                      )
+                    }}
+                  >
+                    {updateInfo.release_notes}
+                  </ReactMarkdown>
                 </div>
               </div>
             )}
