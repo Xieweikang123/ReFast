@@ -3534,6 +3534,77 @@ public class IconExtractor {
         final_results
     }
 
+    /// 与索引中已有条目的路径比较（不区分大小写、统一斜杠）。
+    pub fn normalize_path_for_index(path: &str) -> String {
+        path.trim().to_lowercase().replace('\\', "/")
+    }
+
+    /// 根据用户输入的路径构建 `AppInfo`：校验本地路径存在，或为 `ms-settings:` / `shell:AppsFolder\` 等特殊启动串。
+    pub fn app_info_for_manual_entry(path: &str, display_name: Option<&str>) -> Result<AppInfo, String> {
+        let path_str = path.trim();
+        if path_str.is_empty() {
+            return Err("路径不能为空".to_string());
+        }
+        let path_lower = path_str.to_lowercase();
+
+        if path_lower.starts_with("ms-settings:") || path_lower.starts_with("shell:appsfolder\\") {
+            let name = display_name
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .ok_or_else(|| "此类路径需要填写显示名称".to_string())?;
+            let (name_pinyin, name_pinyin_initials) = if contains_chinese(&name) {
+                (
+                    Some(to_pinyin(&name).to_lowercase()),
+                    Some(to_pinyin_initials(&name).to_lowercase()),
+                )
+            } else {
+                (None, None)
+            };
+            return Ok(AppInfo {
+                name,
+                path: path_str.to_string(),
+                icon: None,
+                description: None,
+                name_pinyin,
+                name_pinyin_initials,
+            });
+        }
+
+        let p = Path::new(path_str);
+        if !p.exists() {
+            return Err(format!("路径不存在或无法访问: {}", path_str));
+        }
+
+        let name = if let Some(dn) = display_name.map(str::trim).filter(|s| !s.is_empty()) {
+            dn.to_string()
+        } else {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .ok_or_else(|| "无法从路径推断显示名称，请手动填写".to_string())?
+        };
+
+        let (name_pinyin, name_pinyin_initials) = if contains_chinese(&name) {
+            (
+                Some(to_pinyin(&name).to_lowercase()),
+                Some(to_pinyin_initials(&name).to_lowercase()),
+            )
+        } else {
+            (None, None)
+        };
+
+        Ok(AppInfo {
+            name,
+            path: path_str.to_string(),
+            icon: None,
+            description: None,
+            name_pinyin,
+            name_pinyin_initials,
+        })
+    }
+
     pub fn launch_app(app: &AppInfo) -> Result<(), String> {
         use std::process::Command;
         use std::os::windows::process::CommandExt;
@@ -3667,6 +3738,14 @@ pub mod windows {
 
     pub fn launch_app(_app: &AppInfo) -> Result<(), String> {
         Err("App launch is only supported on Windows".to_string())
+    }
+
+    pub fn normalize_path_for_index(path: &str) -> String {
+        path.trim().to_lowercase().replace('\\', "/")
+    }
+
+    pub fn app_info_for_manual_entry(_path: &str, _display_name: Option<&str>) -> Result<AppInfo, String> {
+        Err("App search is only supported on Windows".to_string())
     }
 }
 

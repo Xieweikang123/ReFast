@@ -696,6 +696,7 @@ fn main() {
             populate_app_icons,
             launch_application,
             remove_app_from_index,
+            add_app_to_index,
             debug_app_icon,
             extract_icon_from_path,
             test_all_icon_extraction_methods,

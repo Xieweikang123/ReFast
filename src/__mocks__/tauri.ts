@@ -30,6 +30,11 @@ export const tauriApi = {
   searchSystemFolders: async () => [],
   launchApplication: async () => {},
   removeAppFromIndex: async () => {},
+  addAppToIndex: async () =>
+    ({
+      name: "mock",
+      path: "C:\\mock.exe",
+    }) as AppInfo,
   debugAppIcon: async () => "",
   extractIconFromPath: async () => null as string | null,
   testAllIconExtractionMethods: async () => [] as Array<[string, string | null]>,

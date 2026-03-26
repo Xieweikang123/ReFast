@@ -918,6 +918,56 @@ pub async fn remove_app_from_index(app_path: String, app: tauri::AppHandle) -> R
     .map_err(|e| format!("remove_app_from_index join error: {}", e))?
 }
 
+/// 手动向应用索引添加一条（可从未扫描过系统菜单时创建仅含手动的缓存）。
+#[tauri::command]
+pub async fn add_app_to_index(
+    path: String,
+    display_name: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<app_search::AppInfo, String> {
+    let app_clone = app.clone();
+    async_runtime::spawn_blocking(move || {
+        let new_app = app_search::windows::app_info_for_manual_entry(&path, display_name.as_deref())?;
+
+        let cache = get_app_cache();
+        let mut cache_guard = lock_app_cache_safe(&cache);
+
+        if cache_guard.is_none() {
+            let app_data_dir = get_app_data_dir(&app_clone)?;
+            if let Ok(disk_cache) = app_search::windows::load_cache(&app_data_dir) {
+                if !disk_cache.is_empty() {
+                    *cache_guard = Some(Arc::new(disk_cache));
+                }
+            }
+        }
+
+        let mut apps: Vec<app_search::AppInfo> = cache_guard
+            .as_ref()
+            .map(|arc| (**arc).clone())
+            .unwrap_or_default();
+
+        let new_norm = app_search::windows::normalize_path_for_index(&new_app.path);
+        if apps
+            .iter()
+            .any(|a| app_search::windows::normalize_path_for_index(&a.path) == new_norm)
+        {
+            return Err("该路径已在应用索引中".to_string());
+        }
+
+        apps.push(new_app.clone());
+
+        *cache_guard = Some(Arc::new(apps.clone()));
+
+        let app_data_dir = get_app_data_dir(&app_clone)?;
+        let _ = app_search::windows::save_cache(&app_data_dir, &apps);
+
+        println!("[添加应用] 手动添加: {} -> {}", new_app.name, new_app.path);
+        Ok(new_app)
+    })
+    .await
+    .map_err(|e| format!("add_app_to_index join error: {}", e))?
+}
+
 /// 调试命令：查找指定名称的应用并尝试提取图标，返回详细信息
 #[tauri::command]
 pub async fn debug_app_icon(app_name: String, _app: tauri::AppHandle) -> Result<String, String> {

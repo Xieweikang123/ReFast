@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
+import { open, confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { AppInfo } from "../types";
 
@@ -54,6 +55,14 @@ export function AppIndexList({
     currentAppName: string;
   } | null>(null);
   const batchExtractCancelRef = useRef(false);
+
+  /** 手动添加索引 */
+  const [manualAddOpen, setManualAddOpen] = useState(false);
+  const [manualPathInput, setManualPathInput] = useState("");
+  const [manualDisplayNameInput, setManualDisplayNameInput] = useState("");
+  const [manualAddLoading, setManualAddLoading] = useState(false);
+  const [manualAddError, setManualAddError] = useState<string | null>(null);
+  const [removingAppPath, setRemovingAppPath] = useState<string | null>(null);
   
   // 应用快捷键录制相关状态
   const [recordingAppPath, setRecordingAppPath] = useState<string | null>(null);
@@ -247,7 +256,92 @@ export function AppIndexList({
   // 处理关闭模态框
   const handleClose = () => {
     setAppIndexSearch("");
+    setManualAddOpen(false);
+    setManualPathInput("");
+    setManualDisplayNameInput("");
+    setManualAddError(null);
     onClose();
+  };
+
+  const handlePickAppForIndex = async () => {
+    setManualAddError(null);
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "选择可执行文件或快捷方式",
+        filters: [
+          { name: "应用/快捷方式", extensions: ["exe", "lnk", "bat", "cmd", "msc", "url", "cpl"] },
+        ],
+      });
+      if (typeof selected === "string") {
+        setManualPathInput(selected);
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setManualAddError(`选择文件失败：${msg}`);
+    }
+  };
+
+  const handleAddManualIndex = async () => {
+    const path = manualPathInput.trim();
+    if (!path) {
+      setManualAddError("请先填写或选择路径");
+      return;
+    }
+    const displayName = manualDisplayNameInput.trim();
+    setManualAddLoading(true);
+    setManualAddError(null);
+    try {
+      const added = await tauriApi.addAppToIndex(path, displayName ? displayName : null);
+      setAppIndexList((prev) => [...prev, added]);
+      setManualPathInput("");
+      setManualDisplayNameInput("");
+    } catch (e: unknown) {
+      setManualAddError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setManualAddLoading(false);
+    }
+  };
+
+  const handleRemoveFromIndex = async (item: AppInfo) => {
+    const ok = await confirm(
+      `将从应用索引中移除「${item.name}」。\n\n不会删除磁盘上的文件。若该项来自开始菜单等，重新扫描应用后可能会再次出现。\n\n完整路径：\n${item.path}`,
+      { title: "从索引删除", kind: "warning" }
+    );
+    if (!ok) return;
+
+    setRemovingAppPath(item.path);
+    try {
+      await tauriApi.removeAppFromIndex(item.path);
+      try {
+        await tauriApi.saveAppHotkey(item.path, null);
+      } catch (hotkeyErr) {
+        console.warn("清除应用快捷键失败（可忽略）:", hotkeyErr);
+      }
+      const newHotkeys = { ...appHotkeys };
+      delete newHotkeys[item.path];
+      onHotkeysChange(newHotkeys);
+      setAppIndexList((prev) => prev.filter((a) => a.path !== item.path));
+      setAppIconErrorMap((prev) => {
+        const next = { ...prev };
+        delete next[item.path];
+        return next;
+      });
+      if (recordingAppPath === item.path) {
+        setRecordingAppPath(null);
+        appRecordingRef.current = false;
+        setAppRecordingKeys([]);
+        appLastModifierRef.current = null;
+        appLastModifierTimeRef.current = 0;
+        appIsCompletingRef.current = false;
+        appFinalKeysRef.current = null;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(`从应用索引删除失败: ${msg}`);
+    } finally {
+      setRemovingAppPath(null);
+    }
   };
 
   // 格式化快捷键显示
@@ -812,6 +906,22 @@ export function AppIndexList({
             onPointerDown={(e) => e.stopPropagation()}
           >
             <button
+              type="button"
+              onClick={() => {
+                setManualAddOpen((v) => !v);
+                setManualAddError(null);
+              }}
+              className={`px-3 py-2 text-xs rounded-lg border transition ${
+                manualAddOpen
+                  ? "bg-blue-100 text-blue-800 border-blue-300 shadow-sm"
+                  : "bg-blue-50 text-blue-700 border-blue-200 hover:border-blue-300 hover:shadow-sm"
+              }`}
+              disabled={isBatchExtracting}
+              title="通过路径或文件选择向索引添加应用"
+            >
+              {manualAddOpen ? "收起手动添加" : "手动添加"}
+            </button>
+            <button
               onClick={handleBatchExtractIcons}
               className="px-3 py-2 text-xs rounded-lg bg-purple-50 text-purple-700 border border-purple-200 hover:border-purple-300 hover:shadow-sm transition"
               disabled={appIndexLoading || isBatchExtracting || filteredAppIndexList.length === 0}
@@ -837,6 +947,56 @@ export function AppIndexList({
             </button>
           </div>
         </div>
+
+        {manualAddOpen && (
+          <div className="px-6 py-3 border-b border-gray-100 bg-slate-50/90 space-y-2">
+            <p className="text-xs text-gray-600 leading-relaxed">
+              填写完整路径，或点击「浏览」选择{" "}
+              <span className="whitespace-nowrap">.exe / .lnk</span> 等。若使用{" "}
+              <code className="px-1 rounded bg-white border border-gray-200 text-[11px]">shell:AppsFolder\…</code>{" "}
+              或 <code className="px-1 rounded bg-white border border-gray-200 text-[11px]">ms-settings:…</code>，必须填写显示名称。
+            </p>
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <input
+                type="text"
+                value={manualPathInput}
+                onChange={(e) => setManualPathInput(e.target.value)}
+                placeholder="路径，例如 C:\Tools\app.exe"
+                className="flex-1 min-w-0 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                disabled={manualAddLoading}
+              />
+              <input
+                type="text"
+                value={manualDisplayNameInput}
+                onChange={(e) => setManualDisplayNameInput(e.target.value)}
+                placeholder="显示名称（可选）"
+                className="w-full sm:w-40 flex-shrink-0 px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400"
+                disabled={manualAddLoading}
+              />
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={handlePickAppForIndex}
+                  className="px-3 py-2 text-xs rounded-lg bg-white border border-gray-300 text-gray-800 hover:border-gray-400 transition"
+                  disabled={manualAddLoading}
+                >
+                  浏览…
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddManualIndex}
+                  className="px-3 py-2 text-xs rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition"
+                  disabled={manualAddLoading || appIndexLoading}
+                >
+                  {manualAddLoading ? "添加中…" : "添加到索引"}
+                </button>
+              </div>
+            </div>
+            {manualAddError && (
+              <div className="text-xs text-red-600">{manualAddError}</div>
+            )}
+          </div>
+        )}
 
         <div className="px-6 py-3 border-b border-gray-100">
           <div className="flex items-center gap-3">
@@ -1021,6 +1181,23 @@ export function AppIndexList({
                               清除
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleRemoveFromIndex(item);
+                            }}
+                            disabled={
+                              removingAppPath === item.path ||
+                              isBatchExtracting ||
+                              extractingIcons.has(item.path) ||
+                              appIndexLoading
+                            }
+                            className="opacity-0 group-hover:opacity-100 px-2 py-1 text-xs rounded border border-red-200 text-red-600 hover:bg-red-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="从索引中移除此项（不删除文件）"
+                          >
+                            {removingAppPath === item.path ? "删除中…" : "删除"}
+                          </button>
                         </>
                       ) : (
                         <button
