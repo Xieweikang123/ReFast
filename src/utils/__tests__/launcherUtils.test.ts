@@ -318,6 +318,10 @@ describe("launcherUtils", () => {
       expect(isSystemFolder("control")).toBe(true);
       expect(isSystemFolder("ms-settings:")).toBe(true);
       expect(isSystemFolder("::{guid}")).toBe(true);
+      expect(isSystemFolder("rf-builtin:environment-variables")).toBe(true);
+      expect(
+        isSystemFolder("C:\\Windows\\System32\\devmgmt.msc")
+      ).toBe(true);
     });
 
     it("应该返回 false 当不是系统文件夹时", () => {
@@ -338,6 +342,16 @@ describe("launcherUtils", () => {
 
     it("应该返回 false 对于普通文件", () => {
       expect(shouldShowInHorizontal({ type: "file", path: "C:\\file.txt" })).toBe(false);
+    });
+
+    it("应该将 rf-builtin 与 System32 系统小程序视为可横向展示", () => {
+      expect(
+        shouldShowInHorizontal({
+          type: "file",
+          path: "rf-builtin:environment-variables",
+          file: { is_folder: false },
+        })
+      ).toBe(true);
     });
   });
 

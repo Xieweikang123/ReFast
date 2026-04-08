@@ -692,6 +692,38 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             ShellExecuteExW, SHELLEXECUTEINFOW, SHELLEXECUTEINFOW_0,
         };
         
+        // 启动器内置：环境变量等（路径为 rf-builtin:…，无法用单一路径 ShellExecute）
+        if let Some(rest) = trimmed.strip_prefix("rf-builtin:") {
+            use std::process::Command;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            match rest {
+                "environment-variables" => {
+                    Command::new("rundll32.exe")
+                        .arg("sysdm.cpl,EditEnvironmentVariables")
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn()
+                        .map_err(|e| {
+                            format!("Failed to open environment variables dialog: {}", e)
+                        })?;
+                    return Ok(());
+                }
+                "system-properties-advanced" => {
+                    use std::env;
+                    let windir = env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+                    let exe = format!(r"{}\System32\SystemPropertiesAdvanced.exe", windir);
+                    Command::new(exe)
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn()
+                        .map_err(|e| format!("Failed to open System Properties (Advanced): {}", e))?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(format!("Unknown builtin action: {}", trimmed));
+                }
+            }
+        }
+
         // Special handling for control command (traditional Control Panel)
         if trimmed == "control" {
             use std::process::Command;

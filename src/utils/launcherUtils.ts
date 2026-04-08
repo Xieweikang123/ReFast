@@ -460,6 +460,13 @@ export function normalizeAppName(name: string): string {
  */
 export function isSystemFolder(path: string, isFolder?: boolean | null): boolean {
   const pathLower = path.toLowerCase();
+  if (pathLower.startsWith("rf-builtin:")) {
+    return true;
+  }
+  // System32 下的 .msc / .cpl（内置系统工具快捷方式）
+  if (/\\system32\\[^\\/]+\.(msc|cpl)$/.test(pathLower)) {
+    return true;
+  }
   return (
     pathLower === "control" ||
     pathLower === "ms-settings:" ||
