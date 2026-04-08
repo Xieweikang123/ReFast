@@ -752,7 +752,7 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             .chain(Some(0))
             .collect();
 
-        // 与资源管理器双击一致：批处理运行时 CWD 为脚本所在目录，便于脚本内相对路径解析
+        // 与资源管理器双击一致：批处理 CWD 为脚本目录；exe/com 的「起始位置」为可执行文件所在目录（影响部分程序相对路径）
         let mut directory_wide: Option<Vec<u16>> = None;
         let lp_directory = if !is_clsid_path {
             let pb = PathBuf::from(&path_str);
@@ -761,7 +761,7 @@ pub fn launch_file(path: &str) -> Result<(), String> {
                 pb.parent(),
             ) {
                 let e = ext.to_lowercase();
-                if e == "bat" || e == "cmd" {
+                if e == "bat" || e == "cmd" || e == "exe" || e == "com" {
                     let v: Vec<u16> = parent
                         .as_os_str()
                         .encode_wide()

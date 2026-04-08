@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use crate::file_history;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -3696,11 +3697,10 @@ public class IconExtractor {
             })
             .unwrap_or(false);
 
-        // Use cmd /c start to launch application with proper environment variables
-        // This ensures that launched applications (like Cursor) inherit the full user environment
-        // variables (including PATH with cargo), matching the behavior of launching from Start Menu
-        let spawn_result = if is_batch {
-            match path.parent().and_then(|p| p.to_str()) {
+        // 批处理仍用 cmd /c start /D（见上文）；其它可执行文件/快捷方式用 ShellExecuteEx，与资源管理器一致，
+        // 避免经 cmd 包装导致子进程继承本应用（Tauri）的环境变量，进而影响其内置终端里的 PATH/cmd 行为。
+        if is_batch {
+            let spawn_result = match path.parent().and_then(|p| p.to_str()) {
                 Some(work_dir) => Command::new("cmd")
                     .args(&["/c", "start", "", "/D", work_dir, path_str])
                     .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
@@ -3711,19 +3711,39 @@ public class IconExtractor {
                         app.path
                     ));
                 }
+            };
+
+            match spawn_result {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    let error_msg = if is_lnk {
+                        let additional_info = if let Some(parse_err) = parse_error {
+                            format!(" (无法解析快捷方式: {})", parse_err)
+                        } else {
+                            match parse_lnk_file(path) {
+                                Ok(target_info) => {
+                                    format!(" (目标路径: {})", target_info.path)
+                                }
+                                Err(parse_e) => {
+                                    format!(" (无法解析快捷方式: {})", parse_e)
+                                }
+                            }
+                        };
+
+                        format!(
+                            "启动应用程序失败: {} - {}\n\n这通常意味着快捷方式指向的目标文件不存在或已移动。{}\n\n建议：请检查快捷方式属性，确认目标路径是否正确，或重新创建该快捷方式。",
+                            app.path, e, additional_info
+                        )
+                    } else {
+                        format!("启动应用程序失败: {} - {}", app.path, e)
+                    };
+
+                    Err(error_msg)
+                }
             }
         } else {
-            Command::new("cmd")
-                .args(&["/c", "start", "", path_str])
-                .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
-                .spawn()
-        };
-
-        match spawn_result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // 构建详细的错误信息
-                let error_msg = if is_lnk {
+            file_history::launch_file(path_str).map_err(|e| {
+                if is_lnk {
                     let additional_info = if let Some(parse_err) = parse_error {
                         format!(" (无法解析快捷方式: {})", parse_err)
                     } else {
@@ -3736,17 +3756,14 @@ public class IconExtractor {
                             }
                         }
                     };
-                    
                     format!(
-                        "启动应用程序失败: {} - {}\n\n这通常意味着快捷方式指向的目标文件不存在或已移动。{}\n\n建议：请检查快捷方式属性，确认目标路径是否正确，或重新创建该快捷方式。",
+                        "启动应用程序失败: {}\n{}{}",
                         app.path, e, additional_info
                     )
                 } else {
                     format!("启动应用程序失败: {} - {}", app.path, e)
-                };
-                
-                Err(error_msg)
-            }
+                }
+            })
         }
     }
 }
