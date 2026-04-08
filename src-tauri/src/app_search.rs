@@ -3685,14 +3685,41 @@ public class IconExtractor {
             return Err(format!("应用程序未找到: {}", app.path));
         }
 
+        // 批处理默认工作目录为「本软件进程」的 CWD，与同目录下相对路径（如 start "" "某.exe"）不匹配；
+        // 资源管理器双击 bat 时 CWD 为 bat 所在目录。用 start /D 指定启动目录以对齐该行为。
+        let is_batch = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|ext| {
+                let e = ext.to_lowercase();
+                e == "bat" || e == "cmd"
+            })
+            .unwrap_or(false);
+
         // Use cmd /c start to launch application with proper environment variables
         // This ensures that launched applications (like Cursor) inherit the full user environment
         // variables (including PATH with cargo), matching the behavior of launching from Start Menu
-        match Command::new("cmd")
-            .args(&["/c", "start", "", path_str])
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
-            .spawn()
-        {
+        let spawn_result = if is_batch {
+            match path.parent().and_then(|p| p.to_str()) {
+                Some(work_dir) => Command::new("cmd")
+                    .args(&["/c", "start", "", "/D", work_dir, path_str])
+                    .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
+                    .spawn(),
+                None => {
+                    return Err(format!(
+                        "无法确定批处理文件所在目录: {}",
+                        app.path
+                    ));
+                }
+            }
+        } else {
+            Command::new("cmd")
+                .args(&["/c", "start", "", path_str])
+                .creation_flags(0x08000000) // CREATE_NO_WINDOW - 不显示控制台窗口
+                .spawn()
+        };
+
+        match spawn_result {
             Ok(_) => Ok(()),
             Err(e) => {
                 // 构建详细的错误信息
