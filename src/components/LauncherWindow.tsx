@@ -14,7 +14,7 @@ import { SearchResultArea } from "./SearchResultArea";
 import { LauncherStatusBar } from "./LauncherStatusBar";
 import { getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, loadResultsIncrementally } from "../utils/resultUtils";
+import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import { askOllama } from "../utils/ollamaUtils";
@@ -821,7 +821,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     });
   }, [everythingResults, apps, extractedFileIconsRef]);
 
-  // Watch results changes and set selectedIndex to first horizontal result
+  // Watch results changes and set selectedIndex（与横向/纵向选中一致：优先选中 openHistory 中最近打开过的项）
   useEffect(() => {
     
     // If we just jumped to vertical, don't reset selectedIndex
@@ -831,6 +831,16 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     
     if (results.length === 0) {
       setSelectedIndex(0);
+      return;
+    }
+
+    const bestFlat = findBestFlatResultIndexFromOpenHistory(results, openHistory);
+    if (bestFlat !== null) {
+      isAutoSelectingFirstHorizontalRef.current = true;
+      setSelectedIndex(bestFlat);
+      setTimeout(() => {
+        isAutoSelectingFirstHorizontalRef.current = false;
+      }, 100);
       return;
     }
     
@@ -870,7 +880,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     if (selectedIndex !== 0) {
       setSelectedIndex(0);
     }
-  }, [results]);
+  }, [results, openHistory]);
 
   // 使用自定义 hook 处理窗口大小调整
   useWindowSizeAdjustment({
