@@ -54,6 +54,9 @@ windows = { version = "0.61", features = [
     "Win32_Globalization",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1.5"
+
 [features]
 # This feature is used for production builds or when `devPath` points to the filesystem
 # DO NOT REMOVE!!

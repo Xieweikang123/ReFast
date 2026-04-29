@@ -3,13 +3,14 @@
  * 包含横向和纵向结果列表
  */
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { ResultIcon } from "./ResultIcon";
 import { highlightText, formatLastUsedTime } from "../utils/launcherUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import type { AppInfo } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 import { getThemeConfig } from "../utils/themeConfig";
+import { isMacOS } from "../utils/platformUtils";
 
 export interface ResultListProps {
   horizontalResults: SearchResult[];
@@ -187,6 +188,12 @@ const VerticalResultItem = React.memo<{
   onContextMenu,
   onSaveImageToDownloads,
 }) => {
+  const [isMac, setIsMac] = useState(false);
+
+  useEffect(() => {
+    isMacOS().then(setIsMac);
+  }, []);
+
   return (
     <div
       key={`${result.type}-${result.path}-${index}`}
@@ -390,9 +397,9 @@ const VerticalResultItem = React.memo<{
             <div className="flex items-center gap-2 mt-1.5">
               <span
                 className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("everything", isSelected)}`}
-                title="来自 Everything 搜索结果"
+                title={isMac ? "来自 Spotlight 搜索结果" : "来自 Everything 搜索结果"}
               >
-                Everything
+                {isMac ? "Spotlight" : "Everything"}
               </span>
             </div>
           )}

@@ -3492,7 +3492,7 @@ pub fn write_debug_log(message: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn paste_text_to_cursor(_text: String) -> Result<(), String> {
+pub fn paste_text_to_cursor(text: String) -> Result<(), String> {
     // 注意：text 参数现在不再使用，因为剪贴板已经通过 navigator.clipboard.writeText 在前端设置好了
     // 这个函数现在只负责模拟 Ctrl+V 按键
     #[cfg(target_os = "windows")]
@@ -5660,16 +5660,58 @@ mod startup {
 
 #[cfg(not(target_os = "windows"))]
 mod startup {
+    use std::path::PathBuf;
+
+    const PLIST_LABEL: &str = "com.re-fast.app";
+
+    fn get_launch_agent_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        PathBuf::from(home).join("Library/LaunchAgents/com.re-fast.startup.plist")
+    }
+
     pub fn is_startup_enabled() -> Result<bool, String> {
-        Err("Startup is only supported on Windows".to_string())
+        let plist_path = get_launch_agent_path();
+        Ok(plist_path.exists())
     }
 
     pub fn enable_startup() -> Result<(), String> {
-        Err("Startup is only supported on Windows".to_string())
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get exe path: {}", e))?;
+        let plist_content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>"#,
+            PLIST_LABEL,
+            exe_path.display()
+        );
+
+        let plist_path = get_launch_agent_path();
+        if let Some(parent) = plist_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create LaunchAgents dir: {}", e))?;
+        }
+        std::fs::write(&plist_path, plist_content)
+            .map_err(|e| format!("Failed to write Launch Agent plist: {}", e))
     }
 
     pub fn disable_startup() -> Result<(), String> {
-        Err("Startup is only supported on Windows".to_string())
+        let plist_path = get_launch_agent_path();
+        if plist_path.exists() {
+            std::fs::remove_file(&plist_path)
+                .map_err(|e| format!("Failed to remove Launch Agent plist: {}", e))?;
+        }
+        Ok(())
     }
 }
 
@@ -6236,4 +6278,17 @@ pub async fn copy_image_to_clipboard(image_path: String) -> Result<(), String> {
     {
         Err("Not implemented for this platform".to_string())
     }
+}
+
+/// 获取操作系统类型
+#[tauri::command]
+pub fn get_os_type() -> String {
+    #[cfg(target_os = "windows")]
+    { "windows".to_string() }
+    #[cfg(target_os = "macos")]
+    { "macos".to_string() }
+    #[cfg(target_os = "linux")]
+    { "linux".to_string() }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "unknown".to_string() }
 }

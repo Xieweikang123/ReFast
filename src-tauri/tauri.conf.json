@@ -46,10 +46,12 @@
   "bundle": {
     "active": true,
     "targets": [
-      "msi"
+      "msi",
+      "dmg"
     ],
     "icon": [
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/icon.icns"
     ],
     "windows": {
       "wix": {
