@@ -1466,3 +1466,142 @@ pub mod windows {
         find_everything_main_exe()
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub mod windows {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    /// Search files using macOS Spotlight (mdfind)
+    pub fn search_files<F>(
+        query: &str,
+        max_results: usize,
+        _chunk_size: usize,
+        cancelled: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        mut on_batch: Option<F>,
+    ) -> Result<EverythingSearchResponse, EverythingError>
+    where
+        F: FnMut(&[EverythingResult], u32, u32),
+    {
+        if query.trim().is_empty() {
+            return Err(EverythingError::InvalidQuery("查询字符串不能为空".to_string()));
+        }
+
+        // Use mdfind to search via Spotlight
+        let output = Command::new("mdfind")
+            .arg(query)
+            .output()
+            .map_err(|e| EverythingError::IpcFailed(format!("mdfind 执行失败: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(EverythingError::IpcFailed(format!("mdfind 错误: {}", stderr)));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut results: Vec<EverythingResult> = Vec::new();
+
+        for (count, line) in stdout.lines().enumerate() {
+            // Check cancellation
+            if let Some(cancel) = cancelled {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+            }
+
+            if count >= max_results {
+                break;
+            }
+
+            let path = line.trim();
+            if path.is_empty() {
+                continue;
+            }
+
+            let path_buf = std::path::Path::new(path);
+            let name = path_buf
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            // Get file metadata
+            let (size, date_modified, is_folder) = match std::fs::metadata(path_buf) {
+                Ok(meta) => {
+                    let size = if meta.is_file() { Some(meta.len()) } else { None };
+                    let is_folder = Some(meta.is_dir());
+                    let date_modified = meta.modified().ok().and_then(|t| {
+                        let datetime: chrono::DateTime<chrono::Local> = t.into();
+                        Some(datetime.format("%Y-%m-%d %H:%M:%S").to_string())
+                    });
+                    (size, date_modified, is_folder)
+                }
+                Err(_) => (None, None, None),
+            };
+
+            results.push(EverythingResult {
+                path: path.to_string(),
+                name,
+                size,
+                date_modified,
+                is_folder,
+            });
+
+            // Call batch callback every 20 results
+            if let Some(ref mut cb) = on_batch {
+                if (count + 1) % 20 == 0 {
+                    let total = results.len() as u32;
+                    cb(&results[results.len() - 20..], total, total);
+                }
+            }
+        }
+
+        let total_count = results.len() as u32;
+
+        // Final batch callback
+        if let Some(ref mut cb) = on_batch {
+            let remainder = results.len() % 20;
+            if remainder > 0 {
+                cb(&results[results.len() - remainder..], total_count, total_count);
+            }
+        }
+
+        Ok(EverythingSearchResponse {
+            results,
+            total_count,
+        })
+    }
+
+    pub fn is_everything_available() -> bool {
+        // Spotlight is always available on macOS
+        true
+    }
+
+    pub fn check_everything_status() -> (bool, Option<String>) {
+        (true, None)
+    }
+
+    pub fn get_everything_path() -> Option<PathBuf> {
+        // Spotlight is built into macOS, return mdfind path
+        Some(PathBuf::from("/usr/bin/mdfind"))
+    }
+
+    pub fn get_everything_version() -> Option<String> {
+        Some("Spotlight".to_string())
+    }
+
+    pub fn get_log_file_path() -> Option<PathBuf> {
+        None
+    }
+
+    pub fn check_everything_service_running() -> bool {
+        // Spotlight is always running on macOS
+        true
+    }
+
+    pub fn find_everything_main_exe() -> Option<PathBuf> {
+        Some(PathBuf::from("/usr/bin/mdfind"))
+    }
+
+    pub fn init_log_file_early() {}
+}

@@ -735,5 +735,9 @@ export const tauriApi = {
   async searchWordRecords(query: string): Promise<WordRecord[]> {
     return invoke("search_word_records", { query });
   },
+
+  async getOsType(): Promise<string> {
+    return invoke("get_os_type");
+  },
 };
 

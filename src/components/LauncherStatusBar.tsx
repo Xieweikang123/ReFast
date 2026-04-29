@@ -3,9 +3,10 @@
  * 显示搜索结果数量、Everything 状态、更新提示等信息
  */
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import type { UpdateCheckResult } from "../types";
 import { tauriApi } from "../api/tauri";
+import { isMacOS } from "../utils/platformUtils";
 
 export interface LauncherStatusBarProps {
   resultsCount: number;
@@ -38,6 +39,12 @@ export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
   onCheckAgain,
   downloadButtonRef,
 }) => {
+  const [isMac, setIsMac] = useState(false);
+
+  useEffect(() => {
+    isMacOS().then(setIsMac);
+  }, []);
+
   const handleUpdateClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -74,79 +81,89 @@ export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
         {!showAiAnswer && resultsCount > 0 && <span className="whitespace-nowrap">{resultsCount} 个结果</span>}
         {showAiAnswer && <span className="whitespace-nowrap">AI 回答模式</span>}
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div 
-            className="flex items-center gap-1.5 cursor-help whitespace-nowrap" 
-            title={everythingPath ? `Everything 路径: ${everythingPath}` : 'Everything 未安装或未在 PATH 中'}
-          >
-            <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isEverythingAvailable ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
-            <span className={`text-xs ${isEverythingAvailable ? 'text-emerald-600' : 'text-gray-500'}`}>
-              {isEverythingAvailable ? 'Everything 已启用' : (
-                everythingError?.startsWith("NOT_INSTALLED") 
-                  ? 'Everything 未安装' 
-                  : everythingError?.startsWith("SERVICE_NOT_RUNNING")
-                  ? 'Everything 服务未运行'
-                  : 'Everything 未检测到'
-              )}
-            </span>
-            {everythingError && !isEverythingAvailable && !everythingError.startsWith("NOT_INSTALLED") && !everythingError.startsWith("SERVICE_NOT_RUNNING") && (
-              <span className="text-xs text-red-500 ml-2 whitespace-nowrap" title={everythingError}>
-                ({everythingError.split(':')[0]})
-              </span>
-            )}
-          </div>
-          {!isEverythingAvailable && (
-            <div className="flex items-center gap-2 flex-shrink-0">
-              {everythingError && everythingError.startsWith("SERVICE_NOT_RUNNING") && (
-                <button
-                  onClick={onStartEverything}
-                  className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors whitespace-nowrap"
-                  title="启动 Everything"
-                >
-                  启动
-                </button>
-              )}
-              {(!everythingError || !everythingError.startsWith("SERVICE_NOT_RUNNING")) && (
-                <button
-                  ref={downloadButtonRef}
-                  onPointerDown={() => {}}
-                  onClick={(e) => {
-                    if (!isDownloadingEverything) {
+          {/* Everything/Spotlight 状态 - macOS 上显示 Spotlight，Windows 上显示 Everything */}
+          {isMac ? (
+            <div className="flex items-center gap-1.5 cursor-help whitespace-nowrap" title="Spotlight 搜索已启用">
+              <div className="w-2 h-2 rounded-full flex-shrink-0 bg-emerald-500"></div>
+              <span className="text-xs text-emerald-600">Spotlight 已启用</span>
+            </div>
+          ) : (
+            <>
+              <div
+                className="flex items-center gap-1.5 cursor-help whitespace-nowrap"
+                title={everythingPath ? `Everything 路径: ${everythingPath}` : 'Everything 未安装或未在 PATH 中'}
+              >
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${isEverythingAvailable ? 'bg-emerald-500' : 'bg-gray-300'}`}></div>
+                <span className={`text-xs ${isEverythingAvailable ? 'text-emerald-600' : 'text-gray-500'}`}>
+                  {isEverythingAvailable ? 'Everything 已启用' : (
+                    everythingError?.startsWith("NOT_INSTALLED")
+                      ? 'Everything 未安装'
+                      : everythingError?.startsWith("SERVICE_NOT_RUNNING")
+                      ? 'Everything 服务未运行'
+                      : 'Everything 未检测到'
+                  )}
+                </span>
+                {everythingError && !isEverythingAvailable && !everythingError.startsWith("NOT_INSTALLED") && !everythingError.startsWith("SERVICE_NOT_RUNNING") && (
+                  <span className="text-xs text-red-500 ml-2 whitespace-nowrap" title={everythingError}>
+                    ({everythingError.split(':')[0]})
+                  </span>
+                )}
+              </div>
+              {!isEverythingAvailable && (
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {everythingError && everythingError.startsWith("SERVICE_NOT_RUNNING") && (
+                    <button
+                      onClick={onStartEverything}
+                      className="px-2 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600 transition-colors whitespace-nowrap"
+                      title="启动 Everything"
+                    >
+                      启动
+                    </button>
+                  )}
+                  {(!everythingError || !everythingError.startsWith("SERVICE_NOT_RUNNING")) && (
+                    <button
+                      ref={downloadButtonRef}
+                      onPointerDown={() => {}}
+                      onClick={(e) => {
+                        if (!isDownloadingEverything) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onDownloadEverything().catch(() => {
+                            // Error handled
+                          });
+                        }
+                      }}
+                      disabled={isDownloadingEverything}
+                      className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
+                        isDownloadingEverything
+                          ? 'bg-gray-400 text-white cursor-not-allowed'
+                          : 'bg-blue-500 text-white hover:bg-blue-600'
+                      }`}
+                      style={{ pointerEvents: 'auto', zIndex: 1000, position: 'relative' }}
+                      title="下载并安装 Everything"
+                      data-testid="download-everything-button"
+                    >
+                      {isDownloadingEverything ? `下载中 ${everythingDownloadProgress}%` : '下载'}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => {
+                      console.log("[Everything刷新] onClick 触发");
                       e.preventDefault();
                       e.stopPropagation();
-                      onDownloadEverything().catch(() => {
-                        // Error handled
+                      console.log("[Everything刷新] 调用 handleCheckAgain");
+                      onCheckAgain().catch((error) => {
+                        console.error("[Everything刷新] handleCheckAgain 抛出错误:", error);
                       });
-                    }
-                  }}
-                  disabled={isDownloadingEverything}
-                  className={`px-2 py-1 text-xs rounded transition-colors whitespace-nowrap ${
-                    isDownloadingEverything
-                      ? 'bg-gray-400 text-white cursor-not-allowed'
-                      : 'bg-blue-500 text-white hover:bg-blue-600'
-                  }`}
-                  style={{ pointerEvents: 'auto', zIndex: 1000, position: 'relative' }}
-                  title="下载并安装 Everything"
-                  data-testid="download-everything-button"
-                >
-                  {isDownloadingEverything ? `下载中 ${everythingDownloadProgress}%` : '下载'}
-                </button>
+                    }}
+                    className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors whitespace-nowrap"
+                    title="重新检测 Everything"
+                  >
+                    刷新
+                  </button>
+                </div>
               )}
-              <button
-                onClick={(e) => {
-                  console.log("[Everything刷新] onClick 触发");
-                  e.preventDefault();
-                  e.stopPropagation();
-                  console.log("[Everything刷新] 调用 handleCheckAgain");
-                  onCheckAgain().catch((error) => {
-                    console.error("[Everything刷新] handleCheckAgain 抛出错误:", error);
-                  });
-                }}
-                className="px-2 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors whitespace-nowrap"
-                title="重新检测 Everything"
-              >
-                刷新
-              </button>
-            </div>
+            </>
           )}
           {/* 更新提示 - 放在按钮后面 */}
           {updateInfo?.has_update && (
