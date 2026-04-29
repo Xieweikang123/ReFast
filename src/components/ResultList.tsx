@@ -71,10 +71,10 @@ const HorizontalResultItem = React.memo<{
       className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl cursor-pointer transition-all duration-200 relative ${
         isSelected 
           ? resultStyle === "soft"
-            ? "bg-blue-50 border-2 border-blue-400 shadow-md shadow-blue-200/50 scale-[1.2]"
+            ? "bg-blue-50 border-2 border-blue-500 shadow-lg shadow-blue-300/55 ring-2 ring-blue-400/35 scale-[1.2]"
             : resultStyle === "skeuomorphic"
-            ? "bg-gradient-to-br from-[#f0f5fb] to-[#e5edf9] border-2 border-[#a8c0e0] shadow-[0_4px_12px_rgba(20,32,50,0.12)] scale-[1.2]"
-            : "bg-indigo-50 border-2 border-indigo-400 shadow-md shadow-indigo-200/50 scale-[1.2]"
+            ? "bg-gradient-to-br from-[#e8f0fb] to-[#dce8f5] border-2 border-[#7a9fd0] shadow-[0_6px_16px_rgba(20,32,50,0.18)] ring-1 ring-[#b8cce8]/80 scale-[1.2]"
+            : "bg-indigo-50 border-2 border-indigo-500 shadow-lg shadow-indigo-300/50 ring-2 ring-indigo-400/30 scale-[1.2]"
           : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
       } ${isLaunching ? 'rocket-launching' : ''}`}
       style={{
@@ -95,12 +95,12 @@ const HorizontalResultItem = React.memo<{
     >
       {isSelected && (
         <div 
-          className={`absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full ${
+          className={`absolute top-1.5 right-1.5 w-2 h-2 rounded-full ring-2 ring-white/90 shadow-sm ${
             resultStyle === "soft"
-              ? "bg-blue-500"
+              ? "bg-blue-600 shadow-blue-400/50"
               : resultStyle === "skeuomorphic"
-              ? "bg-[#6b8fc4]"
-              : "bg-indigo-500"
+              ? "bg-[#4a7fc8] shadow-[#4a7fc8]/40"
+              : "bg-indigo-600 shadow-indigo-400/50"
           }`}
         />
       )}

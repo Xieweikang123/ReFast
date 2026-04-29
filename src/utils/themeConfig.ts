@@ -38,16 +38,16 @@ export function getThemeConfig(style: ResultStyle): ThemeConfig {
     card: (selected: boolean) =>
       `group relative mx-2 my-1 px-3.5 py-2.5 rounded-lg border cursor-pointer transition-colors duration-150 ${
         selected
-          ? "bg-indigo-50 text-gray-900 border-indigo-200"
+          ? "bg-indigo-50 text-gray-900 border-indigo-400 shadow-md shadow-indigo-200/60"
           : "bg-white text-gray-800 border-gray-100 hover:bg-gray-50 hover:border-gray-200"
       }`,
     indicator: (selected: boolean) =>
-      `absolute left-0 top-2 bottom-2 w-[2px] rounded-full transition-opacity ${
-        selected ? "bg-indigo-500 opacity-100" : "bg-indigo-300 opacity-0 group-hover:opacity-70"
+      `absolute left-0 top-2 bottom-2 w-[3px] rounded-full transition-opacity ${
+        selected ? "bg-indigo-600 opacity-100 shadow-[0_0_8px_rgba(79,70,229,0.45)]" : "bg-indigo-300 opacity-0 group-hover:opacity-70"
       }`,
     indexBadge: (selected: boolean) =>
       `text-[11px] font-semibold flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
-        selected ? "bg-indigo-500 text-white" : "bg-gray-100 text-gray-500 group-hover:bg-gray-200"
+        selected ? "bg-indigo-600 text-white shadow-sm shadow-indigo-500/40" : "bg-gray-100 text-gray-500 group-hover:bg-gray-200"
       }`,
     iconWrap: (selected: boolean) =>
       `w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 overflow-hidden transition-colors duration-150 ${
@@ -70,12 +70,12 @@ export function getThemeConfig(style: ResultStyle): ThemeConfig {
     card: (selected: boolean) =>
       `group relative mx-2 my-1.5 px-4 py-3 rounded-xl border cursor-pointer transition-all duration-200 ${
         selected
-          ? "bg-gradient-to-b from-[#f3f6fb] to-[#e1e9f5] text-[#1f2a44] border-[#c6d4e8] shadow-[0_8px_18px_rgba(20,32,50,0.14)] ring-1 ring-[#d7e2f2]/70"
+          ? "bg-gradient-to-b from-[#eef3fb] to-[#d9e6f5] text-[#1f2a44] border-[#9eb8dc] shadow-[0_10px_26px_rgba(20,32,50,0.2)] ring-2 ring-[#c5d8ee]/90"
           : "bg-gradient-to-b from-[#f9fbfe] to-[#f1f5fb] text-[#222b3a] border-[#e2e8f1] shadow-[0_6px_14px_rgba(20,32,50,0.10)] hover:-translate-y-[1px] hover:shadow-[0_9px_18px_rgba(20,32,50,0.14)]"
       }`,
     indicator: (selected: boolean) =>
       `absolute left-0 top-2 bottom-2 w-[3px] rounded-full transition-opacity ${
-        selected ? "bg-[#8fb1e3] opacity-100 shadow-[0_0_0_1px_rgba(255,255,255,0.65)]" : "bg-[#c6d6ed] opacity-0 group-hover:opacity-80"
+        selected ? "bg-[#5a8ad4] opacity-100 shadow-[0_0_10px_rgba(90,138,212,0.55)]" : "bg-[#c6d6ed] opacity-0 group-hover:opacity-80"
       }`,
     indexBadge: (selected: boolean) =>
       `text-[11px] font-semibold flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all shadow-[inset_0_1px_0_rgba(255,255,255,0.8),0_2px_6px_rgba(20,32,50,0.12)] ${
@@ -104,12 +104,12 @@ export function getThemeConfig(style: ResultStyle): ThemeConfig {
     card: (selected: boolean) =>
       `group relative mx-2 my-1.5 px-4 py-3 rounded-xl cursor-pointer transition-all duration-200 ${
         selected
-          ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg shadow-blue-500/30 scale-[1.02]"
+          ? "bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-xl shadow-blue-600/45 ring-2 ring-blue-300/50 scale-[1.02]"
           : "hover:bg-gray-50 text-gray-700 hover:shadow-md"
       }`,
     indicator: (selected: boolean) =>
       `absolute left-0 top-2 bottom-2 w-1 rounded-full transition-opacity ${
-        selected ? "bg-blue-200 opacity-80" : "opacity-0"
+        selected ? "bg-white opacity-95 shadow-[0_0_6px_rgba(255,255,255,0.9)]" : "opacity-0"
       }`,
     indexBadge: (selected: boolean) =>
       `text-xs font-semibold flex-shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-all ${

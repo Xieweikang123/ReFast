@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { ReleaseNotesMarkdown } from "./ReleaseNotesMarkdown";
 import { tauriApi } from "../api/tauri";
 import type { UpdateCheckResult, DownloadProgress } from "../types";
 import { formatDateString } from "../utils/dateUtils";
@@ -261,8 +262,8 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
               {updateInfo.release_notes && (
                 <div>
                   <h5 className="text-sm font-medium text-gray-700 mb-2">更新内容:</h5>
-                  <div className="bg-white rounded-lg p-4 text-sm text-gray-700 whitespace-pre-wrap max-h-48 overflow-y-auto border border-gray-200">
-                    {updateInfo.release_notes}
+                  <div className="bg-white rounded-lg p-4 text-sm text-gray-700 max-h-48 overflow-y-auto border border-gray-200">
+                    <ReleaseNotesMarkdown markdown={updateInfo.release_notes} />
                   </div>
                 </div>
               )}

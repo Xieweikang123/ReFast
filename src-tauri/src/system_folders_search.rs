@@ -127,6 +127,73 @@ pub mod windows {
                 }
             }
 
+            // 内置常用系统工具（与开始菜单索引无关，便于搜索「环境变量」等）
+            let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+            let builtin_tools: [(&str, &str, String, bool); 6] = [
+                (
+                    "环境变量",
+                    "Environment variables",
+                    "rf-builtin:environment-variables".to_string(),
+                    false,
+                ),
+                (
+                    "高级系统设置",
+                    "Advanced system settings",
+                    "rf-builtin:system-properties-advanced".to_string(),
+                    false,
+                ),
+                (
+                    "设备管理器",
+                    "Device Manager",
+                    format!(r"{}\System32\devmgmt.msc", windir),
+                    false,
+                ),
+                (
+                    "服务",
+                    "Services",
+                    format!(r"{}\System32\services.msc", windir),
+                    false,
+                ),
+                (
+                    "网络连接",
+                    "Network connections",
+                    format!(r"{}\System32\ncpa.cpl", windir),
+                    false,
+                ),
+                (
+                    "磁盘管理",
+                    "Disk Management",
+                    format!(r"{}\System32\diskmgmt.msc", windir),
+                    false,
+                ),
+            ];
+
+            for (name_cn, name_en, path, is_folder) in builtin_tools {
+                if !path.starts_with("rf-builtin:") {
+                    let p = std::path::Path::new(&path);
+                    if !p.exists() {
+                        continue;
+                    }
+                }
+                let (name_pinyin, name_pinyin_initials) = if contains_chinese(name_cn) {
+                    (
+                        Some(to_pinyin(name_cn).to_lowercase()),
+                        Some(to_pinyin_initials(name_cn).to_lowercase()),
+                    )
+                } else {
+                    (None, None)
+                };
+                folders.push(SystemFolderItem {
+                    name: name_cn.to_string(),
+                    path,
+                    display_name: format!("{} ({})", name_cn, name_en),
+                    is_folder,
+                    icon: None,
+                    name_pinyin,
+                    name_pinyin_initials,
+                });
+            }
+
             folders
         })
     }

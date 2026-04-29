@@ -95,6 +95,84 @@ export function selectFirstVertical(
   setSelectedVerticalIndex(0);
 }
 
+/** 与 openHistory 的 key 对齐的路径匹配（见 getResultUsageInfo） */
+export function getOpenHistoryTimestamp(
+  path: string,
+  openHistory: Record<string, number>
+): number | undefined {
+  const normalized = normalizePathForHistory(path);
+  for (const [key, ts] of Object.entries(openHistory)) {
+    if (normalizePathForHistory(key) === normalized) {
+      return ts;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 在横向/纵向列表中优先选中「打开历史时间戳」最新的一项；无匹配时退回首个横向或首个纵向。
+ */
+export function pickSelectionIndicesByOpenHistory(
+  horizontal: SearchResult[],
+  vertical: SearchResult[],
+  openHistory: Record<string, number>
+): { selectedHorizontalIndex: number | null; selectedVerticalIndex: number | null } {
+  let bestTs = -1;
+  let selectedH: number | null = null;
+  let selectedV: number | null = null;
+
+  for (let i = 0; i < horizontal.length; i++) {
+    const ts = getOpenHistoryTimestamp(horizontal[i].path, openHistory);
+    if (ts !== undefined && ts > bestTs) {
+      bestTs = ts;
+      selectedH = i;
+      selectedV = null;
+    }
+  }
+  for (let i = 0; i < vertical.length; i++) {
+    const ts = getOpenHistoryTimestamp(vertical[i].path, openHistory);
+    if (ts !== undefined && ts > bestTs) {
+      bestTs = ts;
+      selectedH = null;
+      selectedV = i;
+    }
+  }
+
+  if (bestTs >= 0 && (selectedH !== null || selectedV !== null)) {
+    return {
+      selectedHorizontalIndex: selectedH,
+      selectedVerticalIndex: selectedV,
+    };
+  }
+
+  if (horizontal.length > 0) {
+    return { selectedHorizontalIndex: 0, selectedVerticalIndex: null };
+  }
+  if (vertical.length > 0) {
+    return { selectedHorizontalIndex: null, selectedVerticalIndex: 0 };
+  }
+  return { selectedHorizontalIndex: null, selectedVerticalIndex: null };
+}
+
+/**
+ * 扁平结果列表中优先选中 openHistory 时间戳最新的一项；无匹配时返回 null（由调用方决定默认行为）。
+ */
+export function findBestFlatResultIndexFromOpenHistory(
+  results: SearchResult[],
+  openHistory: Record<string, number>
+): number | null {
+  let bestIdx: number | null = null;
+  let bestTs = -1;
+  for (let i = 0; i < results.length; i++) {
+    const ts = getOpenHistoryTimestamp(results[i].path, openHistory);
+    if (ts !== undefined && ts > bestTs) {
+      bestTs = ts;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
 /**
  * Helper function to split results into horizontal and vertical
  */
@@ -419,14 +497,13 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     setVerticalResults(vertical);
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
-    // Auto-select first horizontal result if available
-    if (finalHorizontal.length > 0) {
-      setSelectedHorizontalIndex(0);
-      setSelectedVerticalIndex(null);
-    } else if (vertical.length > 0) {
-      setSelectedHorizontalIndex(null);
-      setSelectedVerticalIndex(0);
-    }
+    const sel = pickSelectionIndicesByOpenHistory(
+      finalHorizontal,
+      vertical,
+      openHistory
+    );
+    setSelectedHorizontalIndex(sel.selectedHorizontalIndex);
+    setSelectedVerticalIndex(sel.selectedVerticalIndex);
     currentLoadResultsRef.current = [];
     // 成功加载后，更新 lastLoadQueryRef 为当前查询
     // 这样下次查询变化时，检查才能正确工作
@@ -451,14 +528,13 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
     
-    // Auto-select first horizontal result if available
-    if (finalHorizontal.length > 0) {
-      setSelectedHorizontalIndex(0);
-      setSelectedVerticalIndex(null);
-    } else if (finalVertical.length > 0) {
-      setSelectedHorizontalIndex(null);
-      setSelectedVerticalIndex(0);
-    }
+    const selInitial = pickSelectionIndicesByOpenHistory(
+      finalHorizontal,
+      finalVertical,
+      openHistory
+    );
+    setSelectedHorizontalIndex(selInitial.selectedHorizontalIndex);
+    setSelectedVerticalIndex(selInitial.selectedVerticalIndex);
   }
 
   // 逐步加载更多结果

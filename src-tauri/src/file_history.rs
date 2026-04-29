@@ -692,6 +692,38 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             ShellExecuteExW, SHELLEXECUTEINFOW, SHELLEXECUTEINFOW_0,
         };
         
+        // 启动器内置：环境变量等（路径为 rf-builtin:…，无法用单一路径 ShellExecute）
+        if let Some(rest) = trimmed.strip_prefix("rf-builtin:") {
+            use std::process::Command;
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            match rest {
+                "environment-variables" => {
+                    Command::new("rundll32.exe")
+                        .arg("sysdm.cpl,EditEnvironmentVariables")
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn()
+                        .map_err(|e| {
+                            format!("Failed to open environment variables dialog: {}", e)
+                        })?;
+                    return Ok(());
+                }
+                "system-properties-advanced" => {
+                    use std::env;
+                    let windir = env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+                    let exe = format!(r"{}\System32\SystemPropertiesAdvanced.exe", windir);
+                    Command::new(exe)
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn()
+                        .map_err(|e| format!("Failed to open System Properties (Advanced): {}", e))?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(format!("Unknown builtin action: {}", trimmed));
+                }
+            }
+        }
+
         // Special handling for control command (traditional Control Panel)
         if trimmed == "control" {
             use std::process::Command;
@@ -751,6 +783,34 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             .encode_wide()
             .chain(Some(0))
             .collect();
+
+        // 与资源管理器双击一致：批处理 CWD 为脚本目录；exe/com 的「起始位置」为可执行文件所在目录（影响部分程序相对路径）
+        let mut directory_wide: Option<Vec<u16>> = None;
+        let lp_directory = if !is_clsid_path {
+            let pb = PathBuf::from(&path_str);
+            if let (Some(ext), Some(parent)) = (
+                pb.extension().and_then(|s| s.to_str()),
+                pb.parent(),
+            ) {
+                let e = ext.to_lowercase();
+                if e == "bat" || e == "cmd" || e == "exe" || e == "com" {
+                    let v: Vec<u16> = parent
+                        .as_os_str()
+                        .encode_wide()
+                        .chain(Some(0))
+                        .collect();
+                    let p = v.as_ptr();
+                    directory_wide = Some(v);
+                    p
+                } else {
+                    std::ptr::null()
+                }
+            } else {
+                std::ptr::null()
+            }
+        } else {
+            std::ptr::null()
+        };
         
         // Use ShellExecuteExW for better error handling and control
         // This provides more detailed error information than ShellExecuteW
@@ -761,7 +821,7 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             lpVerb: std::ptr::null(), // NULL means "open"
             lpFile: path_wide.as_ptr(),
             lpParameters: std::ptr::null(),
-            lpDirectory: std::ptr::null(),
+            lpDirectory: lp_directory,
             nShow: 1, // SW_SHOWNORMAL
             hInstApp: 0,
             lpIDList: std::ptr::null_mut(),
