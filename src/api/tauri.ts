@@ -400,8 +400,14 @@ export const tauriApi = {
     return invoke("show_plugin_list_window");
   },
 
-  async showJsonFormatterWindow(): Promise<void> {
-    return invoke("show_json_formatter_window");
+  async showJsonFormatterWindow(content?: string): Promise<void> {
+    return invoke("show_json_formatter_window", {
+      content: content ?? null,
+    });
+  },
+
+  async takeJsonFormatterContent(): Promise<string | null> {
+    return invoke("take_json_formatter_content");
   },
 
   async showMarkdownEditorWindow(): Promise<void> {
@@ -436,8 +442,14 @@ export const tauriApi = {
     return invoke("show_file_toolbox_window");
   },
 
-  async showCalculatorPadWindow(): Promise<void> {
-    return invoke("show_calculator_pad_window");
+  async showCalculatorPadWindow(expression?: string): Promise<void> {
+    return invoke("show_calculator_pad_window", {
+      expression: expression ?? null,
+    });
+  },
+
+  async takeCalculatorPadExpression(): Promise<string | null> {
+    return invoke("take_calculator_pad_expression");
   },
 
   async showEverythingSearchWindow(): Promise<void> {

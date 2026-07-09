@@ -7,11 +7,14 @@ import { CalculatorPadWindow } from "../CalculatorPadWindow";
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: vi.fn(() => ({
     close: vi.fn(),
+    onFocusChanged: vi.fn(() => Promise.resolve(() => {})),
   })),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(() => Promise.resolve(() => {})),
+vi.mock("../../api/tauri", () => ({
+  tauriApi: {
+    takeCalculatorPadExpression: vi.fn(() => Promise.resolve(null)),
+  },
 }));
 
 vi.mock("../../hooks/useEscapeKey", () => ({

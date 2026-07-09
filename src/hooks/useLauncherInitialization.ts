@@ -41,7 +41,6 @@ export interface LauncherInitializationOptions {
   setEverythingDownloadProgress: (progress: number) => void;
   
   // Refs
-  pendingJsonContentRef: React.MutableRefObject<string | null>;
   allAppsCacheRef: React.MutableRefObject<AppInfo[]>;
   allAppsCacheLoadedRef: React.MutableRefObject<boolean>;
   allFileHistoryCacheRef: React.MutableRefObject<FileHistoryItem[]>;
@@ -79,7 +78,6 @@ export function useLauncherInitialization(
     setUrlRemarks,
     setApps,
     setEverythingDownloadProgress,
-    pendingJsonContentRef,
     allAppsCacheRef,
     allAppsCacheLoadedRef,
     allFileHistoryCacheRef,
@@ -130,40 +128,6 @@ export function useLauncherInitialization(
       unlisten.then((fn) => fn());
     };
   }, [setOllamaSettings, setResultStyle, setCloseOnBlur, setSearchEngines, closeOnBlurRef]);
-
-  // 监听 JSON 查看器窗口准备好事件，发送待处理的内容
-  useEffect(() => {
-    let unlistenFn: (() => void) | null = null;
-
-    const setupListener = async () => {
-      try {
-        unlistenFn = await listen("json-formatter:ready", async () => {
-          // 窗口已准备好，发送待处理的内容
-          if (pendingJsonContentRef.current) {
-            const content = pendingJsonContentRef.current;
-            pendingJsonContentRef.current = null; // 清空待处理内容
-
-            try {
-              const { emit } = await import("@tauri-apps/api/event");
-              await emit("json-formatter:set-content", content);
-            } catch (error) {
-              console.error("Failed to send JSON content to formatter window:", error);
-            }
-          }
-        });
-      } catch (error) {
-        console.error("Failed to setup JSON formatter ready listener:", error);
-      }
-    };
-
-    setupListener();
-
-    return () => {
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
-  }, [pendingJsonContentRef]);
 
   // Check if Everything is available on mount and periodically if not available
   useEffect(() => {

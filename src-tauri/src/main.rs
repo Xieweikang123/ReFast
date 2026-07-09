@@ -768,6 +768,7 @@ fn main() {
             show_memo_window,
             show_plugin_list_window,
             show_json_formatter_window,
+            take_json_formatter_content,
             show_markdown_editor_window,
             show_translation_window,
             show_hex_converter_window,
@@ -775,6 +776,7 @@ fn main() {
             // pick_color_from_screen,     // 暂时屏蔽，待优化
             show_file_toolbox_window,
             show_calculator_pad_window,
+            take_calculator_pad_expression,
             show_everything_search_window,
             preview_file_replace,
             execute_file_replace,

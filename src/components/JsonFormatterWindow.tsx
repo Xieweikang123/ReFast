@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { tauriApi } from "../api/tauri";
 import Editor from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { useEscapeKey } from "../hooks/useEscapeKey";
@@ -57,59 +57,44 @@ export function JsonFormatterWindow() {
     }
   }, []);
 
-  // 发送就绪信号的函数
-  const sendReadySignal = useCallback(async () => {
+  const pullPendingContent = useCallback(async () => {
     try {
-      const { emit } = await import("@tauri-apps/api/event");
-      await emit("json-formatter:ready");
+      const content = await tauriApi.takeJsonFormatterContent();
+      if (content?.trim()) {
+        handleJsonContent(content);
+      }
     } catch (error) {
-      console.error("Failed to emit ready signal:", error);
+      console.error("Failed to take JSON formatter content:", error);
     }
-  }, []);
+  }, [handleJsonContent]);
 
-  // 监听来自启动器的 JSON 内容设置事件
+  // 从后端拉取待填入的 JSON 内容（mount 与窗口聚焦时）
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
     let unlistenFocus: (() => void) | null = null;
 
-    const setupListener = async () => {
+    const setup = async () => {
+      await pullPendingContent();
+
       try {
         const window = getCurrentWindow();
-        
-        // 监听内容设置事件
-        unlisten = await listen<string>("json-formatter:set-content", (event) => {
-          handleJsonContent(event.payload);
-        });
-        
-        // 监听窗口聚焦事件，当窗口显示时发送就绪信号
         unlistenFocus = await window.onFocusChanged(async ({ payload: focused }) => {
           if (focused) {
-            // 窗口获得焦点时，发送就绪信号
-            await sendReadySignal();
+            await pullPendingContent();
           }
         });
-        
-        // 组件挂载后，发送就绪信号，通知启动器窗口已准备好接收内容
-        // 延迟一小段时间确保监听器已完全设置好
-        setTimeout(() => {
-          sendReadySignal();
-        }, 100);
       } catch (error) {
-        console.error("Failed to setup JSON formatter event listener:", error);
+        console.error("Failed to setup JSON formatter focus listener:", error);
       }
     };
 
-    setupListener();
+    setup();
 
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
       if (unlistenFocus) {
         unlistenFocus();
       }
     };
-  }, [handleJsonContent, sendReadySignal]);
+  }, [pullPendingContent]);
 
   // 格式化输入的 JSON 内容
   const formatJsonContent = (content: string, preserveCursor: boolean = false) => {

@@ -112,8 +112,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   // 备忘录中心当前是否为“列表模式”（true=列表，false=单条查看/编辑）
   const [isMemoListMode, setIsMemoListMode] = useState(true);
   const [filteredPlugins, setFilteredPlugins] = useState<Array<{ id: string; name: string; description?: string }>>([]);
-  // 待发送到 JSON 查看器的内容队列
-  const pendingJsonContentRef = useRef<string | null>(null);
   const [isPluginListModalOpen, setIsPluginListModalOpen] = useState(false);
   /** 打开应用中心内「应用索引列表」时预填的同名搜索词 */
   const [openAppIndexWithSearch, setOpenAppIndexWithSearch] = useState<string | null>(null);
@@ -1195,7 +1193,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setUrlRemarks,
     setApps,
     setEverythingDownloadProgress,
-    pendingJsonContentRef,
     allAppsCacheRef,
     allAppsCacheLoadedRef,
     allFileHistoryCacheRef,
@@ -1413,7 +1410,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           setIsPluginListModalOpen,
         allFileHistoryCacheRef,
         allFileHistoryCacheLoadedRef,
-        pendingJsonContentRef,
         hideLauncherAndResetState,
         refreshFileHistoryCache,
         searchFileHistoryWrapper,
@@ -1434,7 +1430,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setContextMenu,
       allFileHistoryCacheRef,
       allFileHistoryCacheLoadedRef,
-      pendingJsonContentRef,
       tauriApi,
     ]
   );

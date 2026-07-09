@@ -48,6 +48,12 @@ use tauri::{async_runtime, Emitter, Manager};
 pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Arc<Vec<app_search::AppInfo>>>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
+static CALCULATOR_PAD_PENDING_EXPRESSION: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+static JSON_FORMATTER_PENDING_CONTENT: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 // 搜索任务管理器：管理 Everything 搜索的取消标志
 // 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
 struct SearchTaskManager {
@@ -4184,8 +4190,20 @@ pub async fn show_plugin_list_window(app: tauri::AppHandle) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_json_formatter_window(
+    app: tauri::AppHandle,
+    content: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
+
+    if let Some(json_content) = content {
+        let trimmed = json_content.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut pending) = JSON_FORMATTER_PENDING_CONTENT.lock() {
+                *pending = Some(trimmed.to_string());
+            }
+        }
+    }
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("json-formatter-window") {
@@ -4210,6 +4228,14 @@ pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn take_json_formatter_content() -> Option<String> {
+    JSON_FORMATTER_PENDING_CONTENT
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]
@@ -4339,8 +4365,20 @@ pub async fn show_file_toolbox_window(app: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub async fn show_calculator_pad_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_calculator_pad_window(
+    app: tauri::AppHandle,
+    expression: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
+
+    if let Some(expr) = expression {
+        let trimmed = expr.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut pending) = CALCULATOR_PAD_PENDING_EXPRESSION.lock() {
+                *pending = Some(trimmed.to_string());
+            }
+        }
+    }
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("calculator-pad-window") {
@@ -4365,6 +4403,14 @@ pub async fn show_calculator_pad_window(app: tauri::AppHandle) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn take_calculator_pad_expression() -> Option<String> {
+    CALCULATOR_PAD_PENDING_EXPRESSION
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]

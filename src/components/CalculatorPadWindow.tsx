@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { listen } from "@tauri-apps/api/event";
+import { tauriApi } from "../api/tauri";
 // 导入 mathjs 并配置高精度
 import { create, all } from "mathjs";
 import { useEscapeKey } from "../hooks/useEscapeKey";
@@ -95,6 +95,48 @@ export function CalculatorPadWindow() {
   const [_focusedLineId, setFocusedLineId] = useState<string>("1");
   const inputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
+  const applyExpression = useCallback((expression: string) => {
+    const trimmed = expression.trim();
+    if (!trimmed) return;
+
+    setLines((prevLines) => {
+      const newLines = [...prevLines];
+      if (newLines.length > 0) {
+        newLines[0] = {
+          ...newLines[0],
+          expression: trimmed,
+        };
+      } else {
+        newLines.push({
+          id: "1",
+          expression: trimmed,
+          result: null,
+          error: null,
+        });
+      }
+      return newLines;
+    });
+
+    setTimeout(() => {
+      const firstInput = inputRefs.current.get("1");
+      if (firstInput) {
+        firstInput.focus();
+        firstInput.setSelectionRange(firstInput.value.length, firstInput.value.length);
+      }
+    }, 100);
+  }, []);
+
+  const pullPendingExpression = useCallback(async () => {
+    try {
+      const expression = await tauriApi.takeCalculatorPadExpression();
+      if (expression?.trim()) {
+        applyExpression(expression);
+      }
+    } catch (error) {
+      console.error("Failed to take calculator pad expression:", error);
+    }
+  }, [applyExpression]);
+
   // 组件首次挂载时自动聚焦到第一行输入框
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -109,58 +151,33 @@ export function CalculatorPadWindow() {
     };
   }, []);
 
-  // 监听来自启动器的表达式设置事件
+  // 从后端拉取待填入的表达式（mount 与窗口聚焦时）
   useEffect(() => {
-    let unlisten: (() => void) | null = null;
+    let unlistenFocus: (() => void) | null = null;
 
-    const setupListener = async () => {
+    const setup = async () => {
+      await pullPendingExpression();
+
       try {
-        unlisten = await listen<string>("calculator-pad:set-expression", (event) => {
-          const expression = event.payload;
-          if (expression && expression.trim()) {
-            // 将表达式设置到第一行
-            setLines((prevLines) => {
-              const newLines = [...prevLines];
-              if (newLines.length > 0) {
-                newLines[0] = {
-                  ...newLines[0],
-                  expression: expression.trim(),
-                };
-              } else {
-                newLines.push({
-                  id: "1",
-                  expression: expression.trim(),
-                  result: null,
-                  error: null,
-                });
-              }
-              return newLines;
-            });
-            
-            // 聚焦到第一行输入框
-            setTimeout(() => {
-              const firstInput = inputRefs.current.get("1");
-              if (firstInput) {
-                firstInput.focus();
-                // 将光标移到末尾
-                firstInput.setSelectionRange(firstInput.value.length, firstInput.value.length);
-              }
-            }, 100);
+        const window = getCurrentWindow();
+        unlistenFocus = await window.onFocusChanged(async ({ payload: focused }) => {
+          if (focused) {
+            await pullPendingExpression();
           }
         });
       } catch (error) {
-        console.error("Failed to setup calculator pad event listener:", error);
+        console.error("Failed to setup calculator pad focus listener:", error);
       }
     };
 
-    setupListener();
+    setup();
 
     return () => {
-      if (unlisten) {
-        unlisten();
+      if (unlistenFocus) {
+        unlistenFocus();
       }
     };
-  }, []);
+  }, [pullPendingExpression]);
 
   // 计算所有行的结果
   // 使用 useMemo 来跟踪表达式变化，避免无限循环
