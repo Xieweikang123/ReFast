@@ -5,7 +5,8 @@
 
 import React, { useState, useEffect } from "react";
 import { ResultIcon } from "./ResultIcon";
-import { highlightText, formatLastUsedTime } from "../utils/launcherUtils";
+import { highlightText, formatLastUsedTime, isLnkPath } from "../utils/launcherUtils";
+import { getAppResultTooltip, useLnkTargetTooltip } from "../hooks/useLnkTargetTooltip";
 import type { SearchResult } from "../utils/resultUtils";
 import type { AppInfo } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
@@ -52,12 +53,12 @@ const HorizontalResultItem = React.memo<{
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   isStable?: boolean;
 }>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isStable = true }) => {
-  const itemRef = React.useRef<HTMLDivElement | null>(null);
+  const { resolvedTarget } = useLnkTargetTooltip(result.path);
 
   return (
     <div
-      ref={itemRef}
       key={`executable-${result.path}-${index}`}
+      title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -92,7 +93,6 @@ const HorizontalResultItem = React.memo<{
         transition: 'opacity 0.2s ease-in-out',
         pointerEvents: !isStable ? 'none' : 'auto',
       } as React.CSSProperties}
-      title={result.type === "app" ? result.path : undefined}
     >
       {isSelected && (
         <div 
@@ -189,6 +189,10 @@ const VerticalResultItem = React.memo<{
   onSaveImageToDownloads,
 }) => {
   const [isMac, setIsMac] = useState(false);
+  const isLnk = isLnkPath(result.path);
+  const { resolvedTarget, isLoading } = useLnkTargetTooltip(result.path);
+  const displayPath =
+    isLnk && resolvedTarget ? resolvedTarget : result.path;
 
   useEffect(() => {
     isMacOS().then(setIsMac);
@@ -198,6 +202,7 @@ const VerticalResultItem = React.memo<{
     <div
       key={`${result.type}-${result.path}-${index}`}
       data-item-key={`${result.type}-${result.path}-${index}`}
+      title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
         if (e.button !== 0) return;
         e.preventDefault();
@@ -215,7 +220,6 @@ const VerticalResultItem = React.memo<{
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
           : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`,
       }}
-      title={result.type === "app" ? result.path : undefined}
     >
       <div className={theme.indicator(isSelected)} />
       <div className="flex items-center gap-3">
@@ -253,10 +257,25 @@ const VerticalResultItem = React.memo<{
             </div>
           )}
           {result.path && result.type !== "memo" && result.type !== "history" && result.type !== "ai" && (
-            <div
-              className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
-              dangerouslySetInnerHTML={{ __html: highlightText(result.path, query) }}
-            />
+            <>
+              <div
+                className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
+                dangerouslySetInnerHTML={{ __html: highlightText(displayPath, query) }}
+              />
+              {isLnk && isLoading && !resolvedTarget && (
+                <div className={`text-xs mt-0.5 ${theme.metaText(isSelected)}`}>
+                  正在解析目标路径...
+                </div>
+              )}
+              {isLnk && resolvedTarget && resolvedTarget !== result.path && (
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${theme.metaText(isSelected)}`}
+                  title={result.path}
+                >
+                  快捷方式：{result.path}
+                </div>
+              )}
+            </>
           )}
           {result.type === "memo" && result.memo && (
             <div
@@ -447,10 +466,10 @@ export const ResultList = React.memo<ResultListProps>(({
       <>
         {/* 可执行文件和插件横向排列在第一行 */}
         {horizontalResults.length > 0 && (
-          <div className="px-4 py-3 mb-2 border-b border-gray-200">
+          <div className="px-4 pt-3 pb-1 mb-2 border-b border-gray-200">
             <div
               ref={horizontalScrollContainerRef}
-              className="flex gap-3 pb-2 executable-scroll-container"
+              className="flex gap-3 executable-scroll-container"
             >
               {horizontalResults.map((result, execIndex) => (
                 <HorizontalResultItem

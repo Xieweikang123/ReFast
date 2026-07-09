@@ -27,30 +27,6 @@ pub mod windows {
     use std::os::windows::process::CommandExt;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // #region agent log helper
-    fn agent_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64;
-        let payload = serde_json::json!({
-            "sessionId": "debug-session",
-            "runId": "run1",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": timestamp
-        });
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("d:\\project\\re-fast\\.cursor\\debug.log")
-        {
-            let _ = writeln!(file, "{}", payload.to_string());
-        }
-    }
-    // #endregion agent log helper
     
     // Icon extraction failure marker
     // Use a special marker string to indicate that icon extraction was attempted but failed
@@ -752,16 +728,6 @@ pub mod windows {
         if stdout_trimmed.is_empty() {
             let stderr_str = String::from_utf8_lossy(&output.stderr);
             crate::log!("AppScan", "[UWP] PowerShell 返回空输出");
-            // #region agent log - empty stdout
-            agent_log(
-                "H1",
-                "app_search.rs:scan_uwp_apps_direct:empty_stdout",
-                "powershell stdout empty",
-                serde_json::json!({
-                    "stderr_preview": stderr_str,
-                }),
-            );
-            // #endregion
             return Err(format!("PowerShell Get-StartApps returned empty output, stderr: {}", stderr_str));
         }
 
@@ -795,22 +761,10 @@ pub mod windows {
                 Ok(bytes) => match String::from_utf8(bytes) {
                     Ok(s) => s,
                     Err(e) => {
-                        agent_log(
-                            "H2",
-                            "app_search.rs:scan_uwp_apps_direct:b64_utf8_error",
-                            "base64 decoded but utf8 failed",
-                            serde_json::json!({"error": e.to_string()}),
-                        );
                         return Err(format!("Failed to decode UTF-8 JSON from base64: {}", e));
                     }
                 },
                 Err(e) => {
-                    agent_log(
-                        "H2",
-                        "app_search.rs:scan_uwp_apps_direct:b64_decode_error",
-                        "base64 decode failed",
-                        serde_json::json!({"error": e.to_string()}),
-                    );
                     return Err(format!("Failed to decode Base64 payload: {}", e));
                 }
             }
@@ -849,17 +803,6 @@ pub mod windows {
         let entries: Vec<StartAppEntry> = match serde_json::from_str::<Vec<StartAppEntry>>(&decoded_json) {
             Ok(entries) => entries,
             Err(e) => {
-                // #region agent log - json parse error
-                agent_log(
-                    "H2",
-                    "app_search.rs:scan_uwp_apps_direct:json_parse_error",
-                    "failed to parse JSON",
-                    serde_json::json!({
-                        "error": e.to_string(),
-                        "stdout_preview": preview,
-                    }),
-                );
-                // #endregion
                 // Try parsing as single object
                 match serde_json::from_str::<StartAppEntry>(&decoded_json) {
                     Ok(entry) => vec![entry],
@@ -873,22 +816,6 @@ pub mod windows {
         let json_parse_duration = json_parse_start.elapsed();
         crate::log!("AppScan", "[UWP] JSON 解析成功，找到 {} 个条目 (耗时 {}ms)", entries.len(), json_parse_duration.as_millis());
 
-        // #region agent log - json parsed
-        let sample: Vec<_> = entries
-            .iter()
-            .take(5)
-            .map(|e| serde_json::json!({"name": e.name, "app_id": e.app_id}))
-            .collect();
-        agent_log(
-            "H2",
-            "app_search.rs:scan_uwp_apps_direct:json_parsed",
-            "parsed entries",
-            serde_json::json!({
-                "entries_len": entries.len(),
-                "sample": sample,
-            }),
-        );
-        // #endregion
 
         crate::log!("AppScan", "[UWP] 开始处理 {} 个应用条目...", entries.len());
         let mut apps = Vec::with_capacity(entries.len());
@@ -2860,6 +2787,102 @@ try {
         
         None
     }
+
+    /// 直接从 .lnk 二进制格式读取目标路径（不依赖 PowerShell/COM）
+    fn get_lnk_target_path_binary(lnk_path: &Path) -> Option<String> {
+        use std::fs::File;
+        use std::io::{Read, Seek, SeekFrom};
+
+        let mut file = File::open(lnk_path).ok()?;
+        let mut header = [0u8; 76];
+        file.read_exact(&mut header).ok()?;
+        if u32::from_le_bytes([header[0], header[1], header[2], header[3]]) != 0x0000004C {
+            return None;
+        }
+
+        let link_flags = u32::from_le_bytes([header[20], header[21], header[22], header[23]]);
+        let mut offset: u64 = 76;
+
+        if link_flags & 0x01 != 0 {
+            let mut idlist_size_buf = [0u8; 2];
+            file.seek(SeekFrom::Start(offset)).ok()?;
+            file.read_exact(&mut idlist_size_buf).ok()?;
+            let idlist_size = u16::from_le_bytes(idlist_size_buf) as u64;
+            offset += 2 + idlist_size;
+        }
+
+        let mut target_path: Option<String> = None;
+        let linkinfo_start_offset = offset;
+        if link_flags & 0x02 != 0 {
+            file.seek(SeekFrom::Start(offset)).ok()?;
+            let mut linkinfo_size_buf = [0u8; 4];
+            file.read_exact(&mut linkinfo_size_buf).ok()?;
+            let linkinfo_size = u32::from_le_bytes(linkinfo_size_buf) as u64;
+
+            if linkinfo_size >= 28 {
+                let mut linkinfo_header = [0u8; 24];
+                if file.read_exact(&mut linkinfo_header).is_ok() {
+                    let local_base_path_offset = u32::from_le_bytes([
+                        linkinfo_header[12],
+                        linkinfo_header[13],
+                        linkinfo_header[14],
+                        linkinfo_header[15],
+                    ]);
+                    let common_path_suffix_offset = u32::from_le_bytes([
+                        linkinfo_header[20],
+                        linkinfo_header[21],
+                        linkinfo_header[22],
+                        linkinfo_header[23],
+                    ]);
+
+                    if local_base_path_offset > 0 && (local_base_path_offset as u64) < linkinfo_size {
+                        let path_offset = linkinfo_start_offset + local_base_path_offset as u64;
+                        if file.seek(SeekFrom::Start(path_offset)).is_ok() {
+                            if let Some(local_path) = read_null_terminated_string_ansi(&mut file) {
+                                let mut full_path = local_path;
+                                if common_path_suffix_offset > 0
+                                    && (common_path_suffix_offset as u64) < linkinfo_size
+                                {
+                                    let suffix_offset =
+                                        linkinfo_start_offset + common_path_suffix_offset as u64;
+                                    if file.seek(SeekFrom::Start(suffix_offset)).is_ok() {
+                                        if let Some(suffix) =
+                                            read_null_terminated_string_ansi(&mut file)
+                                        {
+                                            full_path.push_str(&suffix);
+                                        }
+                                    }
+                                }
+                                target_path = Some(full_path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            offset += linkinfo_size;
+        }
+
+        if target_path.is_none() && link_flags & 0x02 == 0 {
+            if file.seek(SeekFrom::Start(offset)).is_ok() {
+                if link_flags & 0x04 != 0 {
+                    let _ = read_length_prefixed_string_utf16(&mut file);
+                }
+                if link_flags & 0x20 != 0 {
+                    let _ = read_length_prefixed_string_utf16(&mut file);
+                }
+                if link_flags & 0x10 != 0 {
+                    let _ = read_length_prefixed_string_utf16(&mut file);
+                }
+                target_path = read_length_prefixed_string_utf16(&mut file);
+            }
+        }
+
+        target_path.map(|path| {
+            let expanded = expand_env_path(&path);
+            expand_known_folder_guid(&expanded)
+        })
+    }
     
     // 辅助函数：从文件中读取带长度前缀的 UTF-16 字符串（StringData 格式）
     // StringData 格式：CountCharacters (2 bytes) + String (CountCharacters * 2 bytes)
@@ -3391,6 +3414,62 @@ public class IconExtractor {
             name_pinyin,
             name_pinyin_initials,
         })
+    }
+
+    /// 解析 .lnk 快捷方式的目标路径（Recent 等带 LinkInfo 的快捷方式走 PowerShell）
+    pub fn resolve_lnk_target(lnk_path: &Path) -> Result<String, String> {
+
+        if !lnk_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(false)
+        {
+            return Err("Not a .lnk file".to_string());
+        }
+
+        let lnk_lower = lnk_path.to_string_lossy().to_lowercase();
+        let _is_recent = lnk_lower.contains("\\recent\\") || lnk_lower.contains("/recent/");
+
+        if let Some(target) = get_lnk_target_path_binary(lnk_path) {
+            let trimmed = target.trim();
+            if is_valid_lnk_target(lnk_path, trimmed) {
+                return Ok(trimmed.to_string());
+            }
+        }
+
+        if !_is_recent {
+            if let Some((_, Some(target))) = get_lnk_all_paths(lnk_path) {
+                let trimmed = target.trim();
+                if is_valid_lnk_target(lnk_path, trimmed) {
+                    return Ok(trimmed.to_string());
+                }
+            }
+        }
+
+
+        match parse_lnk_file(lnk_path) {
+            Ok(info) => {
+                Ok(info.path)
+            }
+            Err(err) => {
+                Err(err)
+            }
+        }
+    }
+
+    fn is_valid_lnk_target(lnk_path: &Path, target: &str) -> bool {
+        if target.is_empty() {
+            return false;
+        }
+        if Path::new(target) == lnk_path {
+            return false;
+        }
+        Path::new(target)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| !s.eq_ignore_ascii_case("lnk"))
+            .unwrap_or(true)
     }
 
     // Convert Chinese characters to pinyin (full pinyin)
@@ -4250,6 +4329,10 @@ pub mod windows {
     }
 
     pub fn parse_lnk_file(_lnk_path: &Path) -> Result<AppInfo, String> {
+        Err("LNK files are not supported on macOS".to_string())
+    }
+
+    pub fn resolve_lnk_target(_lnk_path: &Path) -> Result<String, String> {
         Err("LNK files are not supported on macOS".to_string())
     }
 

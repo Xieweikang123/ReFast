@@ -37,6 +37,7 @@ export const tauriApi = {
     }) as AppInfo,
   debugAppIcon: async () => "",
   extractIconFromPath: async () => null as string | null,
+  resolveLnkTarget: async (lnkPath: string) => lnkPath,
   testAllIconExtractionMethods: async () => [] as Array<[string, string | null]>,
 
   // Launcher APIs

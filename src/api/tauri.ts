@@ -102,6 +102,10 @@ export const tauriApi = {
     return invoke("extract_icon_from_path", { filePath });
   },
 
+  async resolveLnkTarget(lnkPath: string): Promise<string> {
+    return invoke("resolve_lnk_target", { lnkPath });
+  },
+
   async testAllIconExtractionMethods(filePath: string): Promise<Array<[string, string | null]>> {
     return invoke("test_all_icon_extraction_methods", { filePath });
   },

@@ -699,6 +699,7 @@ fn main() {
             add_app_to_index,
             debug_app_icon,
             extract_icon_from_path,
+            resolve_lnk_target,
             test_all_icon_extraction_methods,
             toggle_launcher,
             hide_launcher,

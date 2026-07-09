@@ -8,6 +8,8 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { AppInfo } from "../types";
 import type { SearchResult } from "./resultUtils";
 import { tauriApi } from "../api/tauri";
+import { isLnkPath } from "./launcherUtils";
+import { getRevealPath } from "../hooks/useLnkTargetTooltip";
 
 function normalizePathForCompare(path: string): string {
   return path.toLowerCase().replace(/\//g, "\\");
@@ -122,8 +124,11 @@ export async function revealInFolder(
   if (!contextMenu) return;
 
   try {
-    const target = contextMenu.result;
-    const path = target.path;
+    let target = contextMenu.result;
+    let path = isLnkPath(target.path)
+      ? await getRevealPath(target.path)
+      : target.path;
+
     console.log("Revealing in folder:", path);
     // 为应用、文件和 Everything 结果都提供"打开所在文件夹"
     if (
