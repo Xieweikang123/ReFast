@@ -110,10 +110,10 @@ export function SearchResultArea({
   );
 
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex flex-col flex-shrink-0">
       {showAiAnswer ? (
         // AI 回答模式
-        <div className="flex-1 overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
+        <div className="overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
           <div className="px-6 py-4">
             {isAiLoading && !aiAnswer ? (
               // 只在完全没有内容时显示加载状态
@@ -263,7 +263,7 @@ export function SearchResultArea({
         // 骨架屏：搜索中时显示，模拟结果列表样式
         <div
           ref={listRef}
-          className="flex-1 min-h-0 results-list-scroll"
+          className="min-h-0 results-list-scroll"
           style={{ maxHeight: '500px' }}
         >
           {Array.from({ length: 8 }).map((_, index) => {
@@ -299,7 +299,7 @@ export function SearchResultArea({
           })}
         </div>
       ) : results.length > 0 ? (
-        <div className="relative flex-1 min-h-0 flex flex-col">
+        <div className="relative flex flex-col">
           {isSearching && renderSearchStatusBanner()}
           <ResultList
             horizontalResults={horizontalResults}
@@ -327,14 +327,14 @@ export function SearchResultArea({
 
       {/* Loading or Empty State */}
       {!showAiAnswer && results.length === 0 && query && !isSearching && (
-        <div className="px-6 py-8 text-center text-gray-500 flex-1 flex items-center justify-center">
+        <div className="px-6 py-8 text-center text-gray-500">
           未找到匹配的应用或文件
         </div>
       )}
 
       {!showAiAnswer && results.length === 0 && query && isSearching && (
-        <div className="px-6 py-8 text-center text-gray-500 flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3 max-w-sm">
+        <div className="px-6 py-8 text-center text-gray-500">
+          <div className="flex flex-col items-center gap-3 max-w-sm mx-auto">
             <div className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-blue-500" />
             <div className="text-sm font-medium text-gray-700">{searchStatus.primary}</div>
             {searchStatus.items.length > 0 && (
@@ -412,7 +412,7 @@ export function SearchResultArea({
       )}
 
       {!showAiAnswer && results.length === 0 && !query && (
-        <div className="px-6 py-8 text-center text-gray-400 text-sm flex-1 flex items-center justify-center">
+        <div className="px-6 py-8 text-center text-gray-400 text-sm">
           输入关键词搜索应用，或粘贴文件路径
         </div>
       )}

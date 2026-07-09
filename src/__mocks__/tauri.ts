@@ -107,6 +107,10 @@ export const tauriApi = {
   showPluginListWindow: async () => {},
   showJsonFormatterWindow: async () => {},
   takeJsonFormatterContent: async () => null as string | null,
+  getJsonFormatterRecentEntries: async () =>
+    [] as Array<{ id: string; preview: string; content: string; lastOpened: number }>,
+  addJsonFormatterRecentEntry: async () => {},
+  removeJsonFormatterRecentEntry: async () => {},
   showFileToolboxWindow: async () => {},
   showCalculatorPadWindow: async () => {},
   takeCalculatorPadExpression: async () => null as string | null,

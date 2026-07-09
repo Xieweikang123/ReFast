@@ -477,7 +477,7 @@ export const ResultList = React.memo<ResultListProps>(({
   return (
     <div
       ref={listRef}
-      className="flex-1 min-h-0 results-list-scroll py-2"
+      className="min-h-0 results-list-scroll py-2"
       style={{ maxHeight: '500px' }}
     >
       <>

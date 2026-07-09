@@ -410,6 +410,20 @@ export const tauriApi = {
     return invoke("take_json_formatter_content");
   },
 
+  async getJsonFormatterRecentEntries(): Promise<
+    Array<{ id: string; preview: string; content: string; lastOpened: number }>
+  > {
+    return invoke("get_json_formatter_recent_entries");
+  },
+
+  async addJsonFormatterRecentEntry(content: string): Promise<void> {
+    return invoke("add_json_formatter_recent_entry", { content });
+  },
+
+  async removeJsonFormatterRecentEntry(id: string): Promise<void> {
+    return invoke("remove_json_formatter_recent_entry", { id });
+  },
+
   async showMarkdownEditorWindow(): Promise<void> {
     return invoke("show_markdown_editor_window");
   },

@@ -25,6 +25,7 @@ mod window_config;
 mod clipboard;
 mod word_records;
 mod file_watcher;
+mod json_formatter_recent;
 mod markdown_recent_files;
 
 use crate::commands::get_app_data_dir;
@@ -596,9 +597,11 @@ fn main() {
             std::thread::spawn(move || {
                 open_history::load_history(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
                 markdown_recent_files::load_recent_files(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
+                json_formatter_recent::load_recent_entries(&app_data_dir_clone).ok();
             });
             open_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             markdown_recent_files::load_recent_files(&app_data_dir).ok(); // Ignore errors if file doesn't exist
+            json_formatter_recent::load_recent_entries(&app_data_dir).ok();
             shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist
 
             // Sync startup setting on Windows
@@ -791,6 +794,9 @@ fn main() {
             add_markdown_recent_file,
             add_markdown_recent_file_with_content,
             remove_markdown_recent_file,
+            get_json_formatter_recent_entries,
+            add_json_formatter_recent_entry,
+            remove_json_formatter_recent_entry,
             get_settings,
             save_settings,
             get_everything_custom_filters,

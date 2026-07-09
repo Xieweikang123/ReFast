@@ -5,6 +5,12 @@ import Editor from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { useEscapeKey } from "../hooks/useEscapeKey";
 import { useWindowClose } from "../hooks/useWindowClose";
+import {
+  addRecentJsonEntry,
+  getRecentJsonEntries,
+  removeRecentJsonEntry,
+  type RecentJsonEntry,
+} from "../utils/jsonFormatterHistory";
 
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 type JsonObject = { [key: string]: JsonValue };
@@ -25,6 +31,23 @@ export function JsonFormatterWindow() {
   const singleModeEditingRef = useRef<boolean>(false); // 单框模式下是否正在编辑
   const formatTimeoutRef = useRef<number | null>(null); // 格式化防抖定时器
   const monacoEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null); // Monaco Editor 实例
+  const recentMenuRef = useRef<HTMLDivElement>(null);
+  const [recentEntries, setRecentEntries] = useState<RecentJsonEntry[]>([]);
+  const [showRecentEntries, setShowRecentEntries] = useState(false);
+
+  const refreshRecentEntries = useCallback(async () => {
+    const entries = await getRecentJsonEntries();
+    setRecentEntries(entries);
+  }, []);
+
+  const saveToRecent = useCallback(
+    async (content: string) => {
+      if (!content.trim()) return;
+      await addRecentJsonEntry(content);
+      await refreshRecentEntries();
+    },
+    [refreshRecentEntries]
+  );
 
 
   // 处理 JSON 内容的函数
@@ -62,11 +85,12 @@ export function JsonFormatterWindow() {
       const content = await tauriApi.takeJsonFormatterContent();
       if (content?.trim()) {
         handleJsonContent(content);
+        await saveToRecent(content);
       }
     } catch (error) {
       console.error("Failed to take JSON formatter content:", error);
     }
-  }, [handleJsonContent]);
+  }, [handleJsonContent, saveToRecent]);
 
   // 从后端拉取待填入的 JSON 内容（mount 与窗口聚焦时）
   useEffect(() => {
@@ -95,6 +119,35 @@ export function JsonFormatterWindow() {
       }
     };
   }, [pullPendingContent]);
+
+  useEffect(() => {
+    refreshRecentEntries();
+  }, [refreshRecentEntries]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        recentMenuRef.current &&
+        !recentMenuRef.current.contains(event.target as Node)
+      ) {
+        setShowRecentEntries(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
+
+  const handleOpenRecentEntry = useCallback(
+    async (entry: RecentJsonEntry) => {
+      handleJsonContent(entry.content);
+      await saveToRecent(entry.content);
+      setShowRecentEntries(false);
+    },
+    [handleJsonContent, saveToRecent]
+  );
 
   // 格式化输入的 JSON 内容
   const formatJsonContent = (content: string, preserveCursor: boolean = false) => {
@@ -170,6 +223,7 @@ export function JsonFormatterWindow() {
       shouldPreserveExpandedRef.current = true;
       const allPaths = getAllPaths(parsed, "");
       setExpandedPaths(new Set(allPaths));
+      void saveToRecent(content);
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : "JSON 格式错误";
       setError(errorMessage);
@@ -663,6 +717,139 @@ export function JsonFormatterWindow() {
           flexWrap: "wrap",
         }}
       >
+        <div style={{ position: "relative", display: "inline-block" }} ref={recentMenuRef}>
+          <button
+            onClick={() => setShowRecentEntries((prev) => !prev)}
+            style={{
+              padding: "8px 16px",
+              backgroundColor: showRecentEntries ? "#2563eb" : "#3b82f6",
+              color: "white",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "14px",
+              fontWeight: 500,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = "#2563eb";
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = showRecentEntries ? "#2563eb" : "#3b82f6";
+            }}
+          >
+            最近 {recentEntries.length > 0 ? `(${recentEntries.length})` : ""}
+          </button>
+          {showRecentEntries && (
+            <div
+              style={{
+                position: "absolute",
+                top: "100%",
+                left: 0,
+                marginTop: "4px",
+                backgroundColor: "#252526",
+                border: "1px solid #3e3e42",
+                borderRadius: "6px",
+                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
+                minWidth: "280px",
+                maxWidth: "420px",
+                maxHeight: "320px",
+                overflowY: "auto",
+                zIndex: 1000,
+              }}
+            >
+              <div
+                style={{
+                  padding: "8px 12px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  color: "#9ca3af",
+                  borderBottom: "1px solid #3e3e42",
+                  backgroundColor: "#2d2d30",
+                }}
+              >
+                最近打开的记录（最多 10 条）
+              </div>
+              {recentEntries.length === 0 ? (
+                <div
+                  style={{
+                    padding: "16px 12px",
+                    fontSize: "13px",
+                    color: "#6b7280",
+                    textAlign: "center",
+                  }}
+                >
+                  暂无记录
+                </div>
+              ) : (
+                recentEntries.map((entry) => (
+                  <div
+                    key={entry.id}
+                    onClick={() => handleOpenRecentEntry(entry)}
+                    style={{
+                      padding: "10px 12px",
+                      cursor: "pointer",
+                      borderBottom: "1px solid #3e3e42",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      backgroundColor: "#252526",
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.backgroundColor = "#2a2d2e";
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.backgroundColor = "#252526";
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          color: "#e5e7eb",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={entry.preview}
+                      >
+                        {entry.preview}
+                      </div>
+                    </div>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await removeRecentJsonEntry(entry.id);
+                        await refreshRecentEntries();
+                      }}
+                      style={{
+                        padding: "4px 8px",
+                        marginLeft: "8px",
+                        backgroundColor: "transparent",
+                        color: "#9ca3af",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                        fontSize: "12px",
+                      }}
+                      onMouseOver={(e) => {
+                        e.currentTarget.style.backgroundColor = "#3e3e42";
+                        e.currentTarget.style.color = "#ef4444";
+                      }}
+                      onMouseOut={(e) => {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color = "#9ca3af";
+                      }}
+                      title="删除"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
         <button
           onClick={handleFormat}
           style={{

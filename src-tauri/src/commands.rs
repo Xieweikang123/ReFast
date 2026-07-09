@@ -5061,6 +5061,26 @@ pub fn remove_markdown_recent_file(app: tauri::AppHandle, file_path: String) -> 
     crate::markdown_recent_files::remove_recent_file(&app_data_dir, file_path)
 }
 
+#[tauri::command]
+pub fn get_json_formatter_recent_entries(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::json_formatter_recent::RecentJsonEntry>, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::get_all_recent_entries(&app_data_dir)
+}
+
+#[tauri::command]
+pub fn add_json_formatter_recent_entry(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::add_recent_entry(&app_data_dir, content)
+}
+
+#[tauri::command]
+pub fn remove_json_formatter_recent_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::remove_recent_entry(&app_data_dir, id)
+}
+
 // ===== Settings commands =====
 
 #[tauri::command]
