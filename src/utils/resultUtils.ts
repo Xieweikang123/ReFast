@@ -397,6 +397,7 @@ export interface LoadResultsIncrementallyOptions {
   incrementalTimeoutRef: React.MutableRefObject<number | null>;
   currentLoadResultsRef: React.MutableRefObject<SearchResult[]>;
   horizontalResultsRef: React.MutableRefObject<SearchResult[]>;
+  setIsIncrementalLoading?: (loading: boolean) => void;
 }
 
 /**
@@ -418,7 +419,12 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     incrementalTimeoutRef,
     currentLoadResultsRef,
     horizontalResultsRef,
+    setIsIncrementalLoading,
   } = options;
+
+  const setIncrementalLoading = (loading: boolean) => {
+    setIsIncrementalLoading?.(loading);
+  };
   
   // 重要：如果查询已经变化，说明这些结果是过时的，不应该加载
   // 这样可以避免快速输入时使用旧查询的结果导致卡顿和显示错误
@@ -508,11 +514,13 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     // 成功加载后，更新 lastLoadQueryRef 为当前查询
     // 这样下次查询变化时，检查才能正确工作
     lastLoadQueryRef.current = currentQuery;
+    setIncrementalLoading(false);
     return;
   }
 
   // 重置显示数量（如果有结果就显示，即使查询为空）
   // 只有在结果数量 > INITIAL_COUNT 时才需要增量加载
+  setIncrementalLoading(true);
   if (allResults.length > 0) {
     // 重要：使用完整的 allResults 进行排序，而不是只使用前100条
     // 这样可以确保横向列表的排序是基于所有结果的，而不是部分结果
@@ -555,6 +563,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
       });
       incrementalLoadRef.current = null;
       incrementalTimeoutRef.current = null;
+      setIncrementalLoading(false);
       return;
     }
 
@@ -588,6 +597,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
         });
         incrementalLoadRef.current = null;
         incrementalTimeoutRef.current = null;
+        setIncrementalLoading(false);
         return;
       }
       
@@ -606,12 +616,14 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
         incrementalLoadRef.current = null;
         incrementalTimeoutRef.current = null;
         currentLoadResultsRef.current = [];
+        setIncrementalLoading(false);
       }
     } else {
       // 加载完成
       incrementalLoadRef.current = null;
       incrementalTimeoutRef.current = null;
       currentLoadResultsRef.current = [];
+      setIncrementalLoading(false);
       // 成功加载后，更新 lastLoadQueryRef 为当前查询
       lastLoadQueryRef.current = currentQuery;
     }

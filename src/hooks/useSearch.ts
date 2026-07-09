@@ -36,6 +36,8 @@ export interface UseSearchOptions {
   setResults: React.Dispatch<React.SetStateAction<any[]>>;
   setSelectedIndex: React.Dispatch<React.SetStateAction<number>>;
   setIsSearchingEverything: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsDebouncePending?: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsLocalSearchPending?: React.Dispatch<React.SetStateAction<boolean>>;
   
   // 状态读取（用于检查）
   showAiAnswer: boolean;
@@ -84,6 +86,8 @@ export function useSearch(options: UseSearchOptions): void {
     setResults,
     setSelectedIndex,
     setIsSearchingEverything,
+    setIsDebouncePending,
+    setIsLocalSearchPending,
     showAiAnswer,
     lastSearchQueryRef,
     debounceTimeoutRef,
@@ -124,6 +128,11 @@ export function useSearch(options: UseSearchOptions): void {
       clearTimeout(debounceTimeoutRef.current);
       debounceTimeoutRef.current = null;
     }
+
+    if (trimmedQuery !== "" && trimmedQuery !== lastSearchQueryRef.current) {
+      setIsDebouncePending?.(true);
+      setIsLocalSearchPending?.(false);
+    }
     
     if (trimmedQuery === "") {
       // 关闭当前 Everything 搜索会话
@@ -153,6 +162,8 @@ export function useSearch(options: UseSearchOptions): void {
       setSelectedIndex(0);
       setIsSearchingEverything(false);
       hasResultsRef.current = false;
+      setIsDebouncePending?.(false);
+      setIsLocalSearchPending?.(false);
       return;
     }
     
@@ -177,12 +188,16 @@ export function useSearch(options: UseSearchOptions): void {
     }
 
     const timeoutId = setTimeout(() => {
+      setIsDebouncePending?.(false);
+
       // 再次检查查询是否仍然有效（可能在防抖期间已被清空或改变）
       const currentQuery = query.trim();
       if (currentQuery === "" || currentQuery !== trimmedQuery) {
+        setIsLocalSearchPending?.(false);
         return;
       }
       
+      setIsLocalSearchPending?.(true);
       // 在防抖定时器触发时清空结果，而不是在输入时清空
       // 使用 startTransition 包装清空操作，避免阻塞后续的输入
       if (trimmedQuery !== lastSearchQueryRef.current) {
@@ -310,18 +325,21 @@ export function useSearch(options: UseSearchOptions): void {
       // 使用 setTimeout(0) 将搜索操作推迟到下一个事件循环，避免阻塞防抖定时器
       // 这样可以让输入框更快响应，即使搜索函数正在执行
       setTimeout(() => {
+        const localSearchGeneration = trimmedQuery;
         // 系统文件夹和文件历史搜索立即执行
         Promise.all([
           searchSystemFoldersWrapper(trimmedQuery),
           searchFileHistoryWrapper(trimmedQuery),
-        ]).catch((error) => {
-          console.error("[搜索错误] 并行搜索失败:", error);
-        });
-        
-        console.log(`[搜索流程] 准备调用 searchApplications: query="${trimmedQuery}"`);
-        searchApplicationsWrapper(trimmedQuery).catch((error) => {
-          console.error("[搜索错误] searchApplications 调用失败:", error);
-        });
+          searchApplicationsWrapper(trimmedQuery),
+        ])
+          .catch((error) => {
+            console.error("[搜索错误] 并行搜索失败:", error);
+          })
+          .finally(() => {
+            if (lastSearchQueryRef.current === localSearchGeneration) {
+              setIsLocalSearchPending?.(false);
+            }
+          });
         
         // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞）
         searchMemosWrapper(trimmedQuery);

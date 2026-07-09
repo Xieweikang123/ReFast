@@ -32,7 +32,7 @@ export interface ResultListProps {
   onSaveImageToDownloads: (path: string) => Promise<void>;
   horizontalScrollContainerRef: React.RefObject<HTMLDivElement>;
   listRef: React.RefObject<HTMLDivElement>;
-  isHorizontalResultsStable?: boolean;
+  isInteractive?: boolean;
 }
 
 /**
@@ -51,8 +51,8 @@ const HorizontalResultItem = React.memo<{
   getPluginIcon: (pluginId: string, className: string) => JSX.Element;
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
-  isStable?: boolean;
-}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isStable = true }) => {
+  isInteractive?: boolean;
+}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true }) => {
   const { resolvedTarget } = useLnkTargetTooltip(result.path);
 
   return (
@@ -60,7 +60,7 @@ const HorizontalResultItem = React.memo<{
       key={`executable-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (e.button !== 0) return;
+        if (!isInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -69,8 +69,13 @@ const HorizontalResultItem = React.memo<{
         e.preventDefault();
         e.stopPropagation();
       }}
-      onContextMenu={(e) => onContextMenu(e, result)}
-      className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl cursor-pointer transition-all duration-200 relative ${
+      onContextMenu={(e) => {
+        if (!isInteractive) return;
+        onContextMenu(e, result);
+      }}
+      className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl transition-all duration-200 relative ${
+        isInteractive ? "cursor-pointer" : "cursor-default"
+      } ${
         isSelected 
           ? resultStyle === "soft"
             ? "bg-blue-50 border-2 border-blue-500 shadow-lg shadow-blue-300/55 ring-2 ring-blue-400/35 scale-[1.2]"
@@ -80,18 +85,20 @@ const HorizontalResultItem = React.memo<{
           : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
       } ${isLaunching ? 'rocket-launching' : ''}`}
       style={{
-        '--target-opacity': !isStable ? 0.6 : 1,
+        '--target-opacity': !isInteractive ? 0.55 : 1,
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`,
+          : isInteractive
+          ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`
+          : undefined,
         marginLeft: index === 0 && isSelected ? '10px' : '0px',
         width: '80px',
         height: '80px',
         minWidth: '80px',
         minHeight: '80px',
-        opacity: !isStable ? 0.6 : 1,
+        opacity: !isInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isStable ? 'none' : 'auto',
+        pointerEvents: !isInteractive ? 'none' : 'auto',
       } as React.CSSProperties}
     >
       {isSelected && (
@@ -169,6 +176,7 @@ const VerticalResultItem = React.memo<{
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   onSaveImageToDownloads: (path: string) => Promise<void>;
+  isInteractive?: boolean;
 }>(({ 
   result, 
   index, 
@@ -187,6 +195,7 @@ const VerticalResultItem = React.memo<{
   onLaunch, 
   onContextMenu,
   onSaveImageToDownloads,
+  isInteractive = true,
 }) => {
   const [isMac, setIsMac] = useState(false);
   const isLnk = isLnkPath(result.path);
@@ -204,7 +213,7 @@ const VerticalResultItem = React.memo<{
       data-item-key={`${result.type}-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (e.button !== 0) return;
+        if (!isInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -213,12 +222,20 @@ const VerticalResultItem = React.memo<{
         e.preventDefault();
         e.stopPropagation();
       }}
-      onContextMenu={(e) => onContextMenu(e, result)}
-      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''}`}
+      onContextMenu={(e) => {
+        if (!isInteractive) return;
+        onContextMenu(e, result);
+      }}
+      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${isInteractive ? 'cursor-pointer' : 'cursor-default'}`}
       style={{
+        opacity: !isInteractive ? 0.55 : 1,
+        transition: 'opacity 0.2s ease-in-out',
+        pointerEvents: !isInteractive ? 'none' : 'auto',
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`,
+          : isInteractive
+          ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`
+          : undefined,
       }}
     >
       <div className={theme.indicator(isSelected)} />
@@ -452,7 +469,7 @@ export const ResultList = React.memo<ResultListProps>(({
   onSaveImageToDownloads,
   horizontalScrollContainerRef,
   listRef,
-  isHorizontalResultsStable = true,
+  isInteractive = true,
 }) => {
 
   const theme = React.useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
@@ -486,7 +503,7 @@ export const ResultList = React.memo<ResultListProps>(({
                   getPluginIcon={getPluginIcon}
                   onLaunch={onLaunch}
                   onContextMenu={onContextMenu}
-                  isStable={isHorizontalResultsStable}
+                  isInteractive={isInteractive}
                 />
               ))}
             </div>
@@ -515,6 +532,7 @@ export const ResultList = React.memo<ResultListProps>(({
               onLaunch={onLaunch}
               onContextMenu={onContextMenu}
               onSaveImageToDownloads={onSaveImageToDownloads}
+              isInteractive={isInteractive}
             />
           );
         })}

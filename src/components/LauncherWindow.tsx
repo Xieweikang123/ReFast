@@ -33,6 +33,7 @@ import { useAppIconsListener } from "../hooks/useAppIconsListener";
 import { useSearchWrappers } from "../hooks/useSearchWrappers";
 import { useCombinedResults } from "../hooks/useCombinedResults";
 import { useSearch } from "../hooks/useSearch";
+import { useResultsInteractivity } from "../hooks/useResultsInteractivity";
 import { useScrollbarStyle } from "../hooks/useScrollbarStyle";
 import {
   processPastedPath as processPastedPathUtil,
@@ -170,6 +171,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, []);
   const currentLoadResultsRef = useRef<SearchResult[]>([]); // 跟踪当前正在加载的结果，用于验证是否仍有效
   const horizontalResultsRef = useRef<SearchResult[]>([]); // 跟踪当前的横向结果，用于防止被覆盖
+  const [isIncrementalLoading, setIsIncrementalLoading] = useState(false);
+  const [isDebouncePending, setIsDebouncePending] = useState(false);
+  const [isLocalSearchPending, setIsLocalSearchPending] = useState(false);
   const closeOnBlurRef = useRef(true);
   const isHorizontalNavigationRef = useRef(false); // 标记是否是横向导航切换
   const isAutoSelectingFirstHorizontalRef = useRef(false); // 标记是否正在自动选择第一个横向结果（用于防止scrollIntoView）
@@ -610,7 +614,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
 
   // 使用自定义 Hook 合并搜索结果
-  const { combinedResults: debouncedCombinedResults, queryRef, debouncedResultsQueryRef } = useCombinedResults({
+  const { combinedResults: debouncedCombinedResults, queryRef, debouncedResultsQueryRef, combinedResultsQuery, isStable: isCombinedStable } = useCombinedResults({
     query,
     aiAnswer,
     filteredApps,
@@ -630,40 +634,29 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     extractedFileIconsRef,
   });
   
-  // 跟踪 horizontalResults 的稳定性
-  const [isHorizontalResultsStable, setIsHorizontalResultsStable] = useState(true);
-  const horizontalResultsStabilityTimeoutRef = useRef<number | null>(null);
-  const previousHorizontalResultsLengthRef = useRef<number>(0);
-  
-  useEffect(() => {
-    // 当 horizontalResults 长度变化时，标记为不稳定
-    if (horizontalResults.length !== previousHorizontalResultsLengthRef.current) {
-      previousHorizontalResultsLengthRef.current = horizontalResults.length;
-      setIsHorizontalResultsStable(false);
-      
-      // 清除之前的 timeout
-      if (horizontalResultsStabilityTimeoutRef.current !== null) {
-        clearTimeout(horizontalResultsStabilityTimeoutRef.current);
-      }
-      
-      // 设置新的 timeout，300ms 后如果长度没有变化，认为稳定
-      horizontalResultsStabilityTimeoutRef.current = window.setTimeout(() => {
-        setIsHorizontalResultsStable(true);
-        horizontalResultsStabilityTimeoutRef.current = null;
-      }, 300);
-    }
-    
-    return () => {
-      if (horizontalResultsStabilityTimeoutRef.current !== null) {
-        clearTimeout(horizontalResultsStabilityTimeoutRef.current);
-        horizontalResultsStabilityTimeoutRef.current = null;
-      }
-    };
-  }, [horizontalResults.length]);
+  const everythingLabel =
+    typeof navigator !== "undefined" &&
+    navigator.platform.toLowerCase().includes("mac")
+      ? "Spotlight"
+      : "Everything";
 
-  // 使用 ref 跟踪最后一次加载结果时的查询，用于验证结果是否仍然有效
-  const lastLoadQueryRef = useRef<string>("");
-  
+  const { isInteractive, isSearching, searchStatus } = useResultsInteractivity({
+    query,
+    combinedResultsQuery,
+    resultsCount: results.length,
+    horizontalCount: horizontalResults.length,
+    verticalCount: verticalResults.length,
+    isSearchingEverything,
+    isEverythingAvailable,
+    everythingCurrentCount,
+    everythingTotalCount,
+    everythingLabel,
+    isCombinedStable,
+    isIncrementalLoading,
+    isDebouncePending,
+    isLocalSearchPending,
+  });
+
   // 分批加载结果的函数
   const loadResultsIncrementallyWrapper = useCallback((allResults: SearchResult[]) => {
     loadResultsIncrementally({
@@ -681,9 +674,12 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       incrementalTimeoutRef,
         currentLoadResultsRef,
         horizontalResultsRef,
+        setIsIncrementalLoading,
     });
   }, [openHistory]);
 
+  // 使用 ref 跟踪最后一次加载结果时的查询，用于验证结果是否仍然有效
+  const lastLoadQueryRef = useRef<string>("");
   // 使用 ref 跟踪上一次的查询，用于检测查询变化
   const lastQueryInEffectRef = useRef<string>("");
   
@@ -706,6 +702,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       }
       currentLoadResultsRef.current = [];
       lastQueryInEffectRef.current = query;
+      setIsIncrementalLoading(false);
       return;
     }
     
@@ -730,6 +727,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         clearTimeout(incrementalTimeoutRef.current);
         incrementalTimeoutRef.current = null;
       }
+      setIsIncrementalLoading(false);
       // 如果查询变化且不是粘贴的图片路径，清除粘贴图片状态
       if (query.trim() !== pastedImagePath) {
         setPastedImagePath(null);
@@ -1348,6 +1346,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setResults,
     setSelectedIndex,
     setIsSearchingEverything,
+    setIsDebouncePending,
+    setIsLocalSearchPending,
     showAiAnswer,
     lastSearchQueryRef,
     debounceTimeoutRef,
@@ -1653,6 +1653,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         selectedVerticalIndex,
         horizontalResults,
         verticalResults,
+        isResultsInteractive: isInteractive,
         setContextMenu,
         setErrorMessage,
         setIsPluginListModalOpen,
@@ -1684,6 +1685,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       selectedVerticalIndex,
       horizontalResults,
       verticalResults,
+      isInteractive,
       setContextMenu,
       setErrorMessage,
       setIsPluginListModalOpen,
@@ -1847,7 +1849,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             handleContextMenu={handleContextMenu}
             handleSaveImageToDownloads={handleSaveImageToDownloads}
             horizontalScrollContainerRef={horizontalScrollContainerRef}
-            isHorizontalResultsStable={isHorizontalResultsStable}
+            isInteractive={isInteractive}
+            isSearching={isSearching}
+            searchStatus={searchStatus}
           />
 
           {/* Footer */}

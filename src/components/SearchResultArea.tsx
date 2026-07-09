@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import type { SearchResult } from "../utils/resultUtils";
 import type { ResultStyle } from "../utils/themeConfig";
+import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
 import { isMacOS } from "../utils/platformUtils";
 
 interface SearchResultAreaProps {
@@ -41,7 +42,9 @@ interface SearchResultAreaProps {
   handleContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   handleSaveImageToDownloads: (path: string) => Promise<void>;
   horizontalScrollContainerRef: React.RefObject<HTMLDivElement>;
-  isHorizontalResultsStable: boolean;
+  isInteractive: boolean;
+  isSearching: boolean;
+  searchStatus: SearchStatusDetail;
 }
 
 export function SearchResultArea({
@@ -75,13 +78,36 @@ export function SearchResultArea({
   handleContextMenu,
   handleSaveImageToDownloads,
   horizontalScrollContainerRef,
-  isHorizontalResultsStable,
+  isInteractive,
+  isSearching,
+  searchStatus,
 }: SearchResultAreaProps) {
   const [isMac, setIsMac] = useState(false);
 
   useEffect(() => {
     isMacOS().then(setIsMac);
   }, []);
+
+  const renderSearchStatusBanner = () => (
+    <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
+      <div className="flex items-center gap-2">
+        <div className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+        <span className="font-medium">{searchStatus.primary}</span>
+      </div>
+      {searchStatus.items.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pl-5">
+          {searchStatus.items.map((item) => (
+            <span
+              key={item}
+              className="rounded-md bg-blue-100/80 px-1.5 py-0.5 text-[11px] text-blue-700"
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -273,33 +299,57 @@ export function SearchResultArea({
           })}
         </div>
       ) : results.length > 0 ? (
-        <ResultList
-          horizontalResults={horizontalResults}
-          verticalResults={verticalResults}
-          selectedHorizontalIndex={selectedHorizontalIndex}
-          selectedVerticalIndex={selectedVerticalIndex}
-          query={query}
-          resultStyle={resultStyle}
-          apps={apps}
-          filteredApps={filteredApps}
-          launchingAppPath={launchingAppPath}
-          pastedImagePath={pastedImagePath}
-          openHistory={openHistory}
-          urlRemarks={urlRemarks}
-          getPluginIcon={getPluginIcon}
-          onLaunch={handleLaunch}
-          onContextMenu={handleContextMenu}
-          onSaveImageToDownloads={handleSaveImageToDownloads}
-          horizontalScrollContainerRef={horizontalScrollContainerRef}
-          listRef={listRef}
-          isHorizontalResultsStable={isHorizontalResultsStable}
-        />
+        <div className="relative flex-1 min-h-0 flex flex-col">
+          {isSearching && renderSearchStatusBanner()}
+          <ResultList
+            horizontalResults={horizontalResults}
+            verticalResults={verticalResults}
+            selectedHorizontalIndex={selectedHorizontalIndex}
+            selectedVerticalIndex={selectedVerticalIndex}
+            query={query}
+            resultStyle={resultStyle}
+            apps={apps}
+            filteredApps={filteredApps}
+            launchingAppPath={launchingAppPath}
+            pastedImagePath={pastedImagePath}
+            openHistory={openHistory}
+            urlRemarks={urlRemarks}
+            getPluginIcon={getPluginIcon}
+            onLaunch={handleLaunch}
+            onContextMenu={handleContextMenu}
+            onSaveImageToDownloads={handleSaveImageToDownloads}
+            horizontalScrollContainerRef={horizontalScrollContainerRef}
+            listRef={listRef}
+            isInteractive={isInteractive}
+          />
+        </div>
       ) : null}
 
       {/* Loading or Empty State */}
-      {!showAiAnswer && results.length === 0 && query && (
+      {!showAiAnswer && results.length === 0 && query && !isSearching && (
         <div className="px-6 py-8 text-center text-gray-500 flex-1 flex items-center justify-center">
           未找到匹配的应用或文件
+        </div>
+      )}
+
+      {!showAiAnswer && results.length === 0 && query && isSearching && (
+        <div className="px-6 py-8 text-center text-gray-500 flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 max-w-sm">
+            <div className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-blue-500" />
+            <div className="text-sm font-medium text-gray-700">{searchStatus.primary}</div>
+            {searchStatus.items.length > 0 && (
+              <div className="flex flex-wrap justify-center gap-1.5">
+                {searchStatus.items.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

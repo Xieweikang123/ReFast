@@ -39,6 +39,7 @@ export interface HandleKeyDownOptions {
   selectedVerticalIndex: number | null;
   horizontalResults: SearchResult[];
   verticalResults: SearchResult[];
+  isResultsInteractive: boolean;
 
   // Setters
   setContextMenu: (
@@ -91,6 +92,7 @@ export async function handleKeyDown(
     selectedVerticalIndex,
     horizontalResults,
     verticalResults,
+    isResultsInteractive,
     setContextMenu,
     setErrorMessage,
     setIsPluginListModalOpen,
@@ -371,6 +373,9 @@ export async function handleKeyDown(
 
   if (e.key === "Enter") {
     e.preventDefault();
+    if (!isResultsInteractive) {
+      return;
+    }
     // Get the selected result from either horizontal or vertical
     let selectedResult: SearchResult | null = null;
     if (
