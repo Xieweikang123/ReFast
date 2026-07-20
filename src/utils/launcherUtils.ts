@@ -454,6 +454,40 @@ export function normalizeAppName(name: string): string {
   return name.toLowerCase().replace(/\.(exe|lnk)$/i, "").trim();
 }
 
+/** Windows「最近使用」目录中的快捷方式（常指向文件夹，不宜当应用） */
+export function isRecentShortcutPath(path: string): boolean {
+  const pathLower = path.toLowerCase().replace(/\//g, "\\");
+  return (
+    pathLower.includes("\\recent\\") ||
+    pathLower.endsWith("\\recent") ||
+    pathLower.includes("\\microsoft\\windows\\recent")
+  );
+}
+
+/**
+ * 应用路径来源优先级（数值越小越应保留；同名去重时用）
+ * 开始菜单 > 桌面 > 普通 exe > 其它 lnk > Recent
+ */
+export function appSourceRank(path: string): number {
+  const p = path.toLowerCase().replace(/\//g, "\\");
+  if (isRecentShortcutPath(p)) return 9;
+  if (p.includes("\\start menu\\programs\\")) {
+    return 0;
+  }
+  if (p.includes("\\desktop\\")) {
+    return 1;
+  }
+  if (p.endsWith(".exe")) return 2;
+  if (p.endsWith(".lnk")) return 3;
+  return 5;
+}
+
+/** 卸载类快捷方式（不应挤占主应用展示位） */
+export function isUninstallShortcutName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return n.startsWith("uninstall ") || n.startsWith("卸载");
+}
+
 /**
  * 判断路径是否为系统文件夹
  * 系统文件夹包括：控制面板、设置、CLSID 路径（如回收站）等

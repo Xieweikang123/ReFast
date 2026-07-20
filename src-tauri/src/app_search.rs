@@ -68,13 +68,46 @@ pub mod windows {
 
     // Helper function to check if a path is a Recent directory path
     fn is_recent_path(path: &str) -> bool {
-        let path_lower = path.to_lowercase();
-        path_lower.contains("\\recent") || path_lower.contains("/recent")
+        let path_lower = path.to_lowercase().replace('/', "\\");
+        path_lower.contains("\\recent\\")
+            || path_lower.ends_with("\\recent")
+            || path_lower.contains("\\microsoft\\windows\\recent")
     }
 
-    // Helper function to filter out WindowsApps paths from app list
+    // Helper function to filter out WindowsApps / Recent paths from app list
+    // Recent 快捷方式常指向文件夹，同名时会把开始菜单里的真正应用挤掉
     fn filter_windowsapps_paths(apps: &mut Vec<AppInfo>) {
-        apps.retain(|app| !is_windowsapps_path(&app.path));
+        apps.retain(|app| {
+            !is_windowsapps_path(&app.path)
+                && !is_recent_path(&app.path)
+                && !is_uninstall_shortcut_name(&app.name)
+        });
+    }
+
+    fn is_uninstall_shortcut_name(name: &str) -> bool {
+        let n = name.trim().to_lowercase();
+        n.starts_with("uninstall ") || n.starts_with("卸载")
+    }
+
+    /// 应用索引路径质量：数值越小越优先保留（同名去重时用）
+    fn app_source_rank(path: &str) -> u8 {
+        let p = path.to_lowercase();
+        if is_recent_path(&p) {
+            return 9;
+        }
+        if p.contains("\\start menu\\programs\\") || p.contains("/start menu/programs/") {
+            return 0;
+        }
+        if p.contains("\\desktop\\") || p.contains("/desktop/") {
+            return 1;
+        }
+        if p.ends_with(".exe") {
+            return 2;
+        }
+        if p.ends_with(".lnk") {
+            return 3;
+        }
+        5
     }
 
     // Helper function to normalize path for comparison
@@ -194,11 +227,15 @@ pub mod windows {
             false
         });
 
-        // Sort by name and priority
+        // Sort by name and priority（开始菜单优先于 Recent/其它来源）
         apps.sort_by(|a, b| {
             let name_cmp = a.name.cmp(&b.name);
             if name_cmp != std::cmp::Ordering::Equal {
                 return name_cmp;
+            }
+            let source_cmp = app_source_rank(&a.path).cmp(&app_source_rank(&b.path));
+            if source_cmp != std::cmp::Ordering::Equal {
+                return source_cmp;
             }
             let priority_cmp = app_priority(a).cmp(&app_priority(b));
             if priority_cmp != std::cmp::Ordering::Equal {
@@ -215,6 +252,11 @@ pub mod windows {
         let mut calculator_apps: Vec<AppInfo> = Vec::new();
         
         for app in apps {
+            // Recent 不应进入应用索引（扫描本就跳过；此处兜底脏缓存/手动添加）
+            if is_recent_path(&app.path) {
+                continue;
+            }
+
             let name_lower = app.name.to_lowercase();
             
             // Special handling for Settings and Calculator apps
@@ -3627,6 +3669,13 @@ public class IconExtractor {
         }
         let path_lower = path_str.to_lowercase();
 
+        if is_recent_path(path_str) {
+            return Err(
+                "不能将「最近使用」中的快捷方式加入应用索引（常指向文件夹，会覆盖同名应用）"
+                    .to_string(),
+            );
+        }
+
         if path_lower.starts_with("ms-settings:") || path_lower.starts_with("shell:appsfolder\\") {
             let name = display_name
                 .map(str::trim)
@@ -3737,28 +3786,23 @@ public class IconExtractor {
             .map(|ext| ext.to_lowercase() == "lnk")
             .unwrap_or(false);
         
-        // 对于快捷方式，验证目标是否存在
-        let mut parse_error: Option<String> = None;
+        // 启动热路径：绝不调用 PowerShell 解析 .lnk（冷启动可卡数百 ms～数秒，启动器会假死）
+        // 仅检查 .lnk 自身存在；目标存在性用二进制解析（失败则仍交给 ShellExecute，与资源管理器一致）
+        let mut broken_target: Option<String> = None;
         if is_lnk {
-            // 检查快捷方式文件是否存在
             if !path.exists() {
                 return Err(format!("快捷方式文件不存在: {}", app.path));
             }
-            
-            // 解析快捷方式，检查目标是否存在
-            match parse_lnk_file(path) {
-                Ok(target_info) => {
-                    let target_path = Path::new(&target_info.path);
-                    if !target_path.exists() {
-                        return Err(format!(
-                            "快捷方式目标不存在: 快捷方式 '{}' 指向的目标 '{}' 已移动或删除。请更新或重新创建该快捷方式。",
-                            app.path, target_info.path
-                        ));
-                    }
+            if let Some(target) = get_lnk_target_path_binary(path) {
+                let trimmed = target.trim();
+                if is_valid_lnk_target(path, trimmed) && !Path::new(trimmed).exists() {
+                    return Err(format!(
+                        "快捷方式目标不存在: 快捷方式 '{}' 指向的目标 '{}' 已移动或删除。请更新或重新创建该快捷方式。",
+                        app.path, trimmed
+                    ));
                 }
-                Err(e) => {
-                    parse_error = Some(e.clone());
-                    // 继续尝试直接启动
+                if is_valid_lnk_target(path, trimmed) {
+                    broken_target = Some(trimmed.to_string());
                 }
             }
         } else if !path.exists() {
@@ -3796,19 +3840,10 @@ public class IconExtractor {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     let error_msg = if is_lnk {
-                        let additional_info = if let Some(parse_err) = parse_error {
-                            format!(" (无法解析快捷方式: {})", parse_err)
-                        } else {
-                            match parse_lnk_file(path) {
-                                Ok(target_info) => {
-                                    format!(" (目标路径: {})", target_info.path)
-                                }
-                                Err(parse_e) => {
-                                    format!(" (无法解析快捷方式: {})", parse_e)
-                                }
-                            }
-                        };
-
+                        let additional_info = broken_target
+                            .as_ref()
+                            .map(|t| format!(" (目标路径: {})", t))
+                            .unwrap_or_default();
                         format!(
                             "启动应用程序失败: {} - {}\n\n这通常意味着快捷方式指向的目标文件不存在或已移动。{}\n\n建议：请检查快捷方式属性，确认目标路径是否正确，或重新创建该快捷方式。",
                             app.path, e, additional_info
@@ -3823,18 +3858,10 @@ public class IconExtractor {
         } else {
             file_history::launch_file(path_str).map_err(|e| {
                 if is_lnk {
-                    let additional_info = if let Some(parse_err) = parse_error {
-                        format!(" (无法解析快捷方式: {})", parse_err)
-                    } else {
-                        match parse_lnk_file(path) {
-                            Ok(target_info) => {
-                                format!(" (目标路径: {})", target_info.path)
-                            }
-                            Err(parse_e) => {
-                                format!(" (无法解析快捷方式: {})", parse_e)
-                            }
-                        }
-                    };
+                    let additional_info = broken_target
+                        .as_ref()
+                        .map(|t| format!(" (目标路径: {})", t))
+                        .unwrap_or_default();
                     format!(
                         "启动应用程序失败: {}\n{}{}",
                         app.path, e, additional_info

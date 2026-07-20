@@ -277,6 +277,10 @@ pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
     if windows_to_notify.is_empty() {
         return Err("无法获取窗口".to_string());
     }
+
+    if !crate::app_index_watcher::try_acquire_rescan() {
+        return Err("应用索引正在扫描中，请稍后再试".to_string());
+    }
     
     let app_clone = app.clone();
     
@@ -375,6 +379,7 @@ pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
                 }
             }
         }
+        crate::app_index_watcher::release_rescan();
     });
     
     Ok(())
@@ -800,8 +805,11 @@ pub async fn populate_app_icons(
 }
 
 #[tauri::command]
-pub fn launch_application(app: app_search::AppInfo) -> Result<(), String> {
-    app_search::windows::launch_app(&app)
+pub async fn launch_application(app: app_search::AppInfo) -> Result<(), String> {
+    // 放到阻塞线程池，避免偶发慢 IO/Shell 卡住前端 await 所在调度
+    async_runtime::spawn_blocking(move || app_search::windows::launch_app(&app))
+        .await
+        .map_err(|e| format!("launch_application join error: {}", e))?
 }
 
 /// 从应用索引中删除指定的应用
@@ -2002,7 +2010,7 @@ pub async fn start_everything_search_session(
                 everything_search::windows::search_files(
                     &combined_query,
                     max_results,
-                    5000,
+                    chunk_size,
                     Some(&cancel_flag),
                     Some(on_batch),
                 )

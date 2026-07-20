@@ -749,11 +749,14 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             std::ptr::null()
         };
         
+        // SEE_MASK_ASYNCOK: 避免个别 shell 扩展/DDE 同步等待拖住启动器
+        const SEE_MASK_ASYNCOK: u32 = 0x0010_0000;
+
         // Use ShellExecuteExW for better error handling and control
         // This provides more detailed error information than ShellExecuteW
         let mut exec_info = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: 0, // No special flags needed
+            fMask: SEE_MASK_ASYNCOK,
             hwnd: 0, // No parent window
             lpVerb: std::ptr::null(), // NULL means "open"
             lpFile: path_wide.as_ptr(),

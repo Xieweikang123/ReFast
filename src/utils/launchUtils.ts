@@ -282,10 +282,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
         // 设置正在启动的应用路径，触发动画
         setLaunchingAppPath(result.app.path);
 
-        // 等待动画完成（200ms）
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        // 启动应用
+        // 不再人为等待 200ms；后端启动 .lnk 也不再同步跑 PowerShell，应在几十 ms 内返回
         await tauriApi.launchApplication(result.app);
         trackEvent("app_launched", { name: result.app.name });
 

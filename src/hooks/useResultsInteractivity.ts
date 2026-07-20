@@ -150,10 +150,10 @@ export function useResultsInteractivity(
 
     setIsInteractive(false);
 
+    // Everything 偶发变慢时不锁死整页：本地结果就绪即可交互，Everything 只作旁路提示
     const busy =
       isDebouncePending ||
       isLocalSearchPending ||
-      isSearchingEverything ||
       !isCombinedStable ||
       isIncrementalLoading ||
       combinedResultsQuery.trim() !== query.trim();
@@ -182,7 +182,6 @@ export function useResultsInteractivity(
     verticalCount,
     isDebouncePending,
     isLocalSearchPending,
-    isSearchingEverything,
     isCombinedStable,
     isIncrementalLoading,
     settleDelayMs,
@@ -224,7 +223,8 @@ export function useResultsInteractivity(
 
   return {
     isInteractive,
-    isSearching: hasQuery && !isInteractive,
+    // 状态条/空态仍要把 Everything 算进「搜索中」，但不再用它锁交互
+    isSearching: hasQuery && (!isInteractive || isSearchingEverything),
     searchStatus,
   };
 }

@@ -93,6 +93,8 @@ npm run dev:tauri
 npm run build:tauri
 ```
 
+发布到 GitHub Releases 见 [docs/RELEASE.md](docs/RELEASE.md)。
+
 ## 功能特性
 
 ### 核心功能

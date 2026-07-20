@@ -110,7 +110,7 @@ export function SearchResultArea({
   );
 
   return (
-    <div className="flex flex-col flex-shrink-0">
+    <div className="flex flex-col flex-1 min-h-0">
       {showAiAnswer ? (
         // AI 回答模式
         <div className="overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
@@ -412,7 +412,7 @@ export function SearchResultArea({
       )}
 
       {!showAiAnswer && results.length === 0 && !query && (
-        <div className="px-6 py-8 text-center text-gray-400 text-sm">
+        <div className="flex-1 flex items-center justify-center px-6 py-6 text-center text-gray-400 text-sm">
           输入关键词搜索应用，或粘贴文件路径
         </div>
       )}

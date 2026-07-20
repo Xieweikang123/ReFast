@@ -65,7 +65,7 @@ export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
 
   return (
     <div 
-      className="px-6 py-2 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0 gap-2 min-w-0"
+      className="px-6 py-1.5 border-t border-gray-100 text-xs text-gray-400 flex justify-between items-center bg-gray-50/50 flex-shrink-0 gap-2 min-w-0 mt-auto"
       onMouseDown={(e) => {
         // 阻止 footer 区域的点击事件被 header 的拖动处理器捕获
         const target = e.target as HTMLElement;

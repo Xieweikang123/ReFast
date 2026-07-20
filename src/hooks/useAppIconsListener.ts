@@ -1,6 +1,6 @@
 /**
- * 应用图标更新监听相关的自定义 Hook
- * 负责监听图标更新事件并更新应用列表中的图标
+ * 应用图标更新 / 索引重扫监听
+ * 同步启动器前端应用缓存（allAppsCacheRef）
  */
 
 import { useEffect, type MutableRefObject } from "react";
@@ -14,6 +14,10 @@ export interface UseAppIconsListenerOptions {
   setFilteredApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
   setApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
   allAppsCacheRef: MutableRefObject<AppInfo[]>;
+  allAppsCacheLoadedRef?: MutableRefObject<boolean>;
+  filterWindowsApps?: (apps: AppInfo[]) => AppInfo[];
+  /** 索引更新后刷新当前查询下的应用结果（避免横条仍显示旧列表） */
+  onAppsIndexUpdated?: (apps: AppInfo[]) => void;
 }
 
 /**
@@ -22,7 +26,14 @@ export interface UseAppIconsListenerOptions {
 export function useAppIconsListener(
   options: UseAppIconsListenerOptions
 ): void {
-  const { setFilteredApps, setApps, allAppsCacheRef } = options;
+  const {
+    setFilteredApps,
+    setApps,
+    allAppsCacheRef,
+    allAppsCacheLoadedRef,
+    filterWindowsApps,
+    onAppsIndexUpdated,
+  } = options;
 
   // 监听图标更新事件，收到后刷新搜索结果中的图标
   useEffect(() => {
@@ -81,5 +92,47 @@ export function useAppIconsListener(
       }
     };
   }, [setFilteredApps, setApps, allAppsCacheRef]);
+
+  // 重扫/静默刷新完成后，同步启动器前端应用缓存（否则仍用旧 allAppsCacheRef）
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+
+    const setupListener = async () => {
+      try {
+        unlisten = await listen<{ apps: AppInfo[] }>(
+          "app-rescan-complete",
+          (event) => {
+            const apps = event.payload?.apps;
+            if (!Array.isArray(apps)) return;
+            const filtered = filterWindowsApps
+              ? filterWindowsApps(apps)
+              : apps;
+            setApps(filtered);
+            allAppsCacheRef.current = filtered;
+            if (allAppsCacheLoadedRef) {
+              allAppsCacheLoadedRef.current = true;
+            }
+            onAppsIndexUpdated?.(filtered);
+          }
+        );
+      } catch (error) {
+        console.error("Failed to setup app-rescan-complete listener:", error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [
+    setApps,
+    allAppsCacheRef,
+    allAppsCacheLoadedRef,
+    filterWindowsApps,
+    onAppsIndexUpdated,
+  ]);
 }
 

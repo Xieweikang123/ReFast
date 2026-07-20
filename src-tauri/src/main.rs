@@ -25,6 +25,7 @@ mod window_config;
 mod clipboard;
 mod word_records;
 mod file_watcher;
+mod app_index_watcher;
 mod json_formatter_recent;
 mod markdown_recent_files;
 
@@ -645,6 +646,12 @@ fn main() {
                 }
                 // No background icon extraction on startup - icons will be extracted on-demand during search
             });
+
+            // 监听开始菜单/桌面变更，新装软件防抖后静默重扫进索引
+            #[cfg(target_os = "windows")]
+            {
+                app_index_watcher::start(app.handle().clone());
+            }
 
             // Show launcher window on startup after a short delay to ensure frontend is loaded
             let app_handle = app.handle().clone();

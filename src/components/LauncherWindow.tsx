@@ -35,6 +35,7 @@ import { useCombinedResults } from "../hooks/useCombinedResults";
 import { useSearch } from "../hooks/useSearch";
 import { useResultsInteractivity } from "../hooks/useResultsInteractivity";
 import { useScrollbarStyle } from "../hooks/useScrollbarStyle";
+import { searchApplicationsFrontend } from "../utils/searchUtils";
 import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
@@ -1162,11 +1163,26 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHorizontalIndex]); // 只依赖 selectedHorizontalIndex
 
-  // 过滤掉 WindowsApps 路径的应用（前端双重保险）
+  // 过滤掉 WindowsApps / Recent / 卸载快捷方式（前端双重保险）
+  // Recent 快捷方式常指向文件夹，同名去重时会把开始菜单真正应用挤掉
   const filterWindowsApps = useCallback((apps: AppInfo[]): AppInfo[] => {
     return apps.filter((app) => {
-      const pathLower = app.path.toLowerCase();
-      return !pathLower.includes("windowsapps");
+      const pathLower = app.path.toLowerCase().replace(/\//g, "\\");
+      if (pathLower.includes("windowsapps")) {
+        return false;
+      }
+      if (
+        pathLower.includes("\\recent\\") ||
+        pathLower.endsWith("\\recent") ||
+        pathLower.includes("\\microsoft\\windows\\recent")
+      ) {
+        return false;
+      }
+      const nameLower = app.name.trim().toLowerCase();
+      if (nameLower.startsWith("uninstall ") || nameLower.startsWith("卸载")) {
+        return false;
+      }
+      return true;
     });
   }, []);
 
@@ -1246,11 +1262,28 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setDirectPathResult,
   });
 
-  // 使用自定义 hook 监听图标更新事件
+  const handleAppsIndexUpdated = useCallback(
+    (apps: AppInfo[]) => {
+      const q = query.trim();
+      if (!q) {
+        setFilteredApps([]);
+        return;
+      }
+      void searchApplicationsFrontend(q, apps).then((results) => {
+        setFilteredApps(results);
+      });
+    },
+    [query, setFilteredApps]
+  );
+
+  // 使用自定义 hook 监听图标更新 / 重扫完成事件
   useAppIconsListener({
     setFilteredApps,
     setApps,
     allAppsCacheRef,
+    allAppsCacheLoadedRef,
+    filterWindowsApps,
+    onAppsIndexUpdated: handleAppsIndexUpdated,
   });
 
 
@@ -1260,8 +1293,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const currentSearchQueryRef = useRef<string>("");
   const creatingSessionQueryRef = useRef<string | null>(null);
   const displayedSearchQueryRef = useRef<string>("");
-  const LAUNCHER_PAGE_SIZE = 50; // 启动器只显示前 50 条结果
-  const LAUNCHER_MAX_RESULTS = 50; // 启动器会话最大结果数
+  const LAUNCHER_PAGE_SIZE = 30; // 启动器首屏条数（越小 Everything 首包越快）
+  const LAUNCHER_MAX_RESULTS = 50; // 启动器会话最大结果数上限
 
   // 关闭会话的安全方法（完全复刻 EverythingSearchWindow）
   const closeSessionSafe = useCallback(
@@ -1787,7 +1820,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       {!(isMemoModalOpen || isPluginListModalOpen) && (
       <div className="w-full flex justify-center relative">
         <div 
-          className={layout.container}
+          className={`${layout.container} overflow-hidden`}
           ref={containerRef}
           style={{ minHeight: '200px', width: `${windowWidth}px` }}
         >

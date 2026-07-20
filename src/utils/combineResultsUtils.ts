@@ -19,6 +19,9 @@ import {
   calculateRelevanceScore,
   getResultUsageInfo,
   isLnkPath,
+  isRecentShortcutPath,
+  appSourceRank,
+  isUninstallShortcutName,
 } from "./launcherUtils";
 import { detectSearchIntent, getSearchResultItem } from "./searchUtils";
 
@@ -116,6 +119,11 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       // 过滤掉回收站中的文件（$RECYCLE.BIN）
       const pathLower = everything.path.toLowerCase();
       if (pathLower.includes("$recycle.bin")) {
+        recycleBinFilteredCount++;
+        return false;
+      }
+      // Recent 快捷方式不当作应用
+      if (isRecentShortcutPath(everything.path)) {
         recycleBinFilteredCount++;
         return false;
       }
@@ -428,6 +436,10 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
         const pathLower = file.path.toLowerCase();
         // 过滤掉 WindowsApps 路径
         if (pathLower.includes("windowsapps")) {
+          return false;
+        }
+        // Recent 快捷方式不当作应用（常指向文件夹，会挤掉同名开始菜单应用）
+        if (isRecentShortcutPath(file.path)) {
           return false;
         }
         return pathLower.endsWith(".exe") || pathLower.endsWith(".lnk");
@@ -780,22 +792,33 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   // 统计最终结果列表中的应用数量（包括来自 filteredApps 和 filteredFiles 的应用）
   let finalAppResults = otherResults.filter((r) => r.type === "app");
 
-  // 对最终应用结果按名称去重：如果多个应用名称相同，优先保留 .exe 文件
+  // 对最终应用结果按名称去重：优先保留开始菜单/桌面/exe，剔除 Recent 等低质量项
   const seenFinalAppNames = new Set<string>();
   const deduplicatedAppResults = finalAppResults.reduce(
     (acc: typeof finalAppResults, app) => {
-      const normalizedName = normalizeAppName(
-        app.displayName || app.path.split(/[\\/]/).pop() || ""
-      );
+      // Recent 快捷方式直接丢弃（不应出现在应用横条）
+      if (isRecentShortcutPath(app.path)) {
+        return acc;
+      }
+
+      const displayName =
+        app.displayName || app.path.split(/[\\/]/).pop() || "";
+      // 卸载类快捷方式不进横条（避免「Uninstall AIALL」盖过真应用观感）
+      if (isUninstallShortcutName(displayName)) {
+        return acc;
+      }
+
+      const normalizedName = normalizeAppName(displayName);
       const pathLower = app.path.toLowerCase();
       const isExe = pathLower.endsWith(".exe");
+      const rank = appSourceRank(app.path);
 
       if (!seenFinalAppNames.has(normalizedName)) {
         // 第一次遇到这个名称，直接添加
         seenFinalAppNames.add(normalizedName);
         acc.push(app);
       } else {
-        // 已经存在同名应用，检查是否应该替换
+        // 已经存在同名应用，检查是否应该替换为更高质量来源
         const existingIndex = acc.findIndex((existing) => {
           const existingNormalizedName = normalizeAppName(
             existing.displayName || existing.path.split(/[\\/]/).pop() || ""
@@ -807,13 +830,15 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
           const existing = acc[existingIndex];
           const existingPathLower = existing.path.toLowerCase();
           const existingIsLnk = existingPathLower.endsWith(".lnk");
+          const existingRank = appSourceRank(existing.path);
 
-          // 如果当前是 .exe 而已存在的是 .lnk，替换它
-          if (isExe && existingIsLnk) {
+          // 来源更好（开始菜单 > 桌面 > … > Recent）则替换
+          if (rank < existingRank) {
+            acc[existingIndex] = app;
+          } else if (rank === existingRank && isExe && existingIsLnk) {
+            // 同来源时：.exe 优先于 .lnk
             acc[existingIndex] = app;
           }
-          // 如果当前是 .lnk 而已存在的是 .exe，跳过（不替换）
-          // 其他情况保持原样（不添加）
         }
       }
 

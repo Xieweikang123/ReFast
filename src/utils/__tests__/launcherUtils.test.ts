@@ -12,6 +12,9 @@ import {
   calculateRelevanceScore,
   normalizePathForHistory,
   normalizeAppName,
+  appSourceRank,
+  isRecentShortcutPath,
+  isUninstallShortcutName,
   isSystemFolder,
   shouldShowInHorizontal,
   getResultUsageInfo,
@@ -310,6 +313,38 @@ describe("launcherUtils", () => {
 
     it("应该转换为小写", () => {
       expect(normalizeAppName("WeChat")).toBe("wechat");
+    });
+  });
+
+  describe("appSourceRank / Recent / Uninstall", () => {
+    it("开始菜单优先于桌面与 Recent", () => {
+      expect(
+        appSourceRank(
+          "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\AIALL\\AIALL.lnk"
+        )
+      ).toBeLessThan(
+        appSourceRank("C:\\Users\\Public\\Desktop\\AIALL.lnk")
+      );
+      expect(
+        appSourceRank("C:\\Users\\Public\\Desktop\\AIALL.lnk")
+      ).toBeLessThan(
+        appSourceRank(
+          "C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AIALL.lnk"
+        )
+      );
+      expect(appSourceRank("C:\\Program Files\\AIALL\\app.exe")).toBe(2);
+      expect(appSourceRank("C:\\other\\foo.lnk")).toBe(3);
+    });
+
+    it("识别 Recent 与卸载快捷方式", () => {
+      expect(
+        isRecentShortcutPath(
+          "C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AIALL.lnk"
+        )
+      ).toBe(true);
+      expect(isUninstallShortcutName("Uninstall AIALL")).toBe(true);
+      expect(isUninstallShortcutName("卸载 AIALL")).toBe(true);
+      expect(isUninstallShortcutName("AIALL")).toBe(false);
     });
   });
 
