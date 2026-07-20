@@ -1,15 +1,17 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ResultList } from "./ResultList";
-import type {
-  AppInfo,
-  EverythingResult
-} from "../types";
+import type { AppInfo } from "../types";
 import type { SearchResult } from "../utils/resultUtils";
 import type { ResultStyle } from "../utils/themeConfig";
 import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
-import { isMacOS } from "../utils/platformUtils";
+import type {
+  GroupCollapseState,
+  VerticalGroupId,
+  VisibleVerticalItem,
+  VerticalGroup,
+} from "../utils/resultGroupUtils";
 
 interface SearchResultAreaProps {
   showAiAnswer: boolean;
@@ -23,11 +25,9 @@ interface SearchResultAreaProps {
   isEverythingAvailable: boolean;
   everythingTotalCount: number | null;
   everythingCurrentCount: number;
-  everythingVersion: string | null;
-  everythingResults: EverythingResult[];
   listRef: React.RefObject<HTMLDivElement>;
   horizontalResults: SearchResult[];
-  verticalResults: SearchResult[];
+  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   resultStyle: ResultStyle;
@@ -35,6 +35,7 @@ interface SearchResultAreaProps {
   filteredApps: AppInfo[];
   launchingAppPath: string | null;
   pastedImagePath: string | null;
+  pastedImageDataUrl: string | null;
   openHistory: Record<string, number>;
   urlRemarks: Record<string, string>;
   getPluginIcon: (id: string, className: string) => JSX.Element;
@@ -45,6 +46,10 @@ interface SearchResultAreaProps {
   isInteractive: boolean;
   isSearching: boolean;
   searchStatus: SearchStatusDetail;
+  groupCollapsed: GroupCollapseState;
+  onToggleGroup: (groupId: VerticalGroupId) => void;
+  onExpandEverything: () => void;
+  visibleVerticalItems: VisibleVerticalItem[];
 }
 
 export function SearchResultArea({
@@ -59,11 +64,9 @@ export function SearchResultArea({
   isEverythingAvailable,
   everythingTotalCount,
   everythingCurrentCount,
-  everythingVersion,
-  everythingResults,
   listRef,
   horizontalResults,
-  verticalResults,
+  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   resultStyle,
@@ -71,6 +74,7 @@ export function SearchResultArea({
   filteredApps,
   launchingAppPath,
   pastedImagePath,
+  pastedImageDataUrl,
   openHistory,
   urlRemarks,
   getPluginIcon,
@@ -81,13 +85,11 @@ export function SearchResultArea({
   isInteractive,
   isSearching,
   searchStatus,
+  groupCollapsed,
+  onToggleGroup,
+  onExpandEverything,
+  visibleVerticalItems,
 }: SearchResultAreaProps) {
-  const [isMac, setIsMac] = useState(false);
-
-  useEffect(() => {
-    isMacOS().then(setIsMac);
-  }, []);
-
   const renderSearchStatusBanner = () => (
     <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
       <div className="flex items-center gap-2">
@@ -303,7 +305,7 @@ export function SearchResultArea({
           {isSearching && renderSearchStatusBanner()}
           <ResultList
             horizontalResults={horizontalResults}
-            verticalResults={verticalResults}
+            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             query={query}
@@ -312,6 +314,7 @@ export function SearchResultArea({
             filteredApps={filteredApps}
             launchingAppPath={launchingAppPath}
             pastedImagePath={pastedImagePath}
+            pastedImageDataUrl={pastedImageDataUrl}
             openHistory={openHistory}
             urlRemarks={urlRemarks}
             getPluginIcon={getPluginIcon}
@@ -321,6 +324,10 @@ export function SearchResultArea({
             horizontalScrollContainerRef={horizontalScrollContainerRef}
             listRef={listRef}
             isInteractive={isInteractive}
+            groupCollapsed={groupCollapsed}
+            onToggleGroup={onToggleGroup}
+            onExpandEverything={onExpandEverything}
+            visibleVerticalItems={visibleVerticalItems}
           />
         </div>
       ) : null}
@@ -353,41 +360,15 @@ export function SearchResultArea({
         </div>
       )}
 
-      {/* Everything Search Status */}
-      {!showAiAnswer && query.trim() && isEverythingAvailable && (
+      {/* Everything 搜索中才显示进度，空闲状态由底部 Footer 统一展示，避免双状态栏 */}
+      {!showAiAnswer && query.trim() && isEverythingAvailable && isSearchingEverything && (
         <div className="px-6 py-2 border-t border-gray-200 bg-gray-50">
           <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-xs text-gray-600">
-              <div className="flex items-center gap-2">
-                {isSearchingEverything ? (
-                  <>
-                    <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
-                    <span className="text-blue-600">Everything 搜索中...</span>
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                    </svg>
-                    <span>
-                      {isMac ? "Spotlight" : "Everything"}: {everythingTotalCount !== null
-                        ? `${everythingResults.length.toLocaleString()}/${everythingTotalCount.toLocaleString()}`
-                        : everythingResults.length > 0
-                        ? `${everythingResults.length.toLocaleString()}/?`
-                        : "无结果"}
-                    </span>
-                  </>
-                )}
-              </div>
-              {everythingVersion && (
-                <div className="text-gray-500 text-xs">
-                  {isMac ? "macOS" : `v${everythingVersion}`}
-                </div>
-              )}
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
+              <span className="text-blue-600">Everything 搜索中...</span>
             </div>
-            
-            {/* 流式加载进度条 */}
-            {isSearchingEverything && everythingTotalCount !== null && everythingTotalCount > 0 && (
+            {everythingTotalCount !== null && everythingTotalCount > 0 && (
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between text-xs text-gray-500">
                   <span>

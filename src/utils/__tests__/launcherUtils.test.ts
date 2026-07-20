@@ -10,6 +10,8 @@ import {
   isLnkPath,
   isMathExpression,
   calculateRelevanceScore,
+  getMatchTier,
+  MatchTier,
   normalizePathForHistory,
   normalizeAppName,
   appSourceRank,
@@ -133,6 +135,13 @@ describe("launcherUtils", () => {
     it("应该返回转义后的文本当查询为空时", () => {
       const result = highlightText("<test>", "");
       expect(result).toBe("&lt;test&gt;");
+    });
+
+    it("查询与全文相同时不应高亮", () => {
+      const path = "C:\\Users\\test\\pasted_image.png";
+      const result = highlightText(path, path);
+      expect(result).not.toContain("highlight-match");
+      expect(result).toContain("pasted_image.png");
     });
   });
 
@@ -294,6 +303,45 @@ describe("launcherUtils", () => {
     it("应该支持拼音匹配", () => {
       const score = calculateRelevanceScore("微信", "C:\\WeChat.exe", "weixin", undefined, undefined, false, true, "weixin", "wx");
       expect(score).toBeGreaterThan(800);
+    });
+
+    it("未命中的应用不应再获得基础加分", () => {
+      const score = calculateRelevanceScore(
+        "Cursor",
+        "C:\\Cursor.lnk",
+        "opencode",
+        undefined,
+        undefined,
+        false,
+        true
+      );
+      expect(score).toBe(0);
+    });
+  });
+
+  describe("getMatchTier", () => {
+    it("应该识别完全匹配（忽略 .lnk）", () => {
+      expect(getMatchTier("OpenCode", "C:\\OpenCode.lnk", "opencode")).toBe(
+        MatchTier.EXACT
+      );
+      expect(getMatchTier("OpenCode.lnk", "C:\\OpenCode.lnk", "opencode")).toBe(
+        MatchTier.EXACT
+      );
+    });
+
+    it("应该识别前缀与包含匹配", () => {
+      expect(getMatchTier("OpenCode CLI", "C:\\oc.exe", "opencode")).toBe(
+        MatchTier.PREFIX
+      );
+      expect(getMatchTier("My OpenCode Tool", "C:\\oc.exe", "opencode")).toBe(
+        MatchTier.CONTAINS
+      );
+    });
+
+    it("未命中名称时应为 NONE", () => {
+      expect(getMatchTier("Cursor.lnk", "C:\\Cursor.lnk", "opencode")).toBe(
+        MatchTier.NONE
+      );
     });
   });
 

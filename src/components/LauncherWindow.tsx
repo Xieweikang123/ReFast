@@ -50,7 +50,18 @@ import {
   saveRemark as saveRemarkUtil,
 } from "../utils/contextMenuUtils";
 import { handleKeyDown as handleKeyDownUtil } from "../utils/keyboardUtils";
-
+import {
+  groupVerticalResults,
+  buildVisibleVerticalItems,
+  EVERYTHING_DEFAULT_LIMIT,
+  DEFAULT_GROUP_COLLAPSE,
+  SHOW_MORE_EVERYTHING_PATH,
+  type GroupCollapseState,
+  type VerticalGroupId,
+  type VisibleVerticalItem,
+  type VerticalGroup,
+} from "../utils/resultGroupUtils";
+import { isMacOS } from "../utils/platformUtils";
 
 interface LauncherWindowProps {
   updateInfo?: UpdateCheckResult | null;
@@ -79,6 +90,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [results, setResults] = useState<SearchResult[]>([]); // Keep for backward compatibility, will be removed later
   const [horizontalResults, setHorizontalResults] = useState<SearchResult[]>([]);
   const [verticalResults, setVerticalResults] = useState<SearchResult[]>([]);
+  const [groupCollapsed, setGroupCollapsed] = useState<GroupCollapseState>(DEFAULT_GROUP_COLLAPSE);
+  const [everythingLimit, setEverythingLimit] = useState(EVERYTHING_DEFAULT_LIMIT);
+  const [isMacPlatform, setIsMacPlatform] = useState(false);
   const [selectedHorizontalIndex, setSelectedHorizontalIndex] = useState<number | null>(null);
   const [selectedVerticalIndex, setSelectedVerticalIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0); // Keep for now, will be computed from selectedHorizontalIndex/selectedVerticalIndex
@@ -177,11 +191,73 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const isHorizontalNavigationRef = useRef(false); // 标记是否是横向导航切换
   const isAutoSelectingFirstHorizontalRef = useRef(false); // 标记是否正在自动选择第一个横向结果（用于防止scrollIntoView）
   const justJumpedToVerticalRef = useRef(false); // 标记是否刚刚从横向跳转到纵向（用于防止results useEffect重置selectedIndex）
+  const queryHistoryIndexRef = useRef(-1);
+  const isBrowsingQueryHistoryRef = useRef(false);
   
   // 存储从文件历史记录中提取的图标（路径 -> 图标数据）
   const extractedFileIconsRef = useRef<Map<string, string>>(new Map());
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
+
+  useEffect(() => {
+    isMacOS().then(setIsMacPlatform);
+  }, []);
+
+  const verticalGroups: VerticalGroup[] = useMemo(
+    () => groupVerticalResults(verticalResults, isMacPlatform),
+    [verticalResults, isMacPlatform]
+  );
+
+  const visibleVerticalItems: VisibleVerticalItem[] = useMemo(
+    () =>
+      buildVisibleVerticalItems({
+        groups: verticalGroups,
+        collapsed: groupCollapsed,
+        everythingLimit,
+      }),
+    [verticalGroups, groupCollapsed, everythingLimit]
+  );
+
+  // 查询变化时重置分组折叠与 Everything 展开条数
+  useEffect(() => {
+    setGroupCollapsed(DEFAULT_GROUP_COLLAPSE);
+    setEverythingLimit(EVERYTHING_DEFAULT_LIMIT);
+  }, [query]);
+
+  const setQueryFromInput = useCallback((value: string) => {
+    isBrowsingQueryHistoryRef.current = false;
+    queryHistoryIndexRef.current = -1;
+    setQuery(value);
+  }, []);
+
+  const applyQueryFromHistory = useCallback((value: string, historyIndex: number) => {
+    isBrowsingQueryHistoryRef.current = true;
+    queryHistoryIndexRef.current = historyIndex;
+    setQuery(value);
+  }, []);
+
+  const handleToggleGroup = useCallback((groupId: VerticalGroupId) => {
+    setGroupCollapsed((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
+    setSelectedVerticalIndex(null);
+  }, []);
+
+  const handleExpandEverything = useCallback(() => {
+    setEverythingLimit((prev) => prev + EVERYTHING_DEFAULT_LIMIT);
+  }, []);
+
+  // 可见纵向列表缩短时，校正选中索引
+  useEffect(() => {
+    if (
+      selectedVerticalIndex !== null &&
+      selectedVerticalIndex >= visibleVerticalItems.length
+    ) {
+      setSelectedVerticalIndex(
+        visibleVerticalItems.length > 0
+          ? visibleVerticalItems.length - 1
+          : null
+      );
+    }
+  }, [visibleVerticalItems, selectedVerticalIndex]);
 
   useEffect(() => {
     isMemoModalOpenRef.current = isMemoModalOpen;
@@ -644,7 +720,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     combinedResultsQuery,
     resultsCount: results.length,
     horizontalCount: horizontalResults.length,
-    verticalCount: verticalResults.length,
+    verticalCount: visibleVerticalItems.length,
     isSearchingEverything,
     isEverythingAvailable,
     everythingCurrentCount,
@@ -922,144 +998,72 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     
     
     // Only scroll for vertical results (horizontal results are in a horizontal scroll container)
-    if (listRef.current && selectedVerticalIndex !== null && verticalResults.length > 0 && selectedVerticalIndex >= 0) {
+    if (listRef.current && selectedVerticalIndex !== null && visibleVerticalItems.length > 0 && selectedVerticalIndex >= 0) {
       const container = listRef.current;
-      // Get the selected vertical result
-      const result = verticalResults[selectedVerticalIndex];
-      if (!result) {
+      const visibleItem = visibleVerticalItems[selectedVerticalIndex];
+      if (!visibleItem) {
         return;
       }
-      
-      // The key format is: `${result.type}-${result.path}-${selectedVerticalIndex}`
-      const itemKey = `${result.type}-${result.path}-${selectedVerticalIndex}`;
-      const item = container.querySelector(`[data-item-key="${itemKey}"]`) as HTMLElement;
-      
-      
+
+      const itemKey =
+        visibleItem.kind === "show_more"
+          ? `${SHOW_MORE_EVERYTHING_PATH}-${selectedVerticalIndex}`
+          : `${visibleItem.result.type}-${visibleItem.result.path}-${selectedVerticalIndex}`;
+      let item = container.querySelector(`[data-item-key="${itemKey}"]`) as HTMLElement | null;
+
       if (!item) {
-        // Fallback: try to find by iterating through children and checking data attributes
-        // or use offsetTop if the element structure allows
-        const allItems = container.querySelectorAll('[data-item-key]');
+        const allItems = container.querySelectorAll("[data-item-key]");
         for (let i = 0; i < allItems.length; i++) {
-          const el = allItems[i] as HTMLElement;
-          if (el.dataset.itemKey === itemKey) {
-            const item = el;
-                const itemHeight = item.offsetHeight;
-                const containerTop = container.scrollTop;
-                const containerHeight = container.clientHeight;
-                
-                // Use getBoundingClientRect to get accurate position relative to viewport
-                const containerRect = container.getBoundingClientRect();
-                const itemRect = item.getBoundingClientRect();
-                // Calculate item's position in the scrollable content
-                // itemRect.top - containerRect.top gives position relative to container's visible area
-                // Add containerTop to get absolute position in scrollable content
-                const itemTopRelative = itemRect.top - containerRect.top + containerTop;
-                
-                const itemBottom = itemTopRelative + itemHeight;
-                const visibleTop = containerTop;
-                const visibleBottom = containerTop + containerHeight;
-                
-                
-                // Only scroll if item is not fully visible
-                if (itemTopRelative < visibleTop || itemBottom > visibleBottom) {
-                  // Calculate target scroll position - only scroll the minimum needed
-                  const padding = 8; // Small padding for visual spacing
-                  let targetScroll = containerTop; // Start with current scroll
-                  
-                  if (itemTopRelative < visibleTop) {
-                    // Item is above visible area - scroll up just enough to show it
-                    targetScroll = itemTopRelative - padding;
-                  } else if (itemBottom > visibleBottom) {
-                    // Item is below visible area - scroll down just enough to show it
-                    // Only scroll if we need to - calculate minimum scroll needed
-                    const scrollNeeded = itemBottom - visibleBottom + padding;
-                    targetScroll = containerTop + scrollNeeded;
-                  }
-                  
-                  // Ensure we don't scroll past the top
-                  if (targetScroll < 0) {
-                    targetScroll = 0;
-                  }
-                  
-                  // Ensure we don't scroll past the bottom
-                  const maxScroll = container.scrollHeight - containerHeight;
-                  if (targetScroll > maxScroll) {
-                    targetScroll = maxScroll;
-                  }
-                  
-                  
-                  container.scrollTo({
-                    top: targetScroll,
-                    behavior: "smooth",
-                  });
-                } else {
-                }
-                return;
-              }
-            }
-            return;
+          const candidate = allItems[i] as HTMLElement;
+          if (candidate.dataset.itemKey === itemKey) {
+            item = candidate;
+            break;
           }
-      
-      // If we found the item, use it
-      if (item) {
-        const itemHeight = item.offsetHeight;
-        const containerTop = container.scrollTop;
-        const containerHeight = container.clientHeight;
-        
-        // Use getBoundingClientRect to get accurate position relative to viewport
-        const containerRect = container.getBoundingClientRect();
-        const itemRect = item.getBoundingClientRect();
-        // Calculate item's position in the scrollable content
-        // itemRect.top - containerRect.top gives position relative to container's visible area
-        // Add containerTop to get absolute position in scrollable content
-        const itemTopRelative = itemRect.top - containerRect.top + containerTop;
-        
-        const itemBottom = itemTopRelative + itemHeight;
-        const visibleTop = containerTop;
-        const visibleBottom = containerTop + containerHeight;
-        
-        
-        // Only scroll if item is not fully visible
-        if (itemTopRelative < visibleTop || itemBottom > visibleBottom) {
-          // Calculate target scroll position - only scroll the minimum needed
-          const padding = 8; // Small padding for visual spacing
-          let targetScroll = containerTop; // Start with current scroll
-          
-          if (itemTopRelative < visibleTop) {
-            // Item is above visible area - scroll up just enough to show it
-            targetScroll = itemTopRelative - padding;
-          } else if (itemBottom > visibleBottom) {
-            // Item is below visible area - scroll down just enough to show it
-            // Only scroll if we need to - calculate minimum scroll needed
-            const scrollNeeded = itemBottom - visibleBottom + padding;
-            targetScroll = containerTop + scrollNeeded;
-          }
-          
-          // Ensure we don't scroll past the top
-          if (targetScroll < 0) {
-            targetScroll = 0;
-          }
-          
-          // Ensure we don't scroll past the bottom
-          const maxScroll = container.scrollHeight - containerHeight;
-          if (targetScroll > maxScroll) {
-            targetScroll = maxScroll;
-          }
-          
-          
-          container.scrollTo({
-            top: targetScroll,
-            behavior: "smooth",
-          });
-        } else {
         }
-      } else {
       }
-    } else {
+
+      if (!item) {
+        return;
+      }
+
+      const itemHeight = item.offsetHeight;
+      const containerTop = container.scrollTop;
+      const containerHeight = container.clientHeight;
+      const containerRect = container.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      const itemTopRelative = itemRect.top - containerRect.top + containerTop;
+      const itemBottom = itemTopRelative + itemHeight;
+      const visibleTop = containerTop;
+      const visibleBottom = containerTop + containerHeight;
+
+      if (itemTopRelative < visibleTop || itemBottom > visibleBottom) {
+        const padding = 8;
+        let targetScroll = containerTop;
+
+        if (itemTopRelative < visibleTop) {
+          targetScroll = itemTopRelative - padding;
+        } else if (itemBottom > visibleBottom) {
+          const scrollNeeded = itemBottom - visibleBottom + padding;
+          targetScroll = containerTop + scrollNeeded;
+        }
+
+        if (targetScroll < 0) {
+          targetScroll = 0;
+        }
+
+        const maxScroll = container.scrollHeight - containerHeight;
+        if (targetScroll > maxScroll) {
+          targetScroll = maxScroll;
+        }
+
+        container.scrollTo({
+          top: targetScroll,
+          behavior: "smooth",
+        });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVerticalIndex]); // 只依赖 selectedVerticalIndex，避免在结果更新时触发滚动
-
+  }, [selectedVerticalIndex, visibleVerticalItems]); // 选中项或可见列表变化时滚动
   // Scroll selected horizontal item into view
   useEffect(() => {
     // Only scroll for horizontal results
@@ -1359,6 +1363,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   useSearch({
     query,
     isEverythingAvailable,
+    pastedImagePath,
     setFilteredApps,
     setFilteredFiles,
     setFilteredMemos,
@@ -1670,6 +1675,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         justJumpedToVerticalRef,
         horizontalResultsRef,
         currentLoadResultsRef,
+        queryHistoryIndexRef,
+        isBrowsingQueryHistoryRef,
         query,
         contextMenu,
         errorMessage,
@@ -1680,7 +1687,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         selectedHorizontalIndex,
         selectedVerticalIndex,
         horizontalResults,
-        verticalResults,
+        visibleVerticalItems,
         isResultsInteractive: isInteractive,
         setContextMenu,
         setErrorMessage,
@@ -1696,6 +1703,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         setResults,
         setHorizontalResults,
         setVerticalResults,
+        setQuery: setQueryFromInput,
+        applyQueryFromHistory,
+        onExpandEverything: handleExpandEverything,
         hideLauncherAndResetState,
         resetMemoState,
         handleLaunch,
@@ -1712,22 +1722,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       selectedHorizontalIndex,
       selectedVerticalIndex,
       horizontalResults,
-      verticalResults,
+      visibleVerticalItems,
       isInteractive,
-      setContextMenu,
-      setErrorMessage,
-      setIsPluginListModalOpen,
-      setIsMemoModalOpen,
-      setIsRemarkModalOpen,
-      setEditingRemarkUrl,
-      setRemarkText,
-      setPastedImageDataUrl,
-      setPastedImagePath,
-      setSelectedHorizontalIndex,
-      setSelectedVerticalIndex,
-      setResults,
-      setHorizontalResults,
-      setVerticalResults,
+      setQueryFromInput,
+      applyQueryFromHistory,
+      handleExpandEverything,
       hideLauncherAndResetState,
       resetMemoState,
       handleLaunch,
@@ -1829,7 +1828,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             layout={layout}
             inputRef={inputRef}
             query={query}
-            setQuery={setQuery}
+            setQuery={setQueryFromInput}
             handleKeyDown={handleKeyDown}
             handlePaste={handlePaste}
             pastedImageDataUrl={pastedImageDataUrl}
@@ -1857,11 +1856,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             isEverythingAvailable={isEverythingAvailable}
             everythingTotalCount={everythingTotalCount}
             everythingCurrentCount={everythingCurrentCount}
-            everythingVersion={everythingVersion}
-            everythingResults={everythingResults}
             listRef={listRef}
             horizontalResults={horizontalResults}
-            verticalResults={verticalResults}
+            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             resultStyle={resultStyle}
@@ -1869,6 +1866,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             filteredApps={filteredApps}
             launchingAppPath={launchingAppPath}
             pastedImagePath={pastedImagePath}
+            pastedImageDataUrl={pastedImageDataUrl}
             openHistory={openHistory}
             urlRemarks={urlRemarks}
             getPluginIcon={getPluginIcon}
@@ -1879,6 +1877,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             isInteractive={isInteractive}
             isSearching={isSearching}
             searchStatus={searchStatus}
+            groupCollapsed={groupCollapsed}
+            onToggleGroup={handleToggleGroup}
+            onExpandEverything={handleExpandEverything}
+            visibleVerticalItems={visibleVerticalItems}
           />
 
           {/* Footer */}

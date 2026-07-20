@@ -10,6 +10,10 @@ import {
   shouldShowInHorizontal,
   getResultUsageInfo,
   calculateRelevanceScore,
+  getMatchTier,
+  MatchTier,
+  isQueryIndependentResultType,
+  isLnkPath,
 } from "./launcherUtils";
 
 // SearchResult 类型定义（与 LauncherWindow.tsx 中的定义保持一致）
@@ -27,6 +31,202 @@ export type SearchResult = {
   displayName: string;
   path: string;
 };
+
+/**
+ * 有查询时：未命中名称/路径/拼音的常规结果应过滤掉
+ * 检测型结果（URL/邮箱/AI 等）始终保留
+ */
+export function shouldKeepResultForQuery(
+  result: SearchResult,
+  query: string
+): boolean {
+  const trimmed = query.trim();
+  if (!trimmed) return true;
+  if (isQueryIndependentResultType(result.type)) return true;
+
+  const tier = getMatchTier(
+    result.displayName,
+    result.path,
+    trimmed,
+    result.app?.name_pinyin ?? result.file?.name_pinyin,
+    result.app?.name_pinyin_initials ?? result.file?.name_pinyin_initials
+  );
+  return tier < MatchTier.NONE;
+}
+
+export interface CompareSearchResultsOptions {
+  query: string;
+  openHistory?: Record<string, number>;
+  /** 搜索设置相关关键词时，抬高 Windows 设置应用 */
+  shouldShowSettings?: boolean;
+  /** 是否让 ai/history/settings 类型始终置顶 */
+  preferSpecialTypes?: boolean;
+}
+
+/**
+ * 统一搜索结果比较：
+ * - 空查询：最近使用优先
+ * - 有查询：匹配档位优先 → 同档内最近使用 → 评分 → 类型 → 次数 → 名称
+ */
+export function compareSearchResults(
+  a: SearchResult,
+  b: SearchResult,
+  options: CompareSearchResultsOptions
+): number {
+  const {
+    query,
+    openHistory = {},
+    shouldShowSettings = false,
+    preferSpecialTypes = true,
+  } = options;
+  const trimmedQuery = query.trim();
+
+  if (preferSpecialTypes) {
+    const specialTypes = ["ai", "history", "settings"];
+    const aIsSpecial = specialTypes.includes(a.type);
+    const bIsSpecial = specialTypes.includes(b.type);
+    if (aIsSpecial && !bIsSpecial) return -1;
+    if (!aIsSpecial && bIsSpecial) return 1;
+    if (aIsSpecial && bIsSpecial) return 0;
+  }
+
+  const aAppName = (a.app?.name || a.displayName || "").toLowerCase();
+  const aAppPath = (a.path || "").toLowerCase();
+  const aIsSettingsApp =
+    a.type === "app" &&
+    (aAppName === "设置" ||
+      aAppName === "settings" ||
+      aAppPath.startsWith("shell:appsfolder") ||
+      aAppPath.startsWith("ms-settings:"));
+  const bAppName = (b.app?.name || b.displayName || "").toLowerCase();
+  const bAppPath = (b.path || "").toLowerCase();
+  const bIsSettingsApp =
+    b.type === "app" &&
+    (bAppName === "设置" ||
+      bAppName === "settings" ||
+      bAppPath.startsWith("shell:appsfolder") ||
+      bAppPath.startsWith("ms-settings:"));
+
+  if (shouldShowSettings) {
+    if (aIsSettingsApp && !bIsSettingsApp) return -1;
+    if (!aIsSettingsApp && bIsSettingsApp) return 1;
+  }
+
+  const aUsage = getResultUsageInfo(a, openHistory);
+  const bUsage = getResultUsageInfo(b, openHistory);
+  const aUseCount = aUsage.useCount;
+  const aLastUsed = aUsage.lastUsed;
+  const bUseCount = bUsage.useCount;
+  const bLastUsed = bUsage.lastUsed;
+
+  const aScore = calculateRelevanceScore(
+    a.displayName,
+    a.path,
+    trimmedQuery,
+    aUseCount,
+    aLastUsed,
+    a.type === "everything",
+    a.type === "app",
+    a.app?.name_pinyin,
+    a.app?.name_pinyin_initials,
+    a.type === "file",
+    a.type === "url"
+  );
+  const bScore = calculateRelevanceScore(
+    b.displayName,
+    b.path,
+    trimmedQuery,
+    bUseCount,
+    bLastUsed,
+    b.type === "everything",
+    b.type === "app",
+    b.app?.name_pinyin,
+    b.app?.name_pinyin_initials,
+    b.type === "file",
+    b.type === "url"
+  );
+
+  // Everything 内部快捷方式 (.lnk) 优先
+  if (a.type === "everything" && b.type === "everything") {
+    const aLnk = isLnkPath(a.path);
+    const bLnk = isLnkPath(b.path);
+    if (aLnk !== bLnk) return aLnk ? -1 : 1;
+  }
+
+  // 有查询：匹配档位优先于最近使用时间
+  if (trimmedQuery) {
+    const aTier = getMatchTier(
+      a.displayName,
+      a.path,
+      trimmedQuery,
+      a.app?.name_pinyin ?? a.file?.name_pinyin,
+      a.app?.name_pinyin_initials ?? a.file?.name_pinyin_initials
+    );
+    const bTier = getMatchTier(
+      b.displayName,
+      b.path,
+      trimmedQuery,
+      b.app?.name_pinyin ?? b.file?.name_pinyin,
+      b.app?.name_pinyin_initials ?? b.file?.name_pinyin_initials
+    );
+    if (aTier !== bTier) {
+      return aTier - bTier;
+    }
+
+    // 同档内：最近使用优先
+    if (aLastUsed > 0 && bLastUsed > 0) {
+      if (aLastUsed !== bLastUsed) return bLastUsed - aLastUsed;
+    } else if (aLastUsed > 0) {
+      return -1;
+    } else if (bLastUsed > 0) {
+      return 1;
+    }
+
+    if (bScore !== aScore) {
+      if (shouldShowSettings) {
+        const scoreDiff = Math.abs(bScore - aScore);
+        if (scoreDiff <= 500) {
+          if (aIsSettingsApp && !bIsSettingsApp) return -1;
+          if (!aIsSettingsApp && bIsSettingsApp) return 1;
+        }
+      }
+      return bScore - aScore;
+    }
+  } else {
+    // 空查询：最近使用绝对优先
+    if (aLastUsed > 0 && bLastUsed > 0) {
+      return bLastUsed - aLastUsed;
+    } else if (aLastUsed > 0) {
+      return -1;
+    } else if (bLastUsed > 0) {
+      return 1;
+    }
+
+    if (bScore !== aScore) {
+      return bScore - aScore;
+    }
+  }
+
+  // 类型优先级
+  if (a.type === "app" && b.type !== "app") return -1;
+  if (a.type !== "app" && b.type === "app") return 1;
+  if (a.type === "file" && b.type === "everything") return -1;
+  if (a.type === "everything" && b.type === "file") return 1;
+
+  if (
+    aUseCount !== undefined &&
+    bUseCount !== undefined &&
+    aUseCount !== bUseCount
+  ) {
+    return bUseCount - aUseCount;
+  } else if (aUseCount !== undefined && bUseCount === undefined) {
+    return -1;
+  } else if (aUseCount === undefined && bUseCount !== undefined) {
+    return 1;
+  }
+
+  return (a.displayName || "").localeCompare(b.displayName || "");
+}
 
 /**
  * 清空所有结果状态
@@ -286,89 +486,22 @@ export function splitResults(
   });
   
   const pluginResults = allResults.filter(result => result.type === "plugin");
-  const horizontalUnsorted = [...deduplicatedExecutableResults, ...systemFolderResults, ...pluginResults];
+  const horizontalUnsorted = [...deduplicatedExecutableResults, ...systemFolderResults, ...pluginResults]
+    .filter((result) => shouldKeepResultForQuery(result, searchQuery));
   
-  // 对横向列表按相关性评分、使用频率和最近使用时间排序
-  const horizontal = horizontalUnsorted.sort((a, b) => {
-    // 插件不再有特殊优先级，和应用一起按最近使用时间排序
-    
-    // 获取使用频率和最近使用时间
-    // 优先使用 openHistoryData（最新的实时数据），如果没有才使用 file.last_used（数据库中的历史数据）
-    // 注意：需要规范化路径以确保匹配（统一大小写和斜杠方向）
-    // 对于所有类型（应用、插件、文件等），都尝试从 openHistory 中获取最近使用时间
-    const aUsage = getResultUsageInfo(a, openHistoryData);
-    const bUsage = getResultUsageInfo(b, openHistoryData);
-    const aUseCount = aUsage.useCount;
-    const aLastUsed = aUsage.lastUsed;
-    const bUseCount = bUsage.useCount;
-    const bLastUsed = bUsage.lastUsed;
-    
-    // 第一优先级：最近使用时间（最近打开的始终排在前面，无论是否有查询）
-    // 只要两个项目都有使用时间，就严格按时间排序，不受评分影响
-    if (aLastUsed > 0 && bLastUsed > 0) {
-      // 两个都有使用时间，严格按时间降序排序（最近的在前面）
-      // 即使时间非常接近，也按时间排序，确保刚刚使用的项目排在最前面
-      return bLastUsed - aLastUsed;
-    } else if (aLastUsed > 0) {
-      // 只有 a 有使用时间，a 排在前面
-      return -1;
-    } else if (bLastUsed > 0) {
-      // 只有 b 有使用时间，b 排在前面
-      return 1;
-    }
-    
-    // 如果有查询，第二优先级：按相关性评分排序（评分高的在前）
-    if (searchQuery.trim()) {
-      const aScore = calculateRelevanceScore(
-        a.displayName,
-        a.path,
-        searchQuery,
-        aUseCount,
-        aLastUsed,
-        a.type === "everything",
-        a.type === "app",
-        a.app?.name_pinyin,
-        a.app?.name_pinyin_initials,
-        a.type === "file"
-      );
-      const bScore = calculateRelevanceScore(
-        b.displayName,
-        b.path,
-        searchQuery,
-        bUseCount,
-        bLastUsed,
-        b.type === "everything",
-        b.type === "app",
-        b.app?.name_pinyin,
-        b.app?.name_pinyin_initials,
-        b.type === "file"
-      );
-      
-      // 第二优先级：按评分降序排序（分数高的在前）
-      if (bScore !== aScore) {
-        return bScore - aScore;
-      }
-    }
-    
-    // 再次按使用频率排序（使用次数多的在前）
-    if (aUseCount !== undefined && bUseCount !== undefined) {
-      if (aUseCount !== bUseCount) {
-        return bUseCount - aUseCount; // 降序：使用次数多的在前
-      }
-    } else if (aUseCount !== undefined && bUseCount === undefined) {
-      return -1; // a 有使用次数，b 没有，a 在前
-    } else if (aUseCount === undefined && bUseCount !== undefined) {
-      return 1; // b 有使用次数，a 没有，b 在前
-    }
-    
-    // 最后按名称排序（保持稳定排序）
-    return (a.displayName || "").localeCompare(b.displayName || "");
-  });
-  
+  // 有查询：匹配档位优先；空查询：最近使用优先
+  const horizontal = horizontalUnsorted.sort((a, b) =>
+    compareSearchResults(a, b, {
+      query: searchQuery,
+      openHistory: openHistoryData,
+      preferSpecialTypes: false,
+    })
+  );
   
   const vertical = allResults.filter(result => {
     // 排除应该显示在横向列表中的结果（可执行文件、快捷方式、UWP 应用、系统文件夹、插件）
-    return !shouldShowInHorizontal(result);
+    if (shouldShowInHorizontal(result)) return false;
+    return shouldKeepResultForQuery(result, searchQuery);
   });
   
   

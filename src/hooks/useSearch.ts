@@ -11,12 +11,19 @@ import {
   isValidJson,
   isLikelyAbsolutePath,
 } from "../utils/launcherUtils";
+import {
+  parseSearchFilter,
+  hasSearchKeyword,
+  shouldSearchSource,
+} from "../utils/searchFilterUtils";
 import type { AppInfo, FileHistoryItem, MemoItem, EverythingResult } from "../types";
 
 export interface UseSearchOptions {
   // 查询状态
   query: string;
   isEverythingAvailable: boolean;
+  /** 粘贴图片的临时路径；与 query 相同时跳过 Everything */
+  pastedImagePath?: string | null;
   
   // 状态设置函数
   setFilteredApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
@@ -61,6 +68,14 @@ export interface UseSearchOptions {
   closeSessionSafe: (id?: string | null) => Promise<void>;
 }
 
+function buildSearchIdentity(query: string): string {
+  const parsed = parseSearchFilter(query);
+  if (parsed.hasFilter) {
+    return `${parsed.matchedPrefix ?? ""}${parsed.keyword}`;
+  }
+  return parsed.keyword;
+}
+
 /**
  * 搜索逻辑 Hook
  * 处理查询防抖、URL/Email/JSON 检测、Everything 搜索会话管理等
@@ -69,6 +84,7 @@ export function useSearch(options: UseSearchOptions): void {
   const {
     query,
     isEverythingAvailable,
+    pastedImagePath = null,
     setFilteredApps,
     setFilteredFiles,
     setFilteredMemos,
@@ -107,20 +123,18 @@ export function useSearch(options: UseSearchOptions): void {
 
   // Search applications, file history, and Everything when query changes (with debounce)
   useEffect(() => {
-    const trimmedQuery = query.trim();
+    const parsed = parseSearchFilter(query);
+    const searchIdentity = buildSearchIdentity(query);
+    const keyword = parsed.keyword;
     
-    // 优化：如果 trimmedQuery 没有真正变化（例如 "a " → "a"），直接返回，避免不必要的操作
-    // 这样可以避免退格时因为空格变化导致的卡顿
-    if (trimmedQuery === lastSearchQueryRef.current) {
-      // 如果查询为空且之前也为空，直接返回
-      if (trimmedQuery === "") {
+    // 优化：如果搜索身份没有真正变化，直接返回，避免不必要的操作
+    if (searchIdentity === lastSearchQueryRef.current) {
+      if (searchIdentity === "") {
         return;
       }
-      // 如果查询相同且有结果，直接返回，不重置防抖定时器
       if (hasResultsRef.current) {
         return;
       }
-      // 如果查询相同但没有结果，继续执行搜索逻辑（可能是结果被清空了）
     }
     
     // 清除之前的防抖定时器（只有在查询真正变化时才清除）
@@ -129,13 +143,13 @@ export function useSearch(options: UseSearchOptions): void {
       debounceTimeoutRef.current = null;
     }
 
-    if (trimmedQuery !== "" && trimmedQuery !== lastSearchQueryRef.current) {
+    if (searchIdentity !== "" && searchIdentity !== lastSearchQueryRef.current) {
       setIsDebouncePending?.(true);
       setIsLocalSearchPending?.(false);
     }
     
-    if (trimmedQuery === "") {
-      // 关闭当前 Everything 搜索会话
+    // 空查询或纯过滤器前缀：清空结果
+    if (!hasSearchKeyword(parsed)) {
       const oldSessionId = pendingSessionIdRef.current;
       if (oldSessionId) {
         closeSessionSafe(oldSessionId);
@@ -145,7 +159,6 @@ export function useSearch(options: UseSearchOptions): void {
       displayedSearchQueryRef.current = "";
       lastSearchQueryRef.current = "";
       
-      // React 会自动批处理 useEffect 中的状态更新，不需要 flushSync
       setFilteredApps([]);
       setFilteredFiles([]);
       setFilteredMemos([]);
@@ -156,8 +169,8 @@ export function useSearch(options: UseSearchOptions): void {
       setDetectedUrls([]);
       setDetectedEmails([]);
       setDetectedJson(null);
-      setAiAnswer(null); // 清空 AI 回答
-      setShowAiAnswer(false); // 退出 AI 回答模式
+      setAiAnswer(null);
+      setShowAiAnswer(false);
       setResults([]);
       setSelectedIndex(0);
       setIsSearchingEverything(false);
@@ -174,33 +187,29 @@ export function useSearch(options: UseSearchOptions): void {
       setIsAiLoading(false);
     }
     
-    // Debounce search to avoid too many requests
-    // 优化防抖时间：与 EverythingSearchWindow 保持一致，提升响应速度
-    // Short queries (1-2 chars): 320ms (与 EverythingSearchWindow 一致)
-    // Medium queries (3-5 chars): 300ms
-    // Long queries (6+ chars): 200ms (仍然较快响应长查询)
-    const queryLength = trimmedQuery.length;
-    let debounceTime = 320; // default for short queries (与 EverythingSearchWindow 一致)
+    const queryLength = keyword.length;
+    let debounceTime = 320;
     if (queryLength >= 3 && queryLength <= 5) {
-      debounceTime = 300; // medium queries
+      debounceTime = 300;
     } else if (queryLength >= 6) {
-      debounceTime = 200; // long queries
+      debounceTime = 200;
     }
 
     const timeoutId = setTimeout(() => {
       setIsDebouncePending?.(false);
 
-      // 再次检查查询是否仍然有效（可能在防抖期间已被清空或改变）
-      const currentQuery = query.trim();
-      if (currentQuery === "" || currentQuery !== trimmedQuery) {
+      const currentParsed = parseSearchFilter(query);
+      const currentIdentity = buildSearchIdentity(query);
+      if (!hasSearchKeyword(currentParsed) || currentIdentity !== searchIdentity) {
         setIsLocalSearchPending?.(false);
         return;
       }
+
+      const currentKeyword = currentParsed.keyword;
+      const currentScope = currentParsed.scope;
       
       setIsLocalSearchPending?.(true);
-      // 在防抖定时器触发时清空结果，而不是在输入时清空
-      // 使用 startTransition 包装清空操作，避免阻塞后续的输入
-      if (trimmedQuery !== lastSearchQueryRef.current) {
+      if (searchIdentity !== lastSearchQueryRef.current) {
         startTransition(() => {
           setFilteredApps([]);
           setFilteredFiles([]);
@@ -214,32 +223,35 @@ export function useSearch(options: UseSearchOptions): void {
         hasResultsRef.current = false;
       }
       
-      // Extract URLs from query（移到防抖内部，避免每次输入都执行）
-      // 使用 startTransition 包装，避免阻塞后续的输入
+      // URL/Email/JSON 检测：仅在 all/file 等允许的 scope 下
       startTransition(() => {
         try {
-          const urls = extractUrls(query);
-          setDetectedUrls(urls);
+          if (shouldSearchSource(currentScope, "url")) {
+            setDetectedUrls(extractUrls(currentKeyword));
+          } else {
+            setDetectedUrls([]);
+          }
           
-          // Extract email addresses from query（移到防抖内部）
-          const emails = extractEmails(query);
-          setDetectedEmails(emails);
+          if (shouldSearchSource(currentScope, "email")) {
+            setDetectedEmails(extractEmails(currentKeyword));
+          } else {
+            setDetectedEmails([]);
+          }
           
-          // Check if query is valid JSON（移到防抖内部）
-          // 添加 try-catch 保护，避免长JSON解析时出错影响搜索流程
           try {
-            if (isValidJson(query)) {
-              setDetectedJson(query.trim());
+            if (
+              shouldSearchSource(currentScope, "json") &&
+              isValidJson(currentKeyword)
+            ) {
+              setDetectedJson(currentKeyword.trim());
             } else {
               setDetectedJson(null);
             }
           } catch (error) {
-            // 如果JSON检测失败（例如内存不足），静默处理，不影响搜索
             console.warn('[JSON检测] 检测失败，跳过JSON识别:', error);
             setDetectedJson(null);
           }
         } catch (error) {
-          // 如果URL/Email提取失败，静默处理，不影响搜索
           console.warn('[搜索] URL/Email提取失败:', error);
           setDetectedUrls([]);
           setDetectedEmails([]);
@@ -247,103 +259,132 @@ export function useSearch(options: UseSearchOptions): void {
         }
       });
       
-      const isPathQuery = isLikelyAbsolutePath(trimmedQuery);
+      const isPastedImageQuery =
+        !!pastedImagePath && currentKeyword === pastedImagePath.trim();
+      const isPathQuery =
+        shouldSearchSource(currentScope, "path") &&
+        (isLikelyAbsolutePath(currentKeyword) || isPastedImageQuery);
       
-      // 检查是否已有相同查询的活跃会话（快速检查，避免重复搜索）
-      const hasActiveSession = pendingSessionIdRef.current && currentSearchQueryRef.current === trimmedQuery;
-      // 使用 ref 而不是直接读取状态，避免触发不必要的重新渲染
+      const hasActiveSession =
+        pendingSessionIdRef.current &&
+        currentSearchQueryRef.current === currentKeyword;
       const hasResults = hasResultsRef.current;
       
-      // 如果已有相同查询的活跃会话且有结果，跳过重复搜索
       if (hasActiveSession && hasResults) {
         return;
       }
       
-      // 如果查询不同，关闭旧会话（不阻塞，异步执行）
-      if (pendingSessionIdRef.current && currentSearchQueryRef.current !== trimmedQuery) {
+      if (
+        pendingSessionIdRef.current &&
+        currentSearchQueryRef.current !== currentKeyword
+      ) {
         const oldSessionId = pendingSessionIdRef.current;
-        // 不阻塞等待，立即开始新搜索
-        closeSessionSafe(oldSessionId).catch(() => {
-          // 静默处理错误
-        });
+        closeSessionSafe(oldSessionId).catch(() => {});
         pendingSessionIdRef.current = null;
         currentSearchQueryRef.current = "";
         displayedSearchQueryRef.current = "";
       }
       
-      // 如果会话存在但结果为空，说明结果被清空了，需要重新搜索
       if (hasActiveSession && !hasResults) {
-        // 重置会话状态，强制重新搜索
         const oldSessionId = pendingSessionIdRef.current;
         if (oldSessionId) {
-          closeSessionSafe(oldSessionId).catch(() => {
-            // 静默处理错误
-          });
+          closeSessionSafe(oldSessionId).catch(() => {});
         }
         pendingSessionIdRef.current = null;
         currentSearchQueryRef.current = "";
         displayedSearchQueryRef.current = "";
       }
       
-      // 标记当前查询为已搜索
-      lastSearchQueryRef.current = trimmedQuery;
-      
-      // 处理绝对路径查询
+      lastSearchQueryRef.current = searchIdentity;
+
       if (isPathQuery) {
-        handleDirectPathLookup(trimmedQuery);
-        // 绝对路径查询不需要 Everything 结果
+        handleDirectPathLookup(currentKeyword);
         setEverythingResults([]);
         setEverythingTotalCount(null);
         setEverythingCurrentCount(0);
         setIsSearchingEverything(false);
         hasResultsRef.current = false;
-        // 关闭当前会话
         const oldSessionId = pendingSessionIdRef.current;
         if (oldSessionId) {
-          closeSessionSafe(oldSessionId).catch(() => {
-            // 静默处理错误
-          });
+          closeSessionSafe(oldSessionId).catch(() => {});
         }
         pendingSessionIdRef.current = null;
         currentSearchQueryRef.current = "";
         displayedSearchQueryRef.current = "";
       } else {
-        // 使用 startTransition 包装，避免阻塞后续的输入
         startTransition(() => {
           setDirectPathResult(null);
         });
         
-        // Everything 搜索立即执行，不延迟
-        if (isEverythingAvailable) {
-          startSearchSession(trimmedQuery).catch(() => {
-            // 静默处理错误
-          });
+        if (
+          isEverythingAvailable &&
+          shouldSearchSource(currentScope, "everything")
+        ) {
+          startSearchSession(currentKeyword).catch(() => {});
+        } else {
+          setEverythingResults([]);
+          setEverythingTotalCount(null);
+          setEverythingCurrentCount(0);
+          setIsSearchingEverything(false);
+          const oldSessionId = pendingSessionIdRef.current;
+          if (oldSessionId) {
+            closeSessionSafe(oldSessionId).catch(() => {});
+          }
+          pendingSessionIdRef.current = null;
+          currentSearchQueryRef.current = "";
+          displayedSearchQueryRef.current = "";
         }
       }
       
-      // ========== 性能优化：并行执行所有搜索 ==========
-      // 使用 setTimeout(0) 将搜索操作推迟到下一个事件循环，避免阻塞防抖定时器
-      // 这样可以让输入框更快响应，即使搜索函数正在执行
       setTimeout(() => {
-        const localSearchGeneration = trimmedQuery;
-        // 系统文件夹和文件历史搜索立即执行
-        Promise.all([
-          searchSystemFoldersWrapper(trimmedQuery),
-          searchFileHistoryWrapper(trimmedQuery),
-          searchApplicationsWrapper(trimmedQuery),
-        ])
-          .catch((error) => {
-            console.error("[搜索错误] 并行搜索失败:", error);
-          })
-          .finally(() => {
-            if (lastSearchQueryRef.current === localSearchGeneration) {
-              setIsLocalSearchPending?.(false);
-            }
-          });
+        const localSearchGeneration = searchIdentity;
+        const tasks: Promise<void>[] = [];
+
+        if (shouldSearchSource(currentScope, "systemFolder")) {
+          tasks.push(searchSystemFoldersWrapper(currentKeyword));
+        } else {
+          // 清空可能残留的系统文件夹由 combine 侧过滤；此处不拉新数据
+        }
+
+        if (shouldSearchSource(currentScope, "file")) {
+          tasks.push(searchFileHistoryWrapper(currentKeyword));
+        } else {
+          startTransition(() => setFilteredFiles([]));
+        }
+
+        if (shouldSearchSource(currentScope, "app")) {
+          tasks.push(searchApplicationsWrapper(currentKeyword));
+        } else {
+          startTransition(() => setFilteredApps([]));
+        }
+
+        const finishLocal = () => {
+          if (lastSearchQueryRef.current === localSearchGeneration) {
+            setIsLocalSearchPending?.(false);
+          }
+        };
+
+        if (tasks.length > 0) {
+          Promise.all(tasks)
+            .catch((error) => {
+              console.error("[搜索错误] 并行搜索失败:", error);
+            })
+            .finally(finishLocal);
+        } else {
+          finishLocal();
+        }
         
-        // 备忘录和插件搜索是纯前端过滤，立即执行（不会阻塞）
-        searchMemosWrapper(trimmedQuery);
-        handleSearchPlugins(trimmedQuery);
+        if (shouldSearchSource(currentScope, "memo")) {
+          searchMemosWrapper(currentKeyword);
+        } else {
+          startTransition(() => setFilteredMemos([]));
+        }
+
+        if (shouldSearchSource(currentScope, "plugin")) {
+          handleSearchPlugins(currentKeyword);
+        } else {
+          startTransition(() => setFilteredPlugins([]));
+        }
       }, 0);
     }, debounceTime) as unknown as number;
     
@@ -356,6 +397,5 @@ export function useSearch(options: UseSearchOptions): void {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, isEverythingAvailable]);
+  }, [query, isEverythingAvailable, pastedImagePath]);
 }
-

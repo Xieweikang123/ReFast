@@ -10,6 +10,7 @@ import { normalizePathForHistory } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 import { trackEvent } from "../api/events";
 import { executePlugin } from "../plugins";
+import { pushQueryHistory } from "./queryHistoryUtils";
 
 /**
  * 启动处理的选项接口
@@ -85,6 +86,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
   } = options;
 
   try {
+    // 成功启动时记录查询历史（短词 / 纯前缀不写）
+    pushQueryHistory(query);
+
     // 统一更新使用历史记录（所有类型统一处理）
     const pathToUpdate = result.path;
     const timestampToUpdate = Date.now() / 1000;

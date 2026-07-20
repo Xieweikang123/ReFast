@@ -5,6 +5,8 @@ import {
   selectFirstHorizontal,
   selectFirstVertical,
   splitResults,
+  compareSearchResults,
+  shouldKeepResultForQuery,
 } from "../resultUtils";
 import type { SearchResult } from "../resultUtils";
 
@@ -221,8 +223,8 @@ describe("resultUtils", () => {
       ];
 
       const openHistory = {
-        "C:\\new.exe": now,
-        "C:\\old.exe": now - 1000,
+        "C:\\new.exe": Math.floor(now / 1000),
+        "C:\\old.exe": Math.floor(now / 1000) - 1000,
       };
 
       const { horizontal } = splitResults(results, openHistory, "");
@@ -230,6 +232,90 @@ describe("resultUtils", () => {
       expect(horizontal.length).toBe(2);
       // 最近使用的应该排在前面
       expect(horizontal[0].path).toBe("C:\\new.exe");
+    });
+
+    it("有查询时应过滤未命中项，并让完全匹配优先于最近使用", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const results: SearchResult[] = [
+        {
+          type: "app",
+          displayName: "Cursor.lnk",
+          path: "C:\\Cursor.lnk",
+          app: { name: "Cursor.lnk" },
+        },
+        {
+          type: "app",
+          displayName: "OpenCode",
+          path: "C:\\OpenCode.lnk",
+          app: { name: "OpenCode" },
+        },
+        {
+          type: "app",
+          displayName: "OpenCode Helper",
+          path: "C:\\OpenCodeHelper.exe",
+          app: { name: "OpenCode Helper" },
+        },
+      ];
+
+      const openHistory = {
+        "C:\\Cursor.lnk": nowSec,
+        "C:\\OpenCodeHelper.exe": nowSec - 10,
+        // OpenCode 几乎未使用
+      };
+
+      const { horizontal } = splitResults(results, openHistory, "opencode");
+
+      expect(horizontal.map((r) => r.displayName)).toEqual([
+        "OpenCode",
+        "OpenCode Helper",
+      ]);
+      expect(horizontal.some((r) => r.displayName.includes("Cursor"))).toBe(
+        false
+      );
+    });
+  });
+
+  describe("shouldKeepResultForQuery", () => {
+    it("应保留 URL 等检测型结果", () => {
+      expect(
+        shouldKeepResultForQuery(
+          {
+            type: "url",
+            displayName: "https://example.com",
+            path: "https://example.com",
+            url: "https://example.com",
+          },
+          "opencode"
+        )
+      ).toBe(true);
+    });
+  });
+
+  describe("compareSearchResults", () => {
+    it("有查询时完全匹配应压过仅最近使用的弱相关项", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const exact: SearchResult = {
+        type: "app",
+        displayName: "OpenCode",
+        path: "C:\\OpenCode.lnk",
+        app: { name: "OpenCode" },
+      };
+      const recentPrefix: SearchResult = {
+        type: "app",
+        displayName: "OpenCode Helper",
+        path: "C:\\helper.exe",
+        app: { name: "OpenCode Helper" },
+      };
+      const openHistory = {
+        "C:\\helper.exe": nowSec,
+      };
+
+      expect(
+        compareSearchResults(exact, recentPrefix, {
+          query: "opencode",
+          openHistory,
+        })
+      ).toBeLessThan(0);
     });
   });
 });
