@@ -1,6 +1,6 @@
 [package]
 name = "re-fast"
-version = "1.0.68"
+version = "1.0.73"
 description = "基于 Tauri 2 的 Windows 快速启动器"
 authors = ["Xieweikang123"]
 license = "MIT"
@@ -53,6 +53,9 @@ windows = { version = "0.61", features = [
     "Win32_System_Com",
     "Win32_Globalization",
 ] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1.5"
 
 [features]
 # This feature is used for production builds or when `devPath` points to the filesystem

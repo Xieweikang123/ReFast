@@ -28,6 +28,8 @@ interface ResultIconProps {
   resultStyle: ResultStyle;
   getPluginIcon: (pluginId: string, className: string) => JSX.Element;
   size?: "horizontal" | "vertical";
+  /** 粘贴图片等场景的预览图（data URL） */
+  imagePreviewUrl?: string | null;
 }
 
 /**
@@ -43,6 +45,7 @@ export function ResultIcon({
   resultStyle,
   getPluginIcon,
   size = "vertical",
+  imagePreviewUrl = null,
 }: ResultIconProps) {
   // 根据 size 确定图标大小
   const getIconSize = () => {
@@ -410,6 +413,24 @@ export function ResultIcon({
           d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
         />
       </svg>
+    );
+  }
+
+  // 粘贴图片等：优先显示缩略图预览
+  if (imagePreviewUrl && (result.type === "file" || result.type === "everything")) {
+    const previewSize = size === "horizontal"
+      ? (isSelected ? "w-9 h-9" : "w-7 h-7")
+      : "w-8 h-8";
+    return (
+      <img
+        src={imagePreviewUrl}
+        alt={result.displayName}
+        className={`${previewSize} object-cover rounded`}
+        style={{ imageRendering: "auto" as const }}
+        onError={(e) => {
+          (e.target as HTMLImageElement).style.display = "none";
+        }}
+      />
     );
   }
 

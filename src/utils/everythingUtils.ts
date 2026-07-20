@@ -101,23 +101,13 @@ export async function startEverythingSearchSession(
   }
 
   const trimmed = searchQuery.trim();
-  // 性能优化：根据查询长度动态调整 maxResults
-  // 短查询（1-2字符）通常返回大量结果，使用较小的 maxResults 以加快会话创建
-  // 长查询（3+字符）结果更精确，可以使用较大的 maxResults
+  // 启动器首包尽量小：短词命中量大，限制条数可加快 Everything IPC
   const queryLength = trimmed.length;
-  let maxResultsToUse = LAUNCHER_MAX_RESULTS; // 默认 50
+  let maxResultsToUse = Math.min(LAUNCHER_MAX_RESULTS, 50);
   if (queryLength === 1) {
-    // 单字符查询：使用最小的 maxResults，因为通常返回数百万结果
-    maxResultsToUse = 50; // 进一步降低到 50，最大化性能
+    maxResultsToUse = Math.min(LAUNCHER_MAX_RESULTS, 30);
   } else if (queryLength === 2) {
-    // 双字符查询：使用较小的 maxResults
-    maxResultsToUse = 100;
-  } else if (queryLength <= 4) {
-    // 3-4字符查询：中等大小
-    maxResultsToUse = 200;
-  } else {
-    // 5+字符查询：可以使用更大的值
-    maxResultsToUse = 500;
+    maxResultsToUse = Math.min(LAUNCHER_MAX_RESULTS, 40);
   }
 
   // 保存当前搜索的 query
@@ -156,21 +146,37 @@ export async function startEverythingSearchSession(
   setEverythingCurrentCount(0);
   setIsSearchingEverything(true);
 
+  // 软超时：先结束「搜索中」提示，后台结果晚到仍可合并
+  const softTimeoutMs = 4000;
+  // 硬超时：彻底放弃本次会话创建
+  const hardTimeoutMs = 15000;
+  let softTimedOut = false;
+  const softTimer = window.setTimeout(() => {
+    softTimedOut = true;
+    if (creatingSessionQueryRef.current === trimmed) {
+      setIsSearchingEverything(false);
+    }
+  }, softTimeoutMs);
+
+  const clearSoftTimer = () => {
+    window.clearTimeout(softTimer);
+  };
+
   try {
-    const sessionTimeoutMs = 60000; // 60秒超时
     const sessionTimeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`创建搜索会话超时（${sessionTimeoutMs}ms）`));
-      }, sessionTimeoutMs);
+        reject(new Error(`创建搜索会话超时（${hardTimeoutMs}ms）`));
+      }, hardTimeoutMs);
     });
 
-    const session = await Promise.race([
-      tauriApi.startEverythingSearchSession(trimmed, {
-        maxResults: maxResultsToUse,
-        chunkSize: 50, // 启动器使用较小的 chunk_size，提升响应速度
-      }),
-      sessionTimeoutPromise,
-    ]);
+    const pageSize = Math.min(LAUNCHER_PAGE_SIZE, maxResultsToUse);
+    const sessionPromise = tauriApi.startEverythingSearchSession(trimmed, {
+      maxResults: maxResultsToUse,
+      chunkSize: pageSize,
+    });
+
+    const session = await Promise.race([sessionPromise, sessionTimeoutPromise]);
+    clearSoftTimer();
 
     // 检查查询是否仍然有效
     if (currentSearchQueryRef.current !== trimmed) {
@@ -191,18 +197,18 @@ export async function startEverythingSearchSession(
     const currentSessionId = session.sessionId;
     const currentQueryForPage = trimmed;
 
-    const timeoutMs = 30000; // 30秒超时
+    const rangeTimeoutMs = 5000;
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => {
-        reject(new Error(`获取首屏页超时（${timeoutMs}ms）`));
-      }, timeoutMs);
+        reject(new Error(`获取首屏页超时（${rangeTimeoutMs}ms）`));
+      }, rangeTimeoutMs);
     });
 
     Promise.race([
       tauriApi.getEverythingSearchRange(
         currentSessionId,
         offset,
-        LAUNCHER_PAGE_SIZE,
+        pageSize,
         {}
       ),
       timeoutPromise,
@@ -223,6 +229,7 @@ export async function startEverythingSearchSession(
         }
 
         // 更新结果（使用 startTransition 避免阻塞输入框）
+        // 软超时后仍合并晚到结果
         startTransition(() => {
           setEverythingResults(res.items);
           setEverythingCurrentCount(res.items.length);
@@ -263,13 +270,17 @@ export async function startEverythingSearchSession(
         }
 
         startTransition(() => {
-          setEverythingResults([]);
-          setEverythingTotalCount(null);
-          setEverythingCurrentCount(0);
+          // 软超时后已有本地结果可用，首屏失败时不要强行清空已展示的 Everything 空态以外的状态
+          if (!softTimedOut) {
+            setEverythingResults([]);
+            setEverythingTotalCount(null);
+            setEverythingCurrentCount(0);
+          }
           setIsSearchingEverything(false);
         });
       });
   } catch (error) {
+    clearSoftTimer();
     creatingSessionQueryRef.current = null;
     const errorStr = typeof error === "string" ? error : String(error);
     if (

@@ -35,7 +35,7 @@ function LauncherApp() {
 
   return (
     <div 
-      className="h-screen w-screen" 
+      className="w-screen" 
       style={{ 
         backgroundColor: 'transparent', 
         margin: 0, 

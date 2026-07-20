@@ -48,6 +48,12 @@ use tauri::{async_runtime, Emitter, Manager};
 pub(crate) static APP_CACHE: LazyLock<Arc<Mutex<Option<Arc<Vec<app_search::AppInfo>>>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(None)));
 
+static CALCULATOR_PAD_PENDING_EXPRESSION: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+static JSON_FORMATTER_PENDING_CONTENT: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 // 搜索任务管理器：管理 Everything 搜索的取消标志
 // 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
 struct SearchTaskManager {
@@ -271,6 +277,10 @@ pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
     if windows_to_notify.is_empty() {
         return Err("无法获取窗口".to_string());
     }
+
+    if !crate::app_index_watcher::try_acquire_rescan() {
+        return Err("应用索引正在扫描中，请稍后再试".to_string());
+    }
     
     let app_clone = app.clone();
     
@@ -369,6 +379,7 @@ pub async fn rescan_applications(app: tauri::AppHandle) -> Result<(), String> {
                 }
             }
         }
+        crate::app_index_watcher::release_rescan();
     });
     
     Ok(())
@@ -437,34 +448,6 @@ pub async fn search_applications(
         let mut results = app_search::windows::search_apps(&query_clone, apps.as_slice());
         let search_time = search_start.elapsed();
         
-        // #region agent log
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"id":"log_search_apps_1","timestamp":{},"location":"commands.rs:716","message":"search_applications search completed","data":{{"query":"{}","results_count":{},"apps_total":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                query_clone, results.len(), apps.len());
-            // 记录前5个搜索结果
-            for (idx, r) in results.iter().take(5).enumerate() {
-                let _ = writeln!(file, r#"{{"id":"log_search_apps_2","timestamp":{},"location":"commands.rs:722","message":"search result","data":{{"idx":{},"name":"{}","path":"{}","has_icon":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                    idx, r.name, r.path, r.icon.is_some());
-            }
-            // 检查是否有 iTunes 相关的应用
-            let itunes_apps: Vec<_> = apps.iter().filter(|a| a.name.to_lowercase().contains("itunes")).collect();
-            if !itunes_apps.is_empty() {
-                for (idx, app) in itunes_apps.iter().enumerate() {
-                    let _ = writeln!(file, r#"{{"id":"log_search_apps_3","timestamp":{},"location":"commands.rs:730","message":"iTunes app found in cache","data":{{"idx":{},"name":"{}","path":"{}","has_icon":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                        idx, app.name, app.path, app.icon.is_some());
-                }
-            } else {
-                let _ = writeln!(file, r#"{{"id":"log_search_apps_4","timestamp":{},"location":"commands.rs:737","message":"iTunes app NOT found in cache","data":{{"query":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                    query_clone);
-            }
-        }
-        // #endregion
         
         let total_time = std::time::Instant::now().duration_since(total_start);
         
@@ -516,17 +499,6 @@ pub async fn search_applications(
     
     // 在后台线程中异步处理图标提取，不阻塞搜索返回
     std::thread::spawn(move || {
-        // #region agent log
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"id":"log_extract_icons_1","timestamp":{},"location":"commands.rs:902","message":"extract_icons_for_results entry","data":{{"results_count":{},"results_with_icons":{},"results_without_icons":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                results_clone.len(),
-                results_clone.iter().filter(|r| r.icon.is_some()).count(),
-                results_clone.iter().filter(|r| r.icon.is_none()).count());
-        }
-        // #endregion
         
         // 筛选出缺少图标的应用，并去重（在后台线程中执行，不阻塞搜索返回）
         eprintln!("[图标提取] 开始筛选缺少图标的应用: 搜索结果总数={}", results_clone.len());
@@ -577,13 +549,6 @@ pub async fn search_applications(
         results_paths.sort();
         results_paths.dedup();
         
-        // #region agent log
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"id":"log_extract_icons_3","timestamp":{},"location":"commands.rs:950","message":"results_paths collected","data":{{"paths_count":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                results_paths.len());
-        }
-        // #endregion
         
         // 先检查缓存中是否已有图标，避免重复提取
         let mut paths_to_extract: Vec<String> = {
@@ -650,25 +615,8 @@ pub async fn search_applications(
             
             let path_lower = path_str.to_lowercase();
             let icon = if path_lower.starts_with("shell:appsfolder\\") {
-                // #region agent log
-                use std::fs::OpenOptions;
-                use std::io::Write;
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-                    let _ = writeln!(file, r#"{{"id":"log_uwp_icon_cmd_1","timestamp":{},"location":"commands.rs:781","message":"extracting icon for UWP app","data":{{"path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), path_str);
-                }
-                // #endregion
                 // UWP app - extract icon using special method
                 let icon_result = app_search::windows::extract_uwp_app_icon_base64(&path_str);
-                // #region agent log
-                if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-                    let icon_success = icon_result.is_some();
-                    let icon_len = icon_result.as_ref().map(|s| s.len()).unwrap_or(0);
-                    let _ = writeln!(file, r#"{{"id":"log_uwp_icon_cmd_2","timestamp":{},"location":"commands.rs:785","message":"icon extraction result","data":{{"path":"{}","success":{},"icon_len":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
-                        path_str, icon_success, icon_len);
-                }
-                // #endregion
                 icon_result
             } else {
                 let path = std::path::Path::new(&path_str);
@@ -799,10 +747,6 @@ pub async fn populate_app_icons(
             let path = Path::new(&app_info.path);
             let path_str = app_info.path.to_lowercase();
             
-            // #region agent log
-            eprintln!("[图标提取] 处理应用: name={}, path={}, has_existing_icon={}", 
-                app_info.name, app_info.path, app_info.icon.is_some());
-            // #endregion
             
             let icon = if path_str.starts_with("shell:appsfolder\\") {
                 // UWP app - extract icon using special method
@@ -828,12 +772,6 @@ pub async fn populate_app_icons(
                 }
             };
 
-            // #region agent log
-            let icon_extracted = icon.is_some();
-            let icon_len = icon.as_ref().map(|s| s.len()).unwrap_or(0);
-            eprintln!("[图标提取] 提取结果: name={}, path={}, icon_extracted={}, icon_len={}", 
-                app_info.name, app_info.path, icon_extracted, icon_len);
-            // #endregion
 
             // 更新应用信息：成功提取图标或标记为失败
             if let Some(icon_data) = icon {
@@ -867,8 +805,11 @@ pub async fn populate_app_icons(
 }
 
 #[tauri::command]
-pub fn launch_application(app: app_search::AppInfo) -> Result<(), String> {
-    app_search::windows::launch_app(&app)
+pub async fn launch_application(app: app_search::AppInfo) -> Result<(), String> {
+    // 放到阻塞线程池，避免偶发慢 IO/Shell 卡住前端 await 所在调度
+    async_runtime::spawn_blocking(move || app_search::windows::launch_app(&app))
+        .await
+        .map_err(|e| format!("launch_application join error: {}", e))?
 }
 
 /// 从应用索引中删除指定的应用
@@ -1048,20 +989,28 @@ pub async fn debug_app_icon(app_name: String, _app: tauri::AppHandle) -> Result<
     .map_err(|e| format!("debug_app_icon join error: {}", e))?
 }
 
+/// 解析 .lnk 快捷方式的目标路径
+#[tauri::command]
+pub async fn resolve_lnk_target(lnk_path: String) -> Result<String, String> {
+    use std::path::Path;
+
+
+    let result = async_runtime::spawn_blocking(move || {
+        app_search::windows::resolve_lnk_target(Path::new(&lnk_path))
+    })
+    .await
+    .map_err(|e| format!("resolve_lnk_target join error: {}", e))?;
+
+
+    result
+}
+
 /// 从文件路径提取图标（用于动态提取不在应用列表中的应用图标）
 /// 如果成功提取到图标，会自动将应用添加到应用列表中
 #[tauri::command]
 pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
     use std::path::Path;
     
-    // #region agent log
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-        let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_1","timestamp":{},"location":"commands.rs:1118","message":"extract_icon_from_path entry","data":{{"file_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), file_path);
-    }
-    // #endregion
     
     let app_clone = app.clone();
     let file_path_clone = file_path.clone();
@@ -1092,32 +1041,10 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
         let path = Path::new(&file_path);
         let path_lower = file_path.to_lowercase();
         
-        // #region agent log
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_2","timestamp":{},"location":"commands.rs:1128","message":"determining icon extraction method","data":{{"file_path":"{}","is_uwp":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
-                file_path, path_lower.starts_with("shell:appsfolder\\"));
-        }
-        // #endregion
         
         let icon = if path_lower.starts_with("shell:appsfolder\\") {
             // UWP app - extract icon using special method
-            // #region agent log
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-                let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_3","timestamp":{},"location":"commands.rs:1133","message":"calling extract_uwp_app_icon_base64","data":{{"file_path":"{}"}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), file_path);
-            }
-            // #endregion
             let icon_result = app_search::windows::extract_uwp_app_icon_base64(&file_path);
-            // #region agent log
-            if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-                let icon_success = icon_result.is_some();
-                let icon_len = icon_result.as_ref().map(|s| s.len()).unwrap_or(0);
-                let _ = writeln!(file, r#"{{"id":"log_extract_icon_path_4","timestamp":{},"location":"commands.rs:1138","message":"extract_uwp_app_icon_base64 result","data":{{"file_path":"{}","success":{},"icon_len":{}}},"sessionId":"debug-session","runId":"run1","hypothesisId":"A"}}"#, 
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 
-                    file_path, icon_success, icon_len);
-            }
-            // #endregion
             icon_result
         } else {
             let ext = path
@@ -1476,25 +1403,12 @@ pub async fn search_file_history(
     query: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<file_history::FileHistoryItem>, String> {
-    // #region agent log
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-        let _ = writeln!(file, r#"{{"location":"commands.rs:1155","message":"search_file_history API入口","data":{{"query":"{}"}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, query, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-    }
-    // #endregion
     
     // 性能优化：在后台线程执行，避免阻塞 Everything 搜索
     let app_data_dir = get_app_data_dir(&app)?;
     let query_clone = query.clone();
 
-    // #region agent log
-    let spawn_start = std::time::Instant::now();
-    // #endregion
     let result = tokio::task::spawn_blocking(move || {
-        // #region agent log
-        let blocking_start = std::time::Instant::now();
-        // #endregion
         // Search in open_history and convert to FileHistoryItem format
         let search_result = open_history::search_history(&query_clone, &app_data_dir)
             .map(|items| {
@@ -1533,27 +1447,11 @@ pub async fn search_file_history(
                     }
                 }).collect::<Vec<file_history::FileHistoryItem>>()
             });
-        // #region agent log
-        let blocking_duration = blocking_start.elapsed();
-        let results_count = match &search_result {
-            Ok(ref vec) => vec.len(),
-            Err(_) => 0,
-        };
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-            let _ = writeln!(file, r#"{{"location":"commands.rs:1164","message":"open_history::search_history 返回","data":{{"duration_ms":{},"results_count":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, blocking_duration.as_millis(), results_count, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-        }
-        // #endregion
         search_result
     })
     .await
     .map_err(|e| format!("搜索文件历史任务失败: {}", e))??;
     
-    // #region agent log
-    let spawn_duration = spawn_start.elapsed();
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(r"d:\project\re-fast\.cursor\debug.log") {
-        let _ = writeln!(file, r#"{{"location":"commands.rs:1167","message":"search_file_history API返回","data":{{"spawn_duration_ms":{},"await_duration_ms":{}}},"timestamp":{},"sessionId":"debug-session","runId":"run1","hypothesisId":"D"}}"#, spawn_duration.as_millis(), spawn_duration.as_millis(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-    }
-    // #endregion
     
     Ok(result)
 }
@@ -2112,7 +2010,7 @@ pub async fn start_everything_search_session(
                 everything_search::windows::search_files(
                     &combined_query,
                     max_results,
-                    5000,
+                    chunk_size,
                     Some(&cancel_flag),
                     Some(on_batch),
                 )
@@ -3492,7 +3390,7 @@ pub fn write_debug_log(message: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn paste_text_to_cursor(_text: String) -> Result<(), String> {
+pub fn paste_text_to_cursor(text: String) -> Result<(), String> {
     // 注意：text 参数现在不再使用，因为剪贴板已经通过 navigator.clipboard.writeText 在前端设置好了
     // 这个函数现在只负责模拟 Ctrl+V 按键
     #[cfg(target_os = "windows")]
@@ -4300,8 +4198,20 @@ pub async fn show_plugin_list_window(app: tauri::AppHandle) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_json_formatter_window(
+    app: tauri::AppHandle,
+    content: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
+
+    if let Some(json_content) = content {
+        let trimmed = json_content.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut pending) = JSON_FORMATTER_PENDING_CONTENT.lock() {
+                *pending = Some(trimmed.to_string());
+            }
+        }
+    }
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("json-formatter-window") {
@@ -4326,6 +4236,14 @@ pub async fn show_json_formatter_window(app: tauri::AppHandle) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn take_json_formatter_content() -> Option<String> {
+    JSON_FORMATTER_PENDING_CONTENT
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]
@@ -4455,8 +4373,20 @@ pub async fn show_file_toolbox_window(app: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub async fn show_calculator_pad_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_calculator_pad_window(
+    app: tauri::AppHandle,
+    expression: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
+
+    if let Some(expr) = expression {
+        let trimmed = expr.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut pending) = CALCULATOR_PAD_PENDING_EXPRESSION.lock() {
+                *pending = Some(trimmed.to_string());
+            }
+        }
+    }
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("calculator-pad-window") {
@@ -4481,6 +4411,14 @@ pub async fn show_calculator_pad_window(app: tauri::AppHandle) -> Result<(), Str
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn take_calculator_pad_expression() -> Option<String> {
+    CALCULATOR_PAD_PENDING_EXPRESSION
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]
@@ -5131,6 +5069,26 @@ pub fn remove_markdown_recent_file(app: tauri::AppHandle, file_path: String) -> 
     crate::markdown_recent_files::remove_recent_file(&app_data_dir, file_path)
 }
 
+#[tauri::command]
+pub fn get_json_formatter_recent_entries(
+    app: tauri::AppHandle,
+) -> Result<Vec<crate::json_formatter_recent::RecentJsonEntry>, String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::get_all_recent_entries(&app_data_dir)
+}
+
+#[tauri::command]
+pub fn add_json_formatter_recent_entry(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::add_recent_entry(&app_data_dir, content)
+}
+
+#[tauri::command]
+pub fn remove_json_formatter_recent_entry(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let app_data_dir = get_app_data_dir(&app)?;
+    crate::json_formatter_recent::remove_recent_entry(&app_data_dir, id)
+}
+
 // ===== Settings commands =====
 
 #[tauri::command]
@@ -5660,16 +5618,58 @@ mod startup {
 
 #[cfg(not(target_os = "windows"))]
 mod startup {
+    use std::path::PathBuf;
+
+    const PLIST_LABEL: &str = "com.re-fast.app";
+
+    fn get_launch_agent_path() -> PathBuf {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+        PathBuf::from(home).join("Library/LaunchAgents/com.re-fast.startup.plist")
+    }
+
     pub fn is_startup_enabled() -> Result<bool, String> {
-        Err("Startup is only supported on Windows".to_string())
+        let plist_path = get_launch_agent_path();
+        Ok(plist_path.exists())
     }
 
     pub fn enable_startup() -> Result<(), String> {
-        Err("Startup is only supported on Windows".to_string())
+        let exe_path = std::env::current_exe()
+            .map_err(|e| format!("Failed to get exe path: {}", e))?;
+        let plist_content = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>"#,
+            PLIST_LABEL,
+            exe_path.display()
+        );
+
+        let plist_path = get_launch_agent_path();
+        if let Some(parent) = plist_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create LaunchAgents dir: {}", e))?;
+        }
+        std::fs::write(&plist_path, plist_content)
+            .map_err(|e| format!("Failed to write Launch Agent plist: {}", e))
     }
 
     pub fn disable_startup() -> Result<(), String> {
-        Err("Startup is only supported on Windows".to_string())
+        let plist_path = get_launch_agent_path();
+        if plist_path.exists() {
+            std::fs::remove_file(&plist_path)
+                .map_err(|e| format!("Failed to remove Launch Agent plist: {}", e))?;
+        }
+        Ok(())
     }
 }
 
@@ -6236,4 +6236,17 @@ pub async fn copy_image_to_clipboard(image_path: String) -> Result<(), String> {
     {
         Err("Not implemented for this platform".to_string())
     }
+}
+
+/// 获取操作系统类型
+#[tauri::command]
+pub fn get_os_type() -> String {
+    #[cfg(target_os = "windows")]
+    { "windows".to_string() }
+    #[cfg(target_os = "macos")]
+    { "macos".to_string() }
+    #[cfg(target_os = "linux")]
+    { "linux".to_string() }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "unknown".to_string() }
 }

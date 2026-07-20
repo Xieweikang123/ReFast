@@ -260,11 +260,12 @@ div.results-list-scroll::-webkit-scrollbar-thumb:active {
   background-color: transparent;
 }
 
-/* 选中状态下的高亮文本 */
+/* 选中状态下的高亮文本：弱化对比，避免盖过标题 */
 .bg-gradient-to-r .highlight-match {
-  color: #fef3c7; /* amber-100，在蓝色背景上更清晰 */
-  background-color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.92);
+  background-color: rgba(255, 255, 255, 0.12);
   padding: 0 2px;
   border-radius: 3px;
+  font-weight: 500;
 }
 

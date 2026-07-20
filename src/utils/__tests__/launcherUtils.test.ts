@@ -10,8 +10,13 @@ import {
   isLnkPath,
   isMathExpression,
   calculateRelevanceScore,
+  getMatchTier,
+  MatchTier,
   normalizePathForHistory,
   normalizeAppName,
+  appSourceRank,
+  isRecentShortcutPath,
+  isUninstallShortcutName,
   isSystemFolder,
   shouldShowInHorizontal,
   getResultUsageInfo,
@@ -130,6 +135,13 @@ describe("launcherUtils", () => {
     it("应该返回转义后的文本当查询为空时", () => {
       const result = highlightText("<test>", "");
       expect(result).toBe("&lt;test&gt;");
+    });
+
+    it("查询与全文相同时不应高亮", () => {
+      const path = "C:\\Users\\test\\pasted_image.png";
+      const result = highlightText(path, path);
+      expect(result).not.toContain("highlight-match");
+      expect(result).toContain("pasted_image.png");
     });
   });
 
@@ -292,6 +304,45 @@ describe("launcherUtils", () => {
       const score = calculateRelevanceScore("微信", "C:\\WeChat.exe", "weixin", undefined, undefined, false, true, "weixin", "wx");
       expect(score).toBeGreaterThan(800);
     });
+
+    it("未命中的应用不应再获得基础加分", () => {
+      const score = calculateRelevanceScore(
+        "Cursor",
+        "C:\\Cursor.lnk",
+        "opencode",
+        undefined,
+        undefined,
+        false,
+        true
+      );
+      expect(score).toBe(0);
+    });
+  });
+
+  describe("getMatchTier", () => {
+    it("应该识别完全匹配（忽略 .lnk）", () => {
+      expect(getMatchTier("OpenCode", "C:\\OpenCode.lnk", "opencode")).toBe(
+        MatchTier.EXACT
+      );
+      expect(getMatchTier("OpenCode.lnk", "C:\\OpenCode.lnk", "opencode")).toBe(
+        MatchTier.EXACT
+      );
+    });
+
+    it("应该识别前缀与包含匹配", () => {
+      expect(getMatchTier("OpenCode CLI", "C:\\oc.exe", "opencode")).toBe(
+        MatchTier.PREFIX
+      );
+      expect(getMatchTier("My OpenCode Tool", "C:\\oc.exe", "opencode")).toBe(
+        MatchTier.CONTAINS
+      );
+    });
+
+    it("未命中名称时应为 NONE", () => {
+      expect(getMatchTier("Cursor.lnk", "C:\\Cursor.lnk", "opencode")).toBe(
+        MatchTier.NONE
+      );
+    });
   });
 
   describe("normalizePathForHistory", () => {
@@ -310,6 +361,38 @@ describe("launcherUtils", () => {
 
     it("应该转换为小写", () => {
       expect(normalizeAppName("WeChat")).toBe("wechat");
+    });
+  });
+
+  describe("appSourceRank / Recent / Uninstall", () => {
+    it("开始菜单优先于桌面与 Recent", () => {
+      expect(
+        appSourceRank(
+          "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\AIALL\\AIALL.lnk"
+        )
+      ).toBeLessThan(
+        appSourceRank("C:\\Users\\Public\\Desktop\\AIALL.lnk")
+      );
+      expect(
+        appSourceRank("C:\\Users\\Public\\Desktop\\AIALL.lnk")
+      ).toBeLessThan(
+        appSourceRank(
+          "C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AIALL.lnk"
+        )
+      );
+      expect(appSourceRank("C:\\Program Files\\AIALL\\app.exe")).toBe(2);
+      expect(appSourceRank("C:\\other\\foo.lnk")).toBe(3);
+    });
+
+    it("识别 Recent 与卸载快捷方式", () => {
+      expect(
+        isRecentShortcutPath(
+          "C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AIALL.lnk"
+        )
+      ).toBe(true);
+      expect(isUninstallShortcutName("Uninstall AIALL")).toBe(true);
+      expect(isUninstallShortcutName("卸载 AIALL")).toBe(true);
+      expect(isUninstallShortcutName("AIALL")).toBe(false);
     });
   });
 

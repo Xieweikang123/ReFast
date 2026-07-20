@@ -1,7 +1,7 @@
 {
   "name": "re-fast",
   "private": false,
-  "version": "1.0.68",
+  "version": "1.0.73",
   "description": "基于 Tauri 2 的 Windows 快速启动器",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "dev:tauri": "tauri dev",
     "build": "tsc && vite build",
     "build:tauri": "node scripts/sync-version.js patch && tauri build",
+    "release": "node scripts/release.js",
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",

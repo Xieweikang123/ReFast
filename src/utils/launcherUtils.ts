@@ -81,6 +81,11 @@ export function highlightText(text: string, query: string): string {
   }
 
   const trimmedQuery = query.trim();
+
+  // 查询与全文相同（如粘贴完整路径）时不高亮，避免整行变色抢视觉
+  if (trimmedQuery.toLowerCase() === text.toLowerCase()) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
   
   // 如果查询过长，直接返回转义后的文本，不进行高亮（避免正则表达式错误）
   if (trimmedQuery.length > MAX_HIGHLIGHT_QUERY_LENGTH) {
@@ -357,21 +362,28 @@ export function calculateRelevanceScore(
     }
   }
 
-  // 应用类型额外加分（优先显示应用）
+  // 应用类型额外加分：仅在名称/拼音真正命中时加分（避免未命中应用靠基础分挤进列表）
   if (isApp) {
-    // 如果应用名称匹配，给予更高的额外加分
-    if (nameLower === queryLower || nameLower.startsWith(queryLower) || nameLower.includes(queryLower)) {
-      score += 300; // 应用匹配时额外加300分
-    } else if (queryIsPinyin && (namePinyin || namePinyinInitials)) {
-      // 如果是拼音匹配，也给予额外加分
-      if ((namePinyin && (namePinyin === queryLower || namePinyin.startsWith(queryLower) || namePinyin.includes(queryLower))) ||
-          (namePinyinInitials && (namePinyinInitials === queryLower || namePinyinInitials.startsWith(queryLower) || namePinyinInitials.includes(queryLower)))) {
-        score += 300; // 拼音匹配时也额外加300分
-      } else {
-        score += 100; // 即使不匹配也给予基础加分
-      }
-    } else {
-      score += 100; // 即使不匹配也给予基础加分
+    const nameNormalized = normalizeAppName(displayName);
+    const nameHits =
+      nameNormalized === queryLower ||
+      nameLower === queryLower ||
+      nameNormalized.startsWith(queryLower) ||
+      nameLower.startsWith(queryLower) ||
+      nameNormalized.includes(queryLower) ||
+      nameLower.includes(queryLower);
+    const pinyinHits =
+      queryIsPinyin &&
+      ((!!namePinyin &&
+        (namePinyin === queryLower ||
+          namePinyin.startsWith(queryLower) ||
+          namePinyin.includes(queryLower))) ||
+        (!!namePinyinInitials &&
+          (namePinyinInitials === queryLower ||
+            namePinyinInitials.startsWith(queryLower) ||
+            namePinyinInitials.includes(queryLower))));
+    if (nameHits || pinyinHits) {
+      score += 300;
     }
   }
 
@@ -452,6 +464,117 @@ export function normalizePathForHistory(path: string): string {
  */
 export function normalizeAppName(name: string): string {
   return name.toLowerCase().replace(/\.(exe|lnk)$/i, "").trim();
+}
+
+/**
+ * 名称/路径匹配档位（数值越小匹配越强）
+ * 有查询时排序应优先按档位，再按最近使用时间
+ */
+export const MatchTier = {
+  EXACT: 0,
+  PREFIX: 1,
+  CONTAINS: 2,
+  PATH: 3,
+  NONE: 4,
+} as const;
+
+export type MatchTierValue = (typeof MatchTier)[keyof typeof MatchTier];
+
+/**
+ * 计算查询与结果的匹配档位（去 .exe/.lnk 后再比名称）
+ */
+export function getMatchTier(
+  displayName: string,
+  path: string,
+  query: string,
+  namePinyin?: string,
+  namePinyinInitials?: string
+): MatchTierValue {
+  const queryLower = query.toLowerCase().trim();
+  if (!queryLower) {
+    return MatchTier.NONE;
+  }
+
+  const nameLower = displayName.toLowerCase();
+  const nameNormalized = normalizeAppName(displayName);
+  const pathLower = path.toLowerCase();
+
+  if (nameNormalized === queryLower || nameLower === queryLower) {
+    return MatchTier.EXACT;
+  }
+  if (nameNormalized.startsWith(queryLower) || nameLower.startsWith(queryLower)) {
+    return MatchTier.PREFIX;
+  }
+  if (nameNormalized.includes(queryLower) || nameLower.includes(queryLower)) {
+    return MatchTier.CONTAINS;
+  }
+
+  // 拼音匹配（仅非中文查询）
+  if (!containsChinese(queryLower)) {
+    if (namePinyin) {
+      if (namePinyin === queryLower) return MatchTier.EXACT;
+      if (namePinyin.startsWith(queryLower)) return MatchTier.PREFIX;
+      if (namePinyin.includes(queryLower)) return MatchTier.CONTAINS;
+    }
+    if (namePinyinInitials) {
+      if (namePinyinInitials === queryLower) return MatchTier.EXACT;
+      if (namePinyinInitials.startsWith(queryLower)) return MatchTier.PREFIX;
+      if (namePinyinInitials.includes(queryLower)) return MatchTier.CONTAINS;
+    }
+  }
+
+  if (pathLower.includes(queryLower)) {
+    return MatchTier.PATH;
+  }
+
+  return MatchTier.NONE;
+}
+
+/** 有查询时始终保留的结果类型（检测型/功能型，不依赖名称命中） */
+export function isQueryIndependentResultType(type: string): boolean {
+  return (
+    type === "ai" ||
+    type === "url" ||
+    type === "email" ||
+    type === "json_formatter" ||
+    type === "search" ||
+    type === "settings" ||
+    type === "history"
+  );
+}
+
+/** Windows「最近使用」目录中的快捷方式（常指向文件夹，不宜当应用） */
+export function isRecentShortcutPath(path: string): boolean {
+  const pathLower = path.toLowerCase().replace(/\//g, "\\");
+  return (
+    pathLower.includes("\\recent\\") ||
+    pathLower.endsWith("\\recent") ||
+    pathLower.includes("\\microsoft\\windows\\recent")
+  );
+}
+
+/**
+ * 应用路径来源优先级（数值越小越应保留；同名去重时用）
+ * 开始菜单 > 桌面 > 普通 exe > 其它 lnk > Recent
+ */
+export function appSourceRank(path: string): number {
+  const p = path.toLowerCase().replace(/\//g, "\\");
+  if (isRecentShortcutPath(p)) return 9;
+  if (p.includes("\\start menu\\programs\\")) {
+    return 0;
+  }
+  if (p.includes("\\desktop\\")) {
+    return 1;
+  }
+  if (p.endsWith(".exe")) return 2;
+  if (p.endsWith(".lnk")) return 3;
+  return 5;
+}
+
+/** 卸载类快捷方式（不应挤占主应用展示位） */
+export function isUninstallShortcutName(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return n.startsWith("uninstall ") || n.startsWith("卸载");
 }
 
 /**

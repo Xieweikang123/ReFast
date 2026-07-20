@@ -37,6 +37,7 @@ export const tauriApi = {
     }) as AppInfo,
   debugAppIcon: async () => "",
   extractIconFromPath: async () => null as string | null,
+  resolveLnkTarget: async (lnkPath: string) => lnkPath,
   testAllIconExtractionMethods: async () => [] as Array<[string, string | null]>,
 
   // Launcher APIs
@@ -105,8 +106,14 @@ export const tauriApi = {
   showMemoWindow: async () => {},
   showPluginListWindow: async () => {},
   showJsonFormatterWindow: async () => {},
+  takeJsonFormatterContent: async () => null as string | null,
+  getJsonFormatterRecentEntries: async () =>
+    [] as Array<{ id: string; preview: string; content: string; lastOpened: number }>,
+  addJsonFormatterRecentEntry: async () => {},
+  removeJsonFormatterRecentEntry: async () => {},
   showFileToolboxWindow: async () => {},
   showCalculatorPadWindow: async () => {},
+  takeCalculatorPadExpression: async () => null as string | null,
   showEverythingSearchWindow: async () => {},
   showTranslationWindow: async () => {},
   showHexConverterWindow: async () => {},

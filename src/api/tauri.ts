@@ -102,6 +102,10 @@ export const tauriApi = {
     return invoke("extract_icon_from_path", { filePath });
   },
 
+  async resolveLnkTarget(lnkPath: string): Promise<string> {
+    return invoke("resolve_lnk_target", { lnkPath });
+  },
+
   async testAllIconExtractionMethods(filePath: string): Promise<Array<[string, string | null]>> {
     return invoke("test_all_icon_extraction_methods", { filePath });
   },
@@ -396,8 +400,28 @@ export const tauriApi = {
     return invoke("show_plugin_list_window");
   },
 
-  async showJsonFormatterWindow(): Promise<void> {
-    return invoke("show_json_formatter_window");
+  async showJsonFormatterWindow(content?: string): Promise<void> {
+    return invoke("show_json_formatter_window", {
+      content: content ?? null,
+    });
+  },
+
+  async takeJsonFormatterContent(): Promise<string | null> {
+    return invoke("take_json_formatter_content");
+  },
+
+  async getJsonFormatterRecentEntries(): Promise<
+    Array<{ id: string; preview: string; content: string; lastOpened: number }>
+  > {
+    return invoke("get_json_formatter_recent_entries");
+  },
+
+  async addJsonFormatterRecentEntry(content: string): Promise<void> {
+    return invoke("add_json_formatter_recent_entry", { content });
+  },
+
+  async removeJsonFormatterRecentEntry(id: string): Promise<void> {
+    return invoke("remove_json_formatter_recent_entry", { id });
   },
 
   async showMarkdownEditorWindow(): Promise<void> {
@@ -432,8 +456,14 @@ export const tauriApi = {
     return invoke("show_file_toolbox_window");
   },
 
-  async showCalculatorPadWindow(): Promise<void> {
-    return invoke("show_calculator_pad_window");
+  async showCalculatorPadWindow(expression?: string): Promise<void> {
+    return invoke("show_calculator_pad_window", {
+      expression: expression ?? null,
+    });
+  },
+
+  async takeCalculatorPadExpression(): Promise<string | null> {
+    return invoke("take_calculator_pad_expression");
   },
 
   async showEverythingSearchWindow(): Promise<void> {
@@ -734,6 +764,10 @@ export const tauriApi = {
 
   async searchWordRecords(query: string): Promise<WordRecord[]> {
     return invoke("search_word_records", { query });
+  },
+
+  async getOsType(): Promise<string> {
+    return invoke("get_os_type");
   },
 };
 

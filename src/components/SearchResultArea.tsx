@@ -2,12 +2,16 @@ import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ResultList } from "./ResultList";
-import type { 
-  AppInfo, 
-  EverythingResult 
-} from "../types";
+import type { AppInfo } from "../types";
 import type { SearchResult } from "../utils/resultUtils";
 import type { ResultStyle } from "../utils/themeConfig";
+import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
+import type {
+  GroupCollapseState,
+  VerticalGroupId,
+  VisibleVerticalItem,
+  VerticalGroup,
+} from "../utils/resultGroupUtils";
 
 interface SearchResultAreaProps {
   showAiAnswer: boolean;
@@ -21,11 +25,9 @@ interface SearchResultAreaProps {
   isEverythingAvailable: boolean;
   everythingTotalCount: number | null;
   everythingCurrentCount: number;
-  everythingVersion: string | null;
-  everythingResults: EverythingResult[];
   listRef: React.RefObject<HTMLDivElement>;
   horizontalResults: SearchResult[];
-  verticalResults: SearchResult[];
+  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   resultStyle: ResultStyle;
@@ -33,6 +35,7 @@ interface SearchResultAreaProps {
   filteredApps: AppInfo[];
   launchingAppPath: string | null;
   pastedImagePath: string | null;
+  pastedImageDataUrl: string | null;
   openHistory: Record<string, number>;
   urlRemarks: Record<string, string>;
   getPluginIcon: (id: string, className: string) => JSX.Element;
@@ -40,7 +43,13 @@ interface SearchResultAreaProps {
   handleContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   handleSaveImageToDownloads: (path: string) => Promise<void>;
   horizontalScrollContainerRef: React.RefObject<HTMLDivElement>;
-  isHorizontalResultsStable: boolean;
+  isInteractive: boolean;
+  isSearching: boolean;
+  searchStatus: SearchStatusDetail;
+  groupCollapsed: GroupCollapseState;
+  onToggleGroup: (groupId: VerticalGroupId) => void;
+  onExpandEverything: () => void;
+  visibleVerticalItems: VisibleVerticalItem[];
 }
 
 export function SearchResultArea({
@@ -55,11 +64,9 @@ export function SearchResultArea({
   isEverythingAvailable,
   everythingTotalCount,
   everythingCurrentCount,
-  everythingVersion,
-  everythingResults,
   listRef,
   horizontalResults,
-  verticalResults,
+  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   resultStyle,
@@ -67,6 +74,7 @@ export function SearchResultArea({
   filteredApps,
   launchingAppPath,
   pastedImagePath,
+  pastedImageDataUrl,
   openHistory,
   urlRemarks,
   getPluginIcon,
@@ -74,14 +82,40 @@ export function SearchResultArea({
   handleContextMenu,
   handleSaveImageToDownloads,
   horizontalScrollContainerRef,
-  isHorizontalResultsStable,
+  isInteractive,
+  isSearching,
+  searchStatus,
+  groupCollapsed,
+  onToggleGroup,
+  onExpandEverything,
+  visibleVerticalItems,
 }: SearchResultAreaProps) {
-  
+  const renderSearchStatusBanner = () => (
+    <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
+      <div className="flex items-center gap-2">
+        <div className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+        <span className="font-medium">{searchStatus.primary}</span>
+      </div>
+      {searchStatus.items.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pl-5">
+          {searchStatus.items.map((item) => (
+            <span
+              key={item}
+              className="rounded-md bg-blue-100/80 px-1.5 py-0.5 text-[11px] text-blue-700"
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div className="flex-1 flex flex-col min-h-0">
+    <div className="flex flex-col flex-1 min-h-0">
       {showAiAnswer ? (
         // AI 回答模式
-        <div className="flex-1 overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
+        <div className="overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
           <div className="px-6 py-4">
             {isAiLoading && !aiAnswer ? (
               // 只在完全没有内容时显示加载状态
@@ -231,7 +265,7 @@ export function SearchResultArea({
         // 骨架屏：搜索中时显示，模拟结果列表样式
         <div
           ref={listRef}
-          className="flex-1 min-h-0 results-list-scroll"
+          className="min-h-0 results-list-scroll"
           style={{ maxHeight: '500px' }}
         >
           {Array.from({ length: 8 }).map((_, index) => {
@@ -267,71 +301,74 @@ export function SearchResultArea({
           })}
         </div>
       ) : results.length > 0 ? (
-        <ResultList
-          horizontalResults={horizontalResults}
-          verticalResults={verticalResults}
-          selectedHorizontalIndex={selectedHorizontalIndex}
-          selectedVerticalIndex={selectedVerticalIndex}
-          query={query}
-          resultStyle={resultStyle}
-          apps={apps}
-          filteredApps={filteredApps}
-          launchingAppPath={launchingAppPath}
-          pastedImagePath={pastedImagePath}
-          openHistory={openHistory}
-          urlRemarks={urlRemarks}
-          getPluginIcon={getPluginIcon}
-          onLaunch={handleLaunch}
-          onContextMenu={handleContextMenu}
-          onSaveImageToDownloads={handleSaveImageToDownloads}
-          horizontalScrollContainerRef={horizontalScrollContainerRef}
-          listRef={listRef}
-          isHorizontalResultsStable={isHorizontalResultsStable}
-        />
+        <div className="relative flex flex-col">
+          {isSearching && renderSearchStatusBanner()}
+          <ResultList
+            horizontalResults={horizontalResults}
+            verticalGroups={verticalGroups}
+            selectedHorizontalIndex={selectedHorizontalIndex}
+            selectedVerticalIndex={selectedVerticalIndex}
+            query={query}
+            resultStyle={resultStyle}
+            apps={apps}
+            filteredApps={filteredApps}
+            launchingAppPath={launchingAppPath}
+            pastedImagePath={pastedImagePath}
+            pastedImageDataUrl={pastedImageDataUrl}
+            openHistory={openHistory}
+            urlRemarks={urlRemarks}
+            getPluginIcon={getPluginIcon}
+            onLaunch={handleLaunch}
+            onContextMenu={handleContextMenu}
+            onSaveImageToDownloads={handleSaveImageToDownloads}
+            horizontalScrollContainerRef={horizontalScrollContainerRef}
+            listRef={listRef}
+            isInteractive={isInteractive}
+            groupCollapsed={groupCollapsed}
+            onToggleGroup={onToggleGroup}
+            onExpandEverything={onExpandEverything}
+            visibleVerticalItems={visibleVerticalItems}
+          />
+        </div>
       ) : null}
 
       {/* Loading or Empty State */}
-      {!showAiAnswer && results.length === 0 && query && (
-        <div className="px-6 py-8 text-center text-gray-500 flex-1 flex items-center justify-center">
+      {!showAiAnswer && results.length === 0 && query && !isSearching && (
+        <div className="px-6 py-8 text-center text-gray-500">
           未找到匹配的应用或文件
         </div>
       )}
 
-      {/* Everything Search Status */}
-      {!showAiAnswer && query.trim() && isEverythingAvailable && (
+      {!showAiAnswer && results.length === 0 && query && isSearching && (
+        <div className="px-6 py-8 text-center text-gray-500">
+          <div className="flex flex-col items-center gap-3 max-w-sm mx-auto">
+            <div className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-blue-500" />
+            <div className="text-sm font-medium text-gray-700">{searchStatus.primary}</div>
+            {searchStatus.items.length > 0 && (
+              <div className="flex flex-wrap justify-center gap-1.5">
+                {searchStatus.items.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-md bg-gray-100 px-2 py-0.5 text-xs text-gray-600"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Everything 搜索中才显示进度，空闲状态由底部 Footer 统一展示，避免双状态栏 */}
+      {!showAiAnswer && query.trim() && isEverythingAvailable && isSearchingEverything && (
         <div className="px-6 py-2 border-t border-gray-200 bg-gray-50">
           <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-xs text-gray-600">
-              <div className="flex items-center gap-2">
-                {isSearchingEverything ? (
-                  <>
-                    <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
-                    <span className="text-blue-600">Everything 搜索中...</span>
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-3 h-3 text-green-600" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                    </svg>
-                    <span>
-                      Everything: {everythingTotalCount !== null 
-                        ? `${everythingResults.length.toLocaleString()}/${everythingTotalCount.toLocaleString()}`
-                        : everythingResults.length > 0
-                        ? `${everythingResults.length.toLocaleString()}/?`
-                        : "无结果"}
-                    </span>
-                  </>
-                )}
-              </div>
-              {everythingVersion && (
-                <div className="text-gray-500 text-xs">
-                  v{everythingVersion}
-                </div>
-              )}
+            <div className="flex items-center gap-2 text-xs text-gray-600">
+              <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
+              <span className="text-blue-600">Everything 搜索中...</span>
             </div>
-            
-            {/* 流式加载进度条 */}
-            {isSearchingEverything && everythingTotalCount !== null && everythingTotalCount > 0 && (
+            {everythingTotalCount !== null && everythingTotalCount > 0 && (
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between text-xs text-gray-500">
                   <span>
@@ -356,7 +393,7 @@ export function SearchResultArea({
       )}
 
       {!showAiAnswer && results.length === 0 && !query && (
-        <div className="px-6 py-8 text-center text-gray-400 text-sm flex-1 flex items-center justify-center">
+        <div className="flex-1 flex items-center justify-center px-6 py-6 text-center text-gray-400 text-sm">
           输入关键词搜索应用，或粘贴文件路径
         </div>
       )}

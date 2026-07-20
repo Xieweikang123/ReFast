@@ -800,3 +800,12 @@ pub mod monitor {
         Ok(())
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub mod monitor {
+    use std::path::PathBuf;
+
+    pub fn start_clipboard_monitor(_app_data_dir: PathBuf) -> Result<(), String> {
+        Err("Clipboard monitor is not yet supported on this platform".to_string())
+    }
+}

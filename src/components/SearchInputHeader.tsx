@@ -1,4 +1,5 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useEffect } from "react";
+import { parseSearchFilter } from "../utils/searchFilterUtils";
 
 interface LayoutConfig {
   header: string;
@@ -51,6 +52,23 @@ export function SearchInputHeader({
     lineHeight: '1.5',
     minHeight: '1.5em'
   }), []);
+
+  const filterHint = useMemo(() => {
+    const parsed = parseSearchFilter(query);
+    return parsed.hasFilter ? parsed.prefixLabel : undefined;
+  }, [query]);
+
+  // 粘贴长路径时滚到末尾，优先露出文件名
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el || !query) return;
+    const looksLikePath = /[\\/]/.test(query) && query.length > 40;
+    if (pastedImageDataUrl || looksLikePath) {
+      requestAnimationFrame(() => {
+        el.scrollLeft = el.scrollWidth;
+      });
+    }
+  }, [query, pastedImageDataUrl, inputRef]);
 
   return (
     <div 
@@ -141,10 +159,19 @@ export function SearchInputHeader({
               }}
             />
           )}
+          {filterHint && (
+            <span
+              className="flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 border border-indigo-100"
+              title={`过滤器：${filterHint}（前缀 a/f/p/m/e + 空格）`}
+            >
+              {filterHint}
+            </span>
+          )}
           <input
             ref={inputRef}
             type="text"
             value={query}
+            title={query || undefined}
             onChange={(e) => {
               // 参考搜索插件输入框的简单实现，直接更新状态
               // React 的受控组件本身就能很好地处理输入法组合输入，不需要额外的干预

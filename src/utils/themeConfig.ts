@@ -122,10 +122,10 @@ export function getThemeConfig(style: ResultStyle): ThemeConfig {
     iconColor: (selected: boolean, defaultColor: string) => (selected ? "text-white" : defaultColor),
     title: (selected: boolean) => (selected ? "text-white" : "text-gray-900"),
     aiText: (selected: boolean) => (selected ? "text-blue-50" : "text-gray-600"),
-    pathText: (selected: boolean) => (selected ? "text-blue-100/90" : "text-gray-500"),
-    metaText: (selected: boolean) => (selected ? "text-purple-200" : "text-gray-400"),
-    descText: (selected: boolean) => (selected ? "text-green-200" : "text-gray-500"),
-    usageText: (selected: boolean) => (selected ? "text-blue-200" : "text-gray-400"),
+    pathText: (selected: boolean) => (selected ? "text-blue-100/70" : "text-gray-500"),
+    metaText: (selected: boolean) => (selected ? "text-blue-100/60" : "text-gray-400"),
+    descText: (selected: boolean) => (selected ? "text-blue-50/80" : "text-gray-500"),
+    usageText: (selected: boolean) => (selected ? "text-blue-100/60" : "text-gray-400"),
     tag: (type: string, selected: boolean) => {
       const map: Record<string, string> = {
         url: selected ? "bg-blue-400 text-white" : "bg-blue-100 text-blue-700 border border-blue-200",

@@ -25,6 +25,8 @@ mod window_config;
 mod clipboard;
 mod word_records;
 mod file_watcher;
+mod app_index_watcher;
+mod json_formatter_recent;
 mod markdown_recent_files;
 
 use crate::commands::get_app_data_dir;
@@ -596,9 +598,11 @@ fn main() {
             std::thread::spawn(move || {
                 open_history::load_history(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
                 markdown_recent_files::load_recent_files(&app_data_dir_clone).ok(); // Ignore errors if file doesn't exist
+                json_formatter_recent::load_recent_entries(&app_data_dir_clone).ok();
             });
             open_history::load_history(&app_data_dir).ok(); // Ignore errors if file doesn't exist
             markdown_recent_files::load_recent_files(&app_data_dir).ok(); // Ignore errors if file doesn't exist
+            json_formatter_recent::load_recent_entries(&app_data_dir).ok();
             shortcuts::load_shortcuts(&app_data_dir).ok(); // Ignore errors if file doesn't exist
 
             // Sync startup setting on Windows
@@ -642,6 +646,12 @@ fn main() {
                 }
                 // No background icon extraction on startup - icons will be extracted on-demand during search
             });
+
+            // 监听开始菜单/桌面变更，新装软件防抖后静默重扫进索引
+            #[cfg(target_os = "windows")]
+            {
+                app_index_watcher::start(app.handle().clone());
+            }
 
             // Show launcher window on startup after a short delay to ensure frontend is loaded
             let app_handle = app.handle().clone();
@@ -699,6 +709,7 @@ fn main() {
             add_app_to_index,
             debug_app_icon,
             extract_icon_from_path,
+            resolve_lnk_target,
             test_all_icon_extraction_methods,
             toggle_launcher,
             hide_launcher,
@@ -767,6 +778,7 @@ fn main() {
             show_memo_window,
             show_plugin_list_window,
             show_json_formatter_window,
+            take_json_formatter_content,
             show_markdown_editor_window,
             show_translation_window,
             show_hex_converter_window,
@@ -774,6 +786,7 @@ fn main() {
             // pick_color_from_screen,     // 暂时屏蔽，待优化
             show_file_toolbox_window,
             show_calculator_pad_window,
+            take_calculator_pad_expression,
             show_everything_search_window,
             preview_file_replace,
             execute_file_replace,
@@ -788,6 +801,9 @@ fn main() {
             add_markdown_recent_file,
             add_markdown_recent_file_with_content,
             remove_markdown_recent_file,
+            get_json_formatter_recent_entries,
+            add_json_formatter_recent_entry,
+            remove_json_formatter_recent_entry,
             get_settings,
             save_settings,
             get_everything_custom_filters,
@@ -820,7 +836,25 @@ fn main() {
             show_clipboard_window,
             get_clipboard_image_data,
             copy_image_to_clipboard,
+            get_os_type,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            match event {
+                // macOS: 点击 dock 图标时显示主窗口
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    if let Some(window) = app_handle.get_webview_window("launcher") {
+                        let _ = window.is_visible().map(|visible| {
+                            if !visible {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        });
+                    }
+                }
+                _ => {}
+            }
+        });
 }

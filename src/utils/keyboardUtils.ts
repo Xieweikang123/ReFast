@@ -12,6 +12,11 @@ import {
   selectFirstHorizontal,
   selectFirstVertical,
 } from "./resultUtils";
+import { getQueryHistory } from "./queryHistoryUtils";
+import {
+  type VisibleVerticalItem,
+  getResultFromVisibleItem,
+} from "./resultGroupUtils";
 
 /**
  * 键盘导航处理的选项接口
@@ -26,6 +31,9 @@ export interface HandleKeyDownOptions {
   justJumpedToVerticalRef: MutableRefObject<boolean>;
   horizontalResultsRef: MutableRefObject<SearchResult[]>;
   currentLoadResultsRef: MutableRefObject<SearchResult[]>;
+  /** 查询历史浏览索引，-1 表示未在浏览 */
+  queryHistoryIndexRef: MutableRefObject<number>;
+  isBrowsingQueryHistoryRef: MutableRefObject<boolean>;
 
   // States
   query: string;
@@ -38,7 +46,9 @@ export interface HandleKeyDownOptions {
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   horizontalResults: SearchResult[];
-  verticalResults: SearchResult[];
+  /** 可键盘导航的纵向可见项（含「显示更多」） */
+  visibleVerticalItems: VisibleVerticalItem[];
+  isResultsInteractive: boolean;
 
   // Setters
   setContextMenu: (
@@ -57,6 +67,11 @@ export interface HandleKeyDownOptions {
   setResults: (results: SearchResult[]) => void;
   setHorizontalResults: (results: SearchResult[]) => void;
   setVerticalResults: (results: SearchResult[]) => void;
+  setQuery: (query: string) => void;
+  /** 从历史填入查询（保持浏览模式） */
+  applyQueryFromHistory: (query: string, historyIndex: number) => void;
+  /** 展开 Everything「显示更多」 */
+  onExpandEverything?: () => void;
 
   // Functions
   hideLauncherAndResetState: (options?: {
@@ -65,6 +80,26 @@ export interface HandleKeyDownOptions {
   }) => Promise<void>;
   resetMemoState: () => void;
   handleLaunch: (result: SearchResult) => Promise<void>;
+}
+
+function canBrowseQueryHistory(
+  query: string,
+  isBrowsing: boolean,
+  selectedHorizontalIndex: number | null,
+  selectedVerticalIndex: number | null,
+  horizontalCount: number,
+  verticalCount: number,
+  direction: "up" | "down"
+): boolean {
+  if (selectedHorizontalIndex !== null || selectedVerticalIndex !== null) {
+    return false;
+  }
+  const hasResults = horizontalCount > 0 || verticalCount > 0;
+  // 有结果时 ↓ 优先进入结果列表，不继续翻历史
+  if (direction === "down" && hasResults) {
+    return false;
+  }
+  return query === "" || isBrowsing;
 }
 
 /**
@@ -80,6 +115,8 @@ export async function handleKeyDown(
     justJumpedToVerticalRef,
     horizontalResultsRef,
     currentLoadResultsRef,
+    queryHistoryIndexRef,
+    isBrowsingQueryHistoryRef,
     query,
     contextMenu,
     errorMessage,
@@ -90,7 +127,8 @@ export async function handleKeyDown(
     selectedHorizontalIndex,
     selectedVerticalIndex,
     horizontalResults,
-    verticalResults,
+    visibleVerticalItems,
+    isResultsInteractive,
     setContextMenu,
     setErrorMessage,
     setIsPluginListModalOpen,
@@ -104,43 +142,41 @@ export async function handleKeyDown(
     setResults,
     setHorizontalResults,
     setVerticalResults,
+    setQuery,
+    applyQueryFromHistory,
+    onExpandEverything,
     hideLauncherAndResetState,
     resetMemoState,
     handleLaunch,
   } = options;
 
+  const verticalLen = visibleVerticalItems.length;
+
   if (e.key === "Escape" || e.keyCode === 27) {
     e.preventDefault();
     e.stopPropagation();
-    // 如果右键菜单已打开，优先关闭右键菜单
     if (contextMenu) {
       setContextMenu(null);
       return;
     }
-    // 如果错误弹窗已打开，关闭错误弹窗（ErrorDialog 内部也会处理 ESC，但这里提前处理以避免其他逻辑执行）
     if (errorMessage) {
       setErrorMessage(null);
       return;
     }
-    // 如果应用中心弹窗已打开，关闭应用中心并隐藏窗口（插件像独立软件一样运行）
     if (isPluginListModalOpen) {
       setIsPluginListModalOpen(false);
-      // 延迟隐藏窗口，让关闭动画完成
       setTimeout(() => {
         hideLauncherAndResetState();
       }, 100);
       return;
     }
-    // 如果备忘录弹窗已打开，关闭备忘录并隐藏窗口（插件像独立软件一样运行）
     if (isMemoModalOpen) {
       resetMemoState();
-      // 延迟隐藏窗口，让关闭动画完成
       setTimeout(() => {
         hideLauncherAndResetState();
       }, 100);
       return;
     }
-    // 如果备注弹窗已打开，只关闭备注弹窗，不关闭启动器
     if (isRemarkModalOpen) {
       setIsRemarkModalOpen(false);
       setEditingRemarkUrl(null);
@@ -151,14 +187,11 @@ export async function handleKeyDown(
     return;
   }
 
-  // 处理退格键删除粘贴的图片
   if (e.key === "Backspace") {
-    // 如果输入框为空且有粘贴的图片，则删除图片预览
     if (query === "" && pastedImageDataUrl) {
       e.preventDefault();
       setPastedImageDataUrl(null);
       setPastedImagePath(null);
-      // 清除搜索结果
       clearAllResults({
         setResults,
         setHorizontalResults,
@@ -175,46 +208,66 @@ export async function handleKeyDown(
   if (e.key === "ArrowDown") {
     e.preventDefault();
 
-    // 检查当前焦点是否在输入框
+    if (
+      canBrowseQueryHistory(
+        query,
+        isBrowsingQueryHistoryRef.current,
+        selectedHorizontalIndex,
+        selectedVerticalIndex,
+        horizontalResults.length,
+        verticalLen,
+        "down"
+      )
+    ) {
+      const history = getQueryHistory();
+      if (isBrowsingQueryHistoryRef.current) {
+        const idx = queryHistoryIndexRef.current;
+        if (idx <= 0) {
+          isBrowsingQueryHistoryRef.current = false;
+          queryHistoryIndexRef.current = -1;
+          setQuery("");
+          return;
+        }
+        const nextIdx = idx - 1;
+        applyQueryFromHistory(history[nextIdx] ?? "", nextIdx);
+        return;
+      }
+      if (history.length > 0 && query === "") {
+        applyQueryFromHistory(history[0], 0);
+        return;
+      }
+    }
+
     const isInputFocused = document.activeElement === inputRef.current;
 
-    // 如果当前选中的是横向结果，按ArrowDown应该跳转到第一个纵向结果
     if (selectedHorizontalIndex !== null) {
-      if (verticalResults.length > 0) {
-        // Mark that we just jumped to vertical to prevent results useEffect from resetting
+      if (verticalLen > 0) {
         justJumpedToVerticalRef.current = true;
         setSelectedHorizontalIndex(null);
         setSelectedVerticalIndex(0);
-        // Reset flag after a delay
         setTimeout(() => {
           justJumpedToVerticalRef.current = false;
         }, 200);
         return;
       }
-      // No vertical results, stay at horizontal
       return;
     }
 
-    // 如果当前选中的是纵向结果，移动到下一个纵向结果
     if (selectedVerticalIndex !== null) {
-      if (selectedVerticalIndex < verticalResults.length - 1) {
-        // Ensure horizontal navigation flag is false for vertical navigation
+      if (selectedVerticalIndex < verticalLen - 1) {
         isHorizontalNavigationRef.current = false;
         setSelectedVerticalIndex(selectedVerticalIndex + 1);
         return;
       }
-      // No more vertical results, stay at current position
       return;
     }
 
-    // 如果输入框有焦点，且有横向结果，则选中第一个横向结果
     if (isInputFocused && horizontalResults.length > 0) {
       selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
       return;
     }
 
-    // 如果输入框有焦点，且有纵向结果，则选中第一个纵向结果
-    if (isInputFocused && verticalResults.length > 0) {
+    if (isInputFocused && verticalLen > 0) {
       selectFirstVertical(setSelectedHorizontalIndex, setSelectedVerticalIndex);
       return;
     }
@@ -225,9 +278,31 @@ export async function handleKeyDown(
   if (e.key === "ArrowUp") {
     e.preventDefault();
 
-    // If we're at the first horizontal result, focus back to the search input
+    if (
+      canBrowseQueryHistory(
+        query,
+        isBrowsingQueryHistoryRef.current,
+        selectedHorizontalIndex,
+        selectedVerticalIndex,
+        horizontalResults.length,
+        verticalLen,
+        "up"
+      )
+    ) {
+      const history = getQueryHistory();
+      if (history.length > 0) {
+        if (!isBrowsingQueryHistoryRef.current || query === "") {
+          applyQueryFromHistory(history[0], 0);
+          return;
+        }
+        const idx = queryHistoryIndexRef.current;
+        const nextIdx = Math.min(idx + 1, history.length - 1);
+        applyQueryFromHistory(history[nextIdx], nextIdx);
+        return;
+      }
+    }
+
     if (selectedHorizontalIndex === 0) {
-      // Focus the input and move cursor to the end
       if (inputRef.current) {
         inputRef.current.focus();
         const length = inputRef.current.value.length;
@@ -237,14 +312,11 @@ export async function handleKeyDown(
       return;
     }
 
-    // If we're at the first vertical result, focus back to input or jump to first horizontal
     if (selectedVerticalIndex === 0) {
       if (horizontalResults.length > 0) {
-        // Jump to first horizontal result
         selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
         return;
       } else {
-        // Focus input
         if (inputRef.current) {
           inputRef.current.focus();
           const length = inputRef.current.value.length;
@@ -255,15 +327,12 @@ export async function handleKeyDown(
       }
     }
 
-    // If current selection is in vertical results, move to previous vertical result
     if (selectedVerticalIndex !== null && selectedVerticalIndex > 0) {
-      // Ensure horizontal navigation flag is false for vertical navigation
       isHorizontalNavigationRef.current = false;
       setSelectedVerticalIndex(selectedVerticalIndex - 1);
       return;
     }
 
-    // If current selection is in horizontal results (not first), move to previous horizontal
     if (selectedHorizontalIndex !== null && selectedHorizontalIndex > 0) {
       setSelectedHorizontalIndex(selectedHorizontalIndex - 1);
       setSelectedVerticalIndex(null);
@@ -273,9 +342,7 @@ export async function handleKeyDown(
     return;
   }
 
-  // 横向结果切换（ArrowLeft/ArrowRight）
   if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-    // 检查输入框是否有焦点，以及光标位置
     const isInputFocused = document.activeElement === inputRef.current;
     if (isInputFocused && inputRef.current) {
       const input = inputRef.current;
@@ -283,86 +350,65 @@ export async function handleKeyDown(
       const selectionEnd = input.selectionEnd ?? 0;
       const valueLength = input.value.length;
 
-      // 如果有文本被选中，允许方向键正常处理（用于取消选中或移动光标）
       if (selectionStart !== selectionEnd) {
-        return; // 不拦截，让输入框正常处理
+        return;
       }
 
-      // 对于左箭头：只有当横向列表选中的不是第1个元素时，才优先用于横向列表
-      // 如果横向列表选中的是第1个元素（索引0）或没有选中项，允许在输入框内移动光标
       if (e.key === "ArrowLeft") {
-        // 如果横向列表选中的不是第1个元素，优先用于横向列表导航
         if (selectedHorizontalIndex !== null && selectedHorizontalIndex !== 0) {
-          // 不返回，继续执行横向列表切换逻辑
+          // continue to horizontal nav
         } else {
-          // 横向列表没有选中项或选中第1个元素，允许在输入框内移动光标
-          // 无论光标在哪里，都让输入框处理（即使光标在开头无法移动，也不应该跳到横向列表）
-          return; // 让输入框处理左箭头
+          return;
         }
       }
 
-      // 对于右箭头：如果光标不在最右端，优先用于输入框；否则用于横向列表切换
       if (e.key === "ArrowRight") {
-        // 如果光标不在最右端，优先用于输入框移动光标
         if (selectionEnd < valueLength) {
-          return; // 光标不在结尾，允许右移
+          return;
         }
-        // 如果光标在最右端，不返回，继续执行横向列表切换逻辑
       }
     }
 
-    // 立即阻止默认行为和事件传播，防止页面滚动
     e.preventDefault();
     e.stopPropagation();
 
-    // 如果横向结果为空，不处理但已阻止默认行为
     if (horizontalResults.length === 0) {
       return;
     }
 
-    // 标记这是横向导航，避免触发 scrollIntoView
     isHorizontalNavigationRef.current = true;
 
-    // 如果当前选中的是横向结果
     if (selectedHorizontalIndex !== null) {
-      // 在横向结果之间切换
       if (e.key === "ArrowRight") {
-        // 切换到下一个横向结果
         const nextIndex =
           selectedHorizontalIndex < horizontalResults.length - 1
             ? selectedHorizontalIndex + 1
-            : 0; // 循环到第一个
+            : 0;
         setSelectedHorizontalIndex(nextIndex);
         setSelectedVerticalIndex(null);
       } else if (e.key === "ArrowLeft") {
-        // 如果是在第一个横向结果，跳到最后一个横向结果
         if (selectedHorizontalIndex === 0) {
           setSelectedHorizontalIndex(horizontalResults.length - 1);
           setSelectedVerticalIndex(null);
           return;
         }
-        // 否则切换到上一个横向结果
         const prevIndex =
           selectedHorizontalIndex > 0
             ? selectedHorizontalIndex - 1
-            : horizontalResults.length - 1; // 循环到最后一个
+            : horizontalResults.length - 1;
         setSelectedHorizontalIndex(prevIndex);
         setSelectedVerticalIndex(null);
       }
     } else {
-      // 当前选中的是纵向结果，切换到横向结果的第一个或最后一个
       if (e.key === "ArrowRight") {
-        // 切换到横向结果的第一个
         setSelectedHorizontalIndex(0);
         setSelectedVerticalIndex(null);
       } else if (e.key === "ArrowLeft") {
-        // 切换到横向结果的最后一个
         setSelectedHorizontalIndex(horizontalResults.length - 1);
         setSelectedVerticalIndex(null);
       }
     }
 
-    // 在下一个 tick 重置标志，允许后续的垂直导航触发滚动
     setTimeout(() => {
       isHorizontalNavigationRef.current = false;
     }, 0);
@@ -371,7 +417,9 @@ export async function handleKeyDown(
 
   if (e.key === "Enter") {
     e.preventDefault();
-    // Get the selected result from either horizontal or vertical
+    if (!isResultsInteractive) {
+      return;
+    }
     let selectedResult: SearchResult | null = null;
     if (
       selectedHorizontalIndex !== null &&
@@ -380,9 +428,14 @@ export async function handleKeyDown(
       selectedResult = horizontalResults[selectedHorizontalIndex];
     } else if (
       selectedVerticalIndex !== null &&
-      verticalResults[selectedVerticalIndex]
+      visibleVerticalItems[selectedVerticalIndex]
     ) {
-      selectedResult = verticalResults[selectedVerticalIndex];
+      const item = visibleVerticalItems[selectedVerticalIndex];
+      if (item.kind === "show_more") {
+        onExpandEverything?.();
+        return;
+      }
+      selectedResult = getResultFromVisibleItem(item);
     }
     if (selectedResult) {
       await handleLaunch(selectedResult);
@@ -390,4 +443,3 @@ export async function handleKeyDown(
     return;
   }
 }
-

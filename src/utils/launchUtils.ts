@@ -10,6 +10,7 @@ import { normalizePathForHistory } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 import { trackEvent } from "../api/events";
 import { executePlugin } from "../plugins";
+import { pushQueryHistory } from "./queryHistoryUtils";
 
 /**
  * 启动处理的选项接口
@@ -40,7 +41,6 @@ export interface LaunchOptions {
   // Refs
   allFileHistoryCacheRef: React.MutableRefObject<FileHistoryItem[]>;
   allFileHistoryCacheLoadedRef: React.MutableRefObject<boolean>;
-  pendingJsonContentRef: React.MutableRefObject<string | null>;
   
   // 回调函数
   hideLauncherAndResetState: (options?: { resetMemo?: boolean; resetAi?: boolean }) => Promise<void>;
@@ -78,7 +78,6 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     setIsPluginListModalOpen,
     allFileHistoryCacheRef,
     allFileHistoryCacheLoadedRef,
-    pendingJsonContentRef,
     hideLauncherAndResetState,
     refreshFileHistoryCache,
     searchFileHistoryWrapper,
@@ -87,6 +86,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
   } = options;
 
   try {
+    // 成功启动时记录查询历史（短词 / 纯前缀不写）
+    pushQueryHistory(query);
+
     // 统一更新使用历史记录（所有类型统一处理）
     const pathToUpdate = result.path;
     const timestampToUpdate = Date.now() / 1000;
@@ -257,14 +259,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
       }
       return;
     } else if (result.type === "json_formatter" && result.jsonContent) {
-      // 打开 JSON 格式化窗口并传递 JSON 内容
-      // 保存待处理的内容，等待窗口准备好事件
-      pendingJsonContentRef.current = result.jsonContent;
-
-      // 打开窗口（如果窗口已存在，会立即收到 ready 事件；如果是新窗口，会在组件挂载后收到 ready 事件）
-      await tauriApi.showJsonFormatterWindow();
-
-      // 关闭启动器
+      await tauriApi.showJsonFormatterWindow(result.jsonContent);
       await hideLauncherAndResetState();
       return;
     } else if (result.type === "history") {
@@ -291,10 +286,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
         // 设置正在启动的应用路径，触发动画
         setLaunchingAppPath(result.app.path);
 
-        // 等待动画完成（200ms）
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        // 启动应用
+        // 不再人为等待 200ms；后端启动 .lnk 也不再同步跑 PowerShell，应在几十 ms 内返回
         await tauriApi.launchApplication(result.app);
         trackEvent("app_launched", { name: result.app.name });
 

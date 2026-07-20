@@ -1,5 +1,6 @@
 import type { Plugin } from "../../types";
 import { tauriApi } from "../../api/tauri";
+import { isMathExpression } from "../../utils/launcherUtils";
 
 /**
  * 创建内置插件列表
@@ -89,10 +90,12 @@ export function createBuiltinPlugins(): Plugin[] {
         "calc",
       ],
       execute: async (context) => {
-        // 打开独立的计算稿纸窗口
         if (context.tauriApi) {
-          await context.tauriApi.showCalculatorPadWindow();
-          // 关闭启动器
+          const expression =
+            context.query && isMathExpression(context.query)
+              ? context.query
+              : undefined;
+          await context.tauriApi.showCalculatorPadWindow(expression);
           await context.hideLauncher();
         }
       },

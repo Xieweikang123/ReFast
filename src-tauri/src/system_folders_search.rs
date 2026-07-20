@@ -308,11 +308,41 @@ pub mod windows {
     }
 
     pub fn get_all_system_folders() -> Vec<SystemFolderItem> {
-        Vec::new()
+        let home = std::env::var("HOME").unwrap_or_default();
+        let folders = vec![
+            ("Downloads", format!("{}/Downloads", home)),
+            ("Documents", format!("{}/Documents", home)),
+            ("Desktop", format!("{}/Desktop", home)),
+            ("Applications", "/Applications".to_string()),
+            ("Home", home.clone()),
+            ("Trash", format!("{}/.Trash", home)),
+        ];
+
+        folders.into_iter().map(|(name, path)| {
+            SystemFolderItem {
+                name: name.to_string(),
+                path,
+                display_name: name.to_string(),
+                is_folder: true,
+                icon: None,
+                name_pinyin: None,
+                name_pinyin_initials: None,
+            }
+        }).collect()
     }
 
-    pub fn search_system_folders(_query: &str) -> Vec<SystemFolderItem> {
-        Vec::new()
+    pub fn search_system_folders(query: &str) -> Vec<SystemFolderItem> {
+        let all = get_all_system_folders();
+        if query.is_empty() {
+            return all;
+        }
+        let query_lower = query.to_lowercase();
+        all.into_iter()
+            .filter(|item| {
+                item.name.to_lowercase().contains(&query_lower) ||
+                item.display_name.to_lowercase().contains(&query_lower)
+            })
+            .collect()
     }
 }
 

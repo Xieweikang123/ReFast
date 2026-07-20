@@ -122,16 +122,19 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
 
   // 使用 ref 跟踪 debouncedCombinedResults 对应的查询，用于验证结果是否与当前查询匹配
   const debouncedResultsQueryRef = useRef<string>("");
+  const [combinedResultsQuery, setCombinedResultsQuery] = useState("");
   
   // 当 combinedResults 更新时，同步更新 debouncedResultsQueryRef
   useEffect(() => {
     debouncedResultsQueryRef.current = queryRef.current;
+    setCombinedResultsQuery(queryRef.current);
   }, [combinedResults]);
 
   return {
     combinedResults: debouncedCombinedResults,
     queryRef,
     debouncedResultsQueryRef,
+    combinedResultsQuery,
     isStable,
   };
 }

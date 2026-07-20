@@ -3,17 +3,30 @@
  * 包含横向和纵向结果列表
  */
 
-import React from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { ResultIcon } from "./ResultIcon";
-import { highlightText, formatLastUsedTime } from "../utils/launcherUtils";
+import { highlightText, formatLastUsedTime, isLnkPath } from "../utils/launcherUtils";
+import { getAppResultTooltip, useLnkTargetTooltip } from "../hooks/useLnkTargetTooltip";
 import type { SearchResult } from "../utils/resultUtils";
 import type { AppInfo } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 import { getThemeConfig } from "../utils/themeConfig";
+import { isMacOS } from "../utils/platformUtils";
+import { parseSearchFilter } from "../utils/searchFilterUtils";
+import {
+  SHOW_MORE_EVERYTHING_PATH,
+  EVERYTHING_DEFAULT_LIMIT,
+  DEFAULT_GROUP_COLLAPSE,
+  type GroupCollapseState,
+  type VerticalGroupId,
+  type VisibleVerticalItem,
+  type VerticalGroup,
+} from "../utils/resultGroupUtils";
 
 export interface ResultListProps {
   horizontalResults: SearchResult[];
-  verticalResults: SearchResult[];
+  /** 已分组的纵向结果（由父组件计算，避免重复分组） */
+  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   query: string;
@@ -22,6 +35,7 @@ export interface ResultListProps {
   filteredApps: AppInfo[];
   launchingAppPath: string | null;
   pastedImagePath: string | null;
+  pastedImageDataUrl: string | null;
   openHistory: Record<string, number>;
   urlRemarks: Record<string, string>;
   getPluginIcon: (pluginId: string, className: string) => JSX.Element;
@@ -30,7 +44,11 @@ export interface ResultListProps {
   onSaveImageToDownloads: (path: string) => Promise<void>;
   horizontalScrollContainerRef: React.RefObject<HTMLDivElement>;
   listRef: React.RefObject<HTMLDivElement>;
-  isHorizontalResultsStable?: boolean;
+  isInteractive?: boolean;
+  groupCollapsed: GroupCollapseState;
+  onToggleGroup: (groupId: VerticalGroupId) => void;
+  onExpandEverything: () => void;
+  visibleVerticalItems: VisibleVerticalItem[];
 }
 
 /**
@@ -49,16 +67,16 @@ const HorizontalResultItem = React.memo<{
   getPluginIcon: (pluginId: string, className: string) => JSX.Element;
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
-  isStable?: boolean;
-}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isStable = true }) => {
-  const itemRef = React.useRef<HTMLDivElement | null>(null);
+  isInteractive?: boolean;
+}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true }) => {
+  const { resolvedTarget } = useLnkTargetTooltip(result.path);
 
   return (
     <div
-      ref={itemRef}
       key={`executable-${result.path}-${index}`}
+      title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (e.button !== 0) return;
+        if (!isInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -67,8 +85,13 @@ const HorizontalResultItem = React.memo<{
         e.preventDefault();
         e.stopPropagation();
       }}
-      onContextMenu={(e) => onContextMenu(e, result)}
-      className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl cursor-pointer transition-all duration-200 relative ${
+      onContextMenu={(e) => {
+        if (!isInteractive) return;
+        onContextMenu(e, result);
+      }}
+      className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl transition-all duration-200 relative ${
+        isInteractive ? "cursor-pointer" : "cursor-default"
+      } ${
         isSelected 
           ? resultStyle === "soft"
             ? "bg-blue-50 border-2 border-blue-500 shadow-lg shadow-blue-300/55 ring-2 ring-blue-400/35 scale-[1.2]"
@@ -78,20 +101,21 @@ const HorizontalResultItem = React.memo<{
           : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
       } ${isLaunching ? 'rocket-launching' : ''}`}
       style={{
-        '--target-opacity': !isStable ? 0.6 : 1,
+        '--target-opacity': !isInteractive ? 0.55 : 1,
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`,
+          : isInteractive
+          ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`
+          : undefined,
         marginLeft: index === 0 && isSelected ? '10px' : '0px',
         width: '80px',
         height: '80px',
         minWidth: '80px',
         minHeight: '80px',
-        opacity: !isStable ? 0.6 : 1,
+        opacity: !isInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isStable ? 'none' : 'auto',
+        pointerEvents: !isInteractive ? 'none' : 'auto',
       } as React.CSSProperties}
-      title={result.type === "app" ? result.path : undefined}
     >
       {isSelected && (
         <div 
@@ -162,12 +186,14 @@ const VerticalResultItem = React.memo<{
   apps: AppInfo[];
   filteredApps: AppInfo[];
   pastedImagePath: string | null;
+  pastedImageDataUrl: string | null;
   openHistory: Record<string, number>;
   urlRemarks: Record<string, string>;
   getPluginIcon: (pluginId: string, className: string) => JSX.Element;
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   onSaveImageToDownloads: (path: string) => Promise<void>;
+  isInteractive?: boolean;
 }>(({ 
   result, 
   index, 
@@ -180,19 +206,32 @@ const VerticalResultItem = React.memo<{
   apps, 
   filteredApps, 
   pastedImagePath,
+  pastedImageDataUrl,
   openHistory,
   urlRemarks,
   getPluginIcon, 
   onLaunch, 
   onContextMenu,
   onSaveImageToDownloads,
+  isInteractive = true,
 }) => {
+  const [isMac, setIsMac] = useState(false);
+  const isLnk = isLnkPath(result.path);
+  const { resolvedTarget, isLoading } = useLnkTargetTooltip(result.path);
+  const displayPath =
+    isLnk && resolvedTarget ? resolvedTarget : result.path;
+
+  useEffect(() => {
+    isMacOS().then(setIsMac);
+  }, []);
+
   return (
     <div
       key={`${result.type}-${result.path}-${index}`}
       data-item-key={`${result.type}-${result.path}-${index}`}
+      title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (e.button !== 0) return;
+        if (!isInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -201,14 +240,21 @@ const VerticalResultItem = React.memo<{
         e.preventDefault();
         e.stopPropagation();
       }}
-      onContextMenu={(e) => onContextMenu(e, result)}
-      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''}`}
+      onContextMenu={(e) => {
+        if (!isInteractive) return;
+        onContextMenu(e, result);
+      }}
+      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${isInteractive ? 'cursor-pointer' : 'cursor-default'}`}
       style={{
+        opacity: !isInteractive ? 0.55 : 1,
+        transition: 'opacity 0.2s ease-in-out',
+        pointerEvents: !isInteractive ? 'none' : 'auto',
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`,
+          : isInteractive
+          ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`
+          : undefined,
       }}
-      title={result.type === "app" ? result.path : undefined}
     >
       <div className={theme.indicator(isSelected)} />
       <div className="flex items-center gap-3">
@@ -225,6 +271,11 @@ const VerticalResultItem = React.memo<{
             resultStyle={resultStyle}
             getPluginIcon={getPluginIcon}
             size="vertical"
+            imagePreviewUrl={
+              pastedImagePath && result.path === pastedImagePath
+                ? pastedImageDataUrl
+                : null
+            }
           />
         </div>
         <div className="flex-1 min-w-0">
@@ -246,10 +297,25 @@ const VerticalResultItem = React.memo<{
             </div>
           )}
           {result.path && result.type !== "memo" && result.type !== "history" && result.type !== "ai" && (
-            <div
-              className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
-              dangerouslySetInnerHTML={{ __html: highlightText(result.path, query) }}
-            />
+            <>
+              <div
+                className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
+                dangerouslySetInnerHTML={{ __html: highlightText(displayPath, query) }}
+              />
+              {isLnk && isLoading && !resolvedTarget && (
+                <div className={`text-xs mt-0.5 ${theme.metaText(isSelected)}`}>
+                  正在解析目标路径...
+                </div>
+              )}
+              {isLnk && resolvedTarget && resolvedTarget !== result.path && (
+                <div
+                  className={`text-[10px] truncate mt-0.5 ${theme.metaText(isSelected)}`}
+                  title={result.path}
+                >
+                  快捷方式：{result.path}
+                </div>
+              )}
+            </>
           )}
           {result.type === "memo" && result.memo && (
             <div
@@ -390,9 +456,9 @@ const VerticalResultItem = React.memo<{
             <div className="flex items-center gap-2 mt-1.5">
               <span
                 className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("everything", isSelected)}`}
-                title="来自 Everything 搜索结果"
+                title={isMac ? "来自 Spotlight 搜索结果" : "来自 Everything 搜索结果"}
               >
-                Everything
+                {isMac ? "Spotlight" : "Everything"}
               </span>
             </div>
           )}
@@ -409,7 +475,7 @@ VerticalResultItem.displayName = 'VerticalResultItem';
  */
 export const ResultList = React.memo<ResultListProps>(({
   horizontalResults,
-  verticalResults,
+  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   query,
@@ -418,6 +484,7 @@ export const ResultList = React.memo<ResultListProps>(({
   filteredApps,
   launchingAppPath,
   pastedImagePath,
+  pastedImageDataUrl,
   openHistory,
   urlRemarks,
   getPluginIcon,
@@ -426,24 +493,48 @@ export const ResultList = React.memo<ResultListProps>(({
   onSaveImageToDownloads,
   horizontalScrollContainerRef,
   listRef,
-  isHorizontalResultsStable = true,
+  isInteractive = true,
+  groupCollapsed,
+  onToggleGroup,
+  onExpandEverything,
+  visibleVerticalItems,
 }) => {
-
   const theme = React.useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
+  const [isMac, setIsMac] = useState(false);
+  useEffect(() => {
+    isMacOS().then(setIsMac);
+  }, []);
+
+  const highlightQuery = useMemo(
+    () => parseSearchFilter(query).keyword,
+    [query]
+  );
+
+  const itemsByGroup = useMemo(() => {
+    const map = new Map<
+      VerticalGroupId,
+      Array<{ item: VisibleVerticalItem; index: number }>
+    >();
+    visibleVerticalItems.forEach((item, index) => {
+      const list = map.get(item.groupId) ?? [];
+      list.push({ item, index });
+      map.set(item.groupId, list);
+    });
+    return map;
+  }, [visibleVerticalItems]);
 
   return (
     <div
       ref={listRef}
-      className="flex-1 min-h-0 results-list-scroll py-2"
+      className="min-h-0 results-list-scroll py-2"
       style={{ maxHeight: '500px' }}
     >
       <>
-        {/* 可执行文件和插件横向排列在第一行 */}
         {horizontalResults.length > 0 && (
-          <div className="px-4 py-3 mb-2 border-b border-gray-200">
+          <div className="px-4 pt-3 pb-1 mb-2 border-b border-gray-200">
             <div
               ref={horizontalScrollContainerRef}
-              className="flex gap-3 pb-2 executable-scroll-container"
+              className="flex gap-3 executable-scroll-container"
             >
               {horizontalResults.map((result, execIndex) => (
                 <HorizontalResultItem
@@ -452,7 +543,7 @@ export const ResultList = React.memo<ResultListProps>(({
                   index={execIndex}
                   isSelected={selectedHorizontalIndex === execIndex}
                   isLaunching={result.type === "app" && launchingAppPath === result.path}
-                  query={query}
+                  query={highlightQuery}
                   resultStyle={resultStyle}
                   theme={theme}
                   apps={apps}
@@ -460,36 +551,91 @@ export const ResultList = React.memo<ResultListProps>(({
                   getPluginIcon={getPluginIcon}
                   onLaunch={onLaunch}
                   onContextMenu={onContextMenu}
-                  isStable={isHorizontalResultsStable}
+                  isInteractive={isInteractive}
                 />
               ))}
             </div>
           </div>
         )}
-        {/* 其他结果垂直排列 */}
-        {verticalResults.map((result, index) => {
-          const verticalIndex = index + 1;
+
+        {verticalGroups.map((group) => {
+          const collapsed = groupCollapsed[group.id];
+          const groupItems = itemsByGroup.get(group.id) ?? [];
+
           return (
-            <VerticalResultItem
-              key={`${result.type}-${result.path}-${index}`}
-              result={result}
-              index={index}
-              verticalIndex={verticalIndex}
-              isSelected={selectedVerticalIndex === index}
-              isLaunching={result.type === "app" && launchingAppPath === result.path}
-              query={query}
-              resultStyle={resultStyle}
-              theme={theme}
-              apps={apps}
-              filteredApps={filteredApps}
-              pastedImagePath={pastedImagePath}
-              openHistory={openHistory}
-              urlRemarks={urlRemarks}
-              getPluginIcon={getPluginIcon}
-              onLaunch={onLaunch}
-              onContextMenu={onContextMenu}
-              onSaveImageToDownloads={onSaveImageToDownloads}
-            />
+            <div key={group.id} className="mb-1">
+              <button
+                type="button"
+                className="w-full flex items-center gap-2 px-4 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 select-none"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onToggleGroup(group.id);
+                }}
+              >
+                <svg
+                  className={`w-3 h-3 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+                <span>{group.title}</span>
+                <span className="text-gray-400 font-normal">({group.results.length})</span>
+              </button>
+
+              {!collapsed &&
+                groupItems.map(({ item, index }) => {
+                  if (item.kind === "show_more") {
+                    return (
+                      <div
+                        key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
+                        data-item-key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
+                        onMouseDown={(e) => {
+                          if (!isInteractive || e.button !== 0) return;
+                          e.preventDefault();
+                          e.stopPropagation();
+                          onExpandEverything();
+                        }}
+                        className={`mx-3 my-1 px-3 py-2 rounded-lg text-sm text-indigo-600 hover:bg-indigo-50 cursor-pointer border border-dashed ${
+                          selectedVerticalIndex === index
+                            ? "border-indigo-400 bg-indigo-50"
+                            : "border-indigo-200"
+                        }`}
+                      >
+                        显示更多 {isMac ? "Spotlight" : "Everything"} 结果（还有 {item.remaining} 条）
+                      </div>
+                    );
+                  }
+
+                  const result = item.result;
+                  return (
+                    <VerticalResultItem
+                      key={`${result.type}-${result.path}-${index}`}
+                      result={result}
+                      index={index}
+                      verticalIndex={index + 1}
+                      isSelected={selectedVerticalIndex === index}
+                      isLaunching={result.type === "app" && launchingAppPath === result.path}
+                      query={highlightQuery}
+                      resultStyle={resultStyle}
+                      theme={theme}
+                      apps={apps}
+                      filteredApps={filteredApps}
+                      pastedImagePath={pastedImagePath}
+                      pastedImageDataUrl={pastedImageDataUrl}
+                      openHistory={openHistory}
+                      urlRemarks={urlRemarks}
+                      getPluginIcon={getPluginIcon}
+                      onLaunch={onLaunch}
+                      onContextMenu={onContextMenu}
+                      onSaveImageToDownloads={onSaveImageToDownloads}
+                      isInteractive={isInteractive}
+                    />
+                  );
+                })}
+            </div>
           );
         })}
       </>
@@ -499,3 +645,5 @@ export const ResultList = React.memo<ResultListProps>(({
 
 ResultList.displayName = 'ResultList';
 
+export { EVERYTHING_DEFAULT_LIMIT, DEFAULT_GROUP_COLLAPSE };
+export type { GroupCollapseState, VerticalGroupId, VisibleVerticalItem, VerticalGroup };
