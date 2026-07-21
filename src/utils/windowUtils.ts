@@ -45,12 +45,19 @@ export function adjustWindowSize(options: WindowSizeAdjustOptions): void {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       const window = getCurrentWindow();
-      const containerHeight = whiteContainer.scrollHeight;
+      // 用可见高度对齐透明窗口，避免 scrollHeight 偏大留下底部透明空隙
+      const containerHeight = Math.max(
+        whiteContainer.getBoundingClientRect().height,
+        whiteContainer.offsetHeight
+      );
 
       // 计算目标高度
       const MAX_HEIGHT = maxHeight ?? 600;
       const MIN_HEIGHT = minHeight ?? 200;
-      const targetHeight = Math.max(MIN_HEIGHT, Math.min(containerHeight, MAX_HEIGHT));
+      const targetHeight = Math.max(
+        MIN_HEIGHT,
+        Math.min(Math.ceil(containerHeight), MAX_HEIGHT)
+      );
 
       // 设置窗口大小
       window.setSize(new LogicalSize(windowWidth, targetHeight)).catch(console.error);

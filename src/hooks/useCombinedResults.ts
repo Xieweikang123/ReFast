@@ -28,6 +28,7 @@ export interface UseCombinedResultsOptions {
   searchEngines: SearchEngineConfig[];
   apps: AppInfo[];
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
+  suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
 }
 
 /**
@@ -53,6 +54,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     searchEngines,
     apps,
     extractedFileIconsRef,
+    suppressedBrokenPathsRef,
   } = options;
 
   // 使用 useState + useEffect 替代 useMemo，在 useEffect 中使用 startTransition 异步计算
@@ -83,6 +85,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
           searchEngines,
           apps,
           extractedFileIconsRef,
+          suppressedBrokenPathsRef,
         });
         setCombinedResultsRaw(results);
       });
@@ -94,7 +97,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     } else {
       setTimeout(scheduleCompute, 0);
     }
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef, suppressedBrokenPathsRef]);
 
   // 使用 useDeferredValue 延迟 combinedResults 的更新，让输入框保持响应
   // 当用户快速输入时，React 会延迟更新 combinedResults，优先处理输入事件

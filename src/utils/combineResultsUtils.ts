@@ -61,6 +61,8 @@ export interface CombineResultsOptions {
   searchEngines: SearchEngineConfig[];
   apps: AppInfo[];
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
+  /** 本次会话内已确认失效的快捷方式，合并结果时排除 */
+  suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
 }
 
 /**
@@ -86,18 +88,26 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
     return [];
   }
 
-  const filteredApps = shouldSearchSource(scope, "app")
-    ? options.filteredApps
-    : [];
-  const filteredFiles = shouldSearchSource(scope, "file")
-    ? options.filteredFiles
-    : [];
+  const suppressed = options.suppressedBrokenPathsRef?.current;
+  const isSuppressed = (path: string) =>
+    !!suppressed?.has(path.toLowerCase().replace(/\//g, "\\"));
+
+  const filteredApps = (
+    shouldSearchSource(scope, "app") ? options.filteredApps : []
+  ).filter((app) => !isSuppressed(app.path));
+  const filteredFiles = (
+    shouldSearchSource(scope, "file") ? options.filteredFiles : []
+  ).filter((file) => !isSuppressed(file.path));
   const systemFolders = shouldSearchSource(scope, "systemFolder")
     ? options.systemFolders
     : [];
-  const everythingResults = shouldSearchSource(scope, "everything")
+  const everythingResultsRaw = shouldSearchSource(scope, "everything")
     ? options.everythingResults
     : [];
+  // 排除本会话已确认失效的快捷方式（目标不存在等），避免 Everything 再次带回
+  const everythingResults = suppressed?.size
+    ? everythingResultsRaw.filter((item) => !isSuppressed(item.path))
+    : everythingResultsRaw;
   const filteredMemos = shouldSearchSource(scope, "memo")
     ? options.filteredMemos
     : [];

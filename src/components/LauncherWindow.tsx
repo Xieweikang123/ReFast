@@ -184,6 +184,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, []);
   const currentLoadResultsRef = useRef<SearchResult[]>([]); // 跟踪当前正在加载的结果，用于验证是否仍有效
   const horizontalResultsRef = useRef<SearchResult[]>([]); // 跟踪当前的横向结果，用于防止被覆盖
+  /** 本会话已确认失效的快捷方式路径（目标不存在等），避免 Everything 再次带回 */
+  const suppressedBrokenPathsRef = useRef<Set<string>>(new Set());
   const [isIncrementalLoading, setIsIncrementalLoading] = useState(false);
   const [isDebouncePending, setIsDebouncePending] = useState(false);
   const [isLocalSearchPending, setIsLocalSearchPending] = useState(false);
@@ -464,16 +466,17 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     // Ensure window has no decorations
     window.setDecorations(false).catch(console.error);
     
-    // Set initial window size to match white container
+    // Set initial window size to match white container (visible height, not scrollHeight)
     const setWindowSize = () => {
       const whiteContainer = getMainContainer();
       if (whiteContainer) {
-        // Use scrollHeight to get the full content height including overflow
-        const containerHeight = whiteContainer.scrollHeight;
-        // Use saved window width or default
+        const containerHeight = Math.max(
+          whiteContainer.getBoundingClientRect().height,
+          whiteContainer.offsetHeight
+        );
         const targetWidth = windowWidth;
-        // Use setSize to match content area exactly (decorations are disabled)
-        window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+        const targetHeight = Math.max(200, Math.min(Math.ceil(containerHeight), 600));
+        window.setSize(new LogicalSize(targetWidth, targetHeight)).catch(console.error);
       }
     };
     
@@ -707,6 +710,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     searchEngines,
     apps,
     extractedFileIconsRef,
+    suppressedBrokenPathsRef,
   });
   
   const everythingLabel =
@@ -959,6 +963,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   useWindowSizeAdjustment({
     shouldPreserveScrollRef,
     listRef,
+    containerRef,
     resizeRafId,
     resizeStartX,
     resizeStartWidth,
@@ -1433,6 +1438,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         setFilteredFiles,
         setApps,
         setFilteredApps,
+        setEverythingResults,
+        setResults,
+        setHorizontalResults,
         setLaunchingAppPath,
         setErrorMessage,
         setSuccessMessage,
@@ -1448,6 +1456,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           setIsPluginListModalOpen,
         allFileHistoryCacheRef,
         allFileHistoryCacheLoadedRef,
+        allAppsCacheRef,
+        horizontalResultsRef,
+        suppressedBrokenPathsRef,
         hideLauncherAndResetState,
         refreshFileHistoryCache,
         searchFileHistoryWrapper,
@@ -1468,6 +1479,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setContextMenu,
       allFileHistoryCacheRef,
       allFileHistoryCacheLoadedRef,
+      allAppsCacheRef,
+      horizontalResultsRef,
+      suppressedBrokenPathsRef,
       tauriApi,
     ]
   );

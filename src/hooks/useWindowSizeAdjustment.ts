@@ -3,7 +3,7 @@
  * 负责处理窗口大小的自动调整和手动调整
  */
 
-import { useEffect, type RefObject, type MutableRefObject } from "react";
+import { useEffect, useRef, type RefObject, type MutableRefObject } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { adjustWindowSize } from "../utils/windowUtils";
@@ -16,6 +16,7 @@ export interface UseWindowSizeAdjustmentOptions {
   // Refs
   shouldPreserveScrollRef: MutableRefObject<boolean>;
   listRef: RefObject<HTMLElement>;
+  containerRef?: RefObject<HTMLElement | null>;
   resizeRafId: MutableRefObject<number | null>;
   resizeStartX: MutableRefObject<number>;
   resizeStartWidth: MutableRefObject<number>;
@@ -34,6 +35,9 @@ export interface UseWindowSizeAdjustmentOptions {
   setIsResizing: (resizing: boolean) => void;
 }
 
+const MAX_HEIGHT = 600;
+const MIN_HEIGHT = 200;
+
 /**
  * 窗口大小调整 Hook
  */
@@ -43,6 +47,7 @@ export function useWindowSizeAdjustment(
   const {
     shouldPreserveScrollRef,
     listRef,
+    containerRef,
     resizeRafId,
     resizeStartX,
     resizeStartWidth,
@@ -57,47 +62,116 @@ export function useWindowSizeAdjustment(
     setIsResizing,
   } = options;
 
-  // 调整窗口大小的辅助函数
-  const adjustWindowSizeInternal = (
-    useScrollHeight: boolean = false,
-    delay: number = 100
-  ) => {
-    setTimeout(() => {
-      const window = getCurrentWindow();
+  const pendingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRafRef = useRef<number | null>(null);
+  const lastAppliedHeightRef = useRef<number | null>(null);
+  const windowWidthRef = useRef(windowWidth);
+  const isMemoModalOpenRef = useRef(isMemoModalOpen);
+
+  windowWidthRef.current = windowWidth;
+  isMemoModalOpenRef.current = isMemoModalOpen;
+
+  const clearPendingAdjust = () => {
+    if (pendingTimeoutRef.current !== null) {
+      clearTimeout(pendingTimeoutRef.current);
+      pendingTimeoutRef.current = null;
+    }
+    if (pendingRafRef.current !== null) {
+      cancelAnimationFrame(pendingRafRef.current);
+      pendingRafRef.current = null;
+    }
+  };
+
+  const measureContainerHeight = (el: HTMLElement): number => {
+    // Prefer visible layout height so the transparent window matches the opaque card.
+    // scrollHeight can be larger than the painted card when children overflow.
+    const rectHeight = el.getBoundingClientRect().height;
+    const offsetHeight = el.offsetHeight;
+    return Math.max(rectHeight, offsetHeight);
+  };
+
+  const applyWindowSize = (container: HTMLElement) => {
+    if (isMemoModalOpenRef.current) {
+      return;
+    }
+
+    const containerHeight = measureContainerHeight(container);
+    const targetWidth = windowWidthRef.current;
+    const targetHeight = Math.max(
+      MIN_HEIGHT,
+      Math.min(Math.ceil(containerHeight), MAX_HEIGHT)
+    );
+
+    if (
+      lastAppliedHeightRef.current !== null &&
+      Math.abs(lastAppliedHeightRef.current - targetHeight) < 1
+    ) {
+      return;
+    }
+
+    lastAppliedHeightRef.current = targetHeight;
+    getCurrentWindow()
+      .setSize(new LogicalSize(targetWidth, targetHeight))
+      .catch(console.error);
+  };
+
+  // 调整窗口大小的辅助函数（带取消，避免旧的延迟回调把窗口撑回过高）
+  const adjustWindowSizeInternal = (delay: number = 100) => {
+    clearPendingAdjust();
+
+    pendingTimeoutRef.current = setTimeout(() => {
+      pendingTimeoutRef.current = null;
       const whiteContainer = getMainContainer();
-      if (whiteContainer && !isMemoModalOpen) {
-        // Use double requestAnimationFrame to ensure DOM is fully updated
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            let containerHeight: number;
-            if (useScrollHeight) {
-              // Use scrollWidth/scrollHeight to get the full content size
-              containerHeight = whiteContainer.scrollHeight;
-            } else {
-              const containerRect = whiteContainer.getBoundingClientRect();
-              containerHeight = containerRect.height;
-            }
-
-            // Use saved window width
-            const targetWidth = windowWidth;
-
-            // 限制最大高度，避免窗口突然撑高导致不丝滑
-            const MAX_HEIGHT = 600; // 最大高度600px
-            const MIN_HEIGHT = 200; // 最小高度200px，默认主界面更高
-            const targetHeight = Math.max(
-              MIN_HEIGHT,
-              Math.min(containerHeight, MAX_HEIGHT)
-            );
-
-            // 直接设置窗口大小（简化版本，不使用动画过渡以避免复杂性）
-            window
-              .setSize(new LogicalSize(targetWidth, targetHeight))
-              .catch(console.error);
-          });
-        });
+      if (!whiteContainer || isMemoModalOpenRef.current) {
+        return;
       }
+
+      pendingRafRef.current = requestAnimationFrame(() => {
+        pendingRafRef.current = requestAnimationFrame(() => {
+          pendingRafRef.current = null;
+          applyWindowSize(whiteContainer);
+        });
+      });
     }, delay);
   };
+
+  // 用 ResizeObserver 跟踪内容卡片真实高度，避免结果变少后窗口仍保持过大
+  useEffect(() => {
+    if (isMemoModalOpen || isPluginListModalOpen) {
+      return;
+    }
+
+    const whiteContainer =
+      containerRef?.current ?? getMainContainer();
+    if (!whiteContainer) {
+      return;
+    }
+
+    lastAppliedHeightRef.current = null;
+
+    const observer = new ResizeObserver(() => {
+      applyWindowSize(whiteContainer);
+    });
+    observer.observe(whiteContainer);
+    applyWindowSize(whiteContainer);
+
+    return () => {
+      observer.disconnect();
+    };
+    // containerRef / getMainContainer 是稳定引用或闭包读取最新值；只在模态态切换时重绑
+  }, [isMemoModalOpen, isPluginListModalOpen]);
+
+  // 结果数量变化时强制再测一次（分组折叠等不一定触发 ResizeObserver 同元素尺寸变化时的兜底）
+  useEffect(() => {
+    if (isMemoModalOpen || isPluginListModalOpen) {
+      return;
+    }
+    const whiteContainer = containerRef?.current ?? getMainContainer();
+    if (whiteContainer) {
+      lastAppliedHeightRef.current = null;
+      adjustWindowSizeInternal(50);
+    }
+  }, [results.length, debouncedCombinedResults.length]);
 
   // 保存滚动位置并调整窗口大小（当 debouncedCombinedResults 变化时）
   useEffect(() => {
@@ -133,30 +207,32 @@ export function useWindowSizeAdjustment(
           });
         });
       });
-    } else if (!needPreserveScroll && listRef.current) {
-      // 如果不是保持滚动位置，且列表有滚动，不要重置滚动位置
-      // 这样可以避免意外的滚动重置
     }
 
-    // 使用节流优化窗口大小调整，避免频繁调用导致卡顿
-    // 如果正在保持滚动位置，延迟窗口大小调整，让滚动位置先恢复
     // 如果备忘录模态框打开，不在这里调整窗口大小（由专门的 useEffect 处理）
     if (isMemoModalOpen) {
       return;
     }
 
-    const delay = needPreserveScroll ? 600 : 100; // 减少延迟，让响应更快
-    adjustWindowSizeInternal(true, delay);
+    const delay = needPreserveScroll ? 600 : 100;
+    adjustWindowSizeInternal(delay);
+
+    return () => {
+      clearPendingAdjust();
+    };
   }, [debouncedCombinedResults, isMemoModalOpen, windowWidth]);
 
   // 调整窗口大小（当 results 状态更新时）
   useEffect(() => {
-    // 如果备忘录模态框打开，不在这里调整窗口大小
     if (isMemoModalOpen) {
       return;
     }
 
-    adjustWindowSizeInternal(false, 100);
+    adjustWindowSizeInternal(100);
+
+    return () => {
+      clearPendingAdjust();
+    };
   }, [results, isMemoModalOpen, windowWidth]);
 
   // 当 windowWidth 变化时更新窗口大小（但不包括调整大小过程中）
@@ -165,13 +241,18 @@ export function useWindowSizeAdjustment(
       return;
     }
 
-    setTimeout(() => {
+    lastAppliedHeightRef.current = null;
+    const timer = setTimeout(() => {
       adjustWindowSize({
         windowWidth,
         isMemoModalOpen,
         getContainer: getMainContainer,
       });
     }, 50);
+
+    return () => {
+      clearTimeout(timer);
+    };
   }, [windowWidth, isMemoModalOpen, isPluginListModalOpen, isResizing]);
 
   // 处理窗口宽度调整（鼠标拖拽）
@@ -198,18 +279,17 @@ export function useWindowSizeAdjustment(
 
         // Update window size directly without triggering state update during drag
         const window = getCurrentWindow();
-        const containerHeight = whiteContainer.scrollHeight;
-        const MAX_HEIGHT = 600;
-        const MIN_HEIGHT = 200;
+        const containerHeight = measureContainerHeight(whiteContainer);
         const targetHeight = Math.max(
           MIN_HEIGHT,
-          Math.min(containerHeight, MAX_HEIGHT)
+          Math.min(Math.ceil(containerHeight), MAX_HEIGHT)
         );
 
         // Update container width directly for immediate visual feedback
         whiteContainer.style.width = `${newWidth}px`;
 
         // Update window size
+        lastAppliedHeightRef.current = targetHeight;
         window
           .setSize(new LogicalSize(newWidth, targetHeight))
           .catch(console.error);
@@ -250,4 +330,3 @@ export function useWindowSizeAdjustment(
     };
   }, [isResizing]);
 }
-

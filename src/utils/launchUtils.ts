@@ -4,13 +4,18 @@
  */
 
 import type React from "react";
-import type { AppInfo, FileHistoryItem, PluginContext } from "../types";
+import type { AppInfo, EverythingResult, FileHistoryItem, PluginContext } from "../types";
 import type { SearchResult } from "./resultUtils";
 import { normalizePathForHistory } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 import { trackEvent } from "../api/events";
 import { executePlugin } from "../plugins";
 import { pushQueryHistory } from "./queryHistoryUtils";
+
+/** 规范化路径用于比较（Windows 不区分大小写，统一反斜杠） */
+function normalizePathForCompare(path: string): string {
+  return path.toLowerCase().replace(/\//g, "\\");
+}
 
 /**
  * 启动处理的选项接口
@@ -24,6 +29,9 @@ export interface LaunchOptions {
   setFilteredFiles: (updater: (prev: FileHistoryItem[]) => FileHistoryItem[]) => void;
   setApps: (updater: (prev: AppInfo[]) => AppInfo[]) => void;
   setFilteredApps: (updater: (prev: AppInfo[]) => AppInfo[]) => void;
+  setEverythingResults: (updater: (prev: EverythingResult[]) => EverythingResult[]) => void;
+  setResults: (updater: (prev: SearchResult[]) => SearchResult[]) => void;
+  setHorizontalResults: (updater: (prev: SearchResult[]) => SearchResult[]) => void;
   setLaunchingAppPath: (path: string | null) => void;
   setErrorMessage: (msg: string | null) => void;
   setSuccessMessage: (msg: string | null) => void;
@@ -41,6 +49,10 @@ export interface LaunchOptions {
   // Refs
   allFileHistoryCacheRef: React.MutableRefObject<FileHistoryItem[]>;
   allFileHistoryCacheLoadedRef: React.MutableRefObject<boolean>;
+  allAppsCacheRef: React.MutableRefObject<AppInfo[]>;
+  horizontalResultsRef: React.MutableRefObject<SearchResult[]>;
+  /** 本次会话内已确认失效的快捷方式路径，避免 Everything 再次搜出 */
+  suppressedBrokenPathsRef: React.MutableRefObject<Set<string>>;
   
   // 回调函数
   hideLauncherAndResetState: (options?: { resetMemo?: boolean; resetAi?: boolean }) => Promise<void>;
@@ -63,6 +75,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     setFilteredFiles,
     setApps,
     setFilteredApps,
+    setEverythingResults,
+    setResults,
+    setHorizontalResults,
     setLaunchingAppPath,
     setErrorMessage,
     setSuccessMessage,
@@ -78,6 +93,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     setIsPluginListModalOpen,
     allFileHistoryCacheRef,
     allFileHistoryCacheLoadedRef,
+    allAppsCacheRef,
+    horizontalResultsRef,
+    suppressedBrokenPathsRef,
     hideLauncherAndResetState,
     refreshFileHistoryCache,
     searchFileHistoryWrapper,
@@ -326,10 +344,27 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
             console.log(`[删除应用] 后端删除完成`);
 
             // 规范化路径用于比较（Windows 路径不区分大小写，统一反斜杠）
-            const normalizedPathToRemove = pathToRemove
-              .toLowerCase()
-              .replace(/\//g, "\\");
+            const normalizedPathToRemove = normalizePathForCompare(pathToRemove);
             console.log(`[删除应用] 规范化后的路径: ${normalizedPathToRemove}`);
+
+            // 会话内屏蔽：避免 Everything 再次把失效快捷方式搜出来
+            suppressedBrokenPathsRef.current.add(normalizedPathToRemove);
+
+            // 同步前端应用缓存，否则下次前端搜索会从缓存里把该项加回来
+            allAppsCacheRef.current = allAppsCacheRef.current.filter((app) => {
+              return normalizePathForCompare(app.path) !== normalizedPathToRemove;
+            });
+
+            // 从 openHistory 状态移除（后端已 deleteFileHistory，前端也要立刻同步）
+            setOpenHistory((prev) => {
+              const next = { ...prev };
+              for (const key of Object.keys(next)) {
+                if (normalizePathForCompare(key) === normalizedPathToRemove) {
+                  delete next[key];
+                }
+              }
+              return next;
+            });
 
             // 立即从本地状态和显示结果中移除已删除的应用（使用规范化比较）
             setApps((prevApps) => {
@@ -337,10 +372,8 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
                 `[删除应用] setApps 被调用，当前 apps 数量: ${prevApps.length}`
               );
               const filtered = prevApps.filter((app) => {
-                const normalizedAppPath = app.path
-                  .toLowerCase()
-                  .replace(/\//g, "\\");
-                const shouldKeep = normalizedAppPath !== normalizedPathToRemove;
+                const shouldKeep =
+                  normalizePathForCompare(app.path) !== normalizedPathToRemove;
                 if (!shouldKeep) {
                   console.log(`[删除应用] 从 apps 中找到并删除: ${app.path}`);
                 }
@@ -354,22 +387,10 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
               console.log(
                 `[删除应用] setFilteredApps 被调用，当前 filteredApps 数量: ${prevFiltered.length}`
               );
-              console.log(
-                `[删除应用] 当前 filteredApps 内容:`,
-                prevFiltered.map((a) => `${a.name} (${a.path})`)
-              );
 
               const filtered = prevFiltered.filter((app) => {
-                const normalizedAppPath = app.path
-                  .toLowerCase()
-                  .replace(/\//g, "\\");
-                const shouldKeep = normalizedAppPath !== normalizedPathToRemove;
-
-                console.log(`[删除应用] 检查项: ${app.name}`);
-                console.log(`[删除应用]   - 原始路径: ${app.path}`);
-                console.log(`[删除应用]   - 规范化路径: ${normalizedAppPath}`);
-                console.log(`[删除应用]   - 是否保留: ${shouldKeep}`);
-
+                const shouldKeep =
+                  normalizePathForCompare(app.path) !== normalizedPathToRemove;
                 if (!shouldKeep) {
                   console.log(
                     `[删除应用] ✅ 从 filteredApps 中找到并删除: ${app.path}`
@@ -381,25 +402,18 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
               console.log(
                 `[删除应用] setFilteredApps 过滤后数量: ${filtered.length}`
               );
-              console.log(
-                `[删除应用] 过滤后 filteredApps 内容:`,
-                filtered.map((a) => `${a.name} (${a.path})`)
-              );
               return filtered;
             });
 
-            // ⭐ 关键修复：同时从 filteredFiles 中删除（文件历史中的 .lnk 文件）
+            // 同时从 filteredFiles 中删除（文件历史中的 .lnk 文件）
             setFilteredFiles((prevFiltered) => {
               console.log(
                 `[删除应用] setFilteredFiles 被调用，当前 filteredFiles 数量: ${prevFiltered.length}`
               );
 
               const filtered = prevFiltered.filter((file) => {
-                const normalizedFilePath = file.path
-                  .toLowerCase()
-                  .replace(/\//g, "\\");
-                const shouldKeep = normalizedFilePath !== normalizedPathToRemove;
-
+                const shouldKeep =
+                  normalizePathForCompare(file.path) !== normalizedPathToRemove;
                 if (!shouldKeep) {
                   console.log(
                     `[删除应用] ✅ 从 filteredFiles 中找到并删除: ${file.path}`
@@ -414,14 +428,31 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
               return filtered;
             });
 
+            // Everything 结果中同路径的 .lnk 也要立刻移除，否则索引删了图标仍会留着
+            setEverythingResults((prev) =>
+              prev.filter(
+                (item) =>
+                  normalizePathForCompare(item.path) !== normalizedPathToRemove
+              )
+            );
+
+            // 立刻从当前展示列表移除，不等待 combineResults 的 idle 延迟
+            const keepResult = (item: SearchResult) =>
+              normalizePathForCompare(item.path || "") !== normalizedPathToRemove;
+            setHorizontalResults((prev) => {
+              const filtered = prev.filter(keepResult);
+              horizontalResultsRef.current = filtered;
+              return filtered;
+            });
+            setResults((prev) => prev.filter(keepResult));
+
             // 同时从文件历史缓存中移除（如果存在）
             const beforeCount = allFileHistoryCacheRef.current.length;
             allFileHistoryCacheRef.current =
               allFileHistoryCacheRef.current.filter((item) => {
-                const normalizedItemPath = item.path
-                  .toLowerCase()
-                  .replace(/\//g, "\\");
-                return normalizedItemPath !== normalizedPathToRemove;
+                return (
+                  normalizePathForCompare(item.path) !== normalizedPathToRemove
+                );
               });
             const afterCount = allFileHistoryCacheRef.current.length;
             console.log(
@@ -435,10 +466,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
             );
 
             // 注意：不需要后台刷新搜索，因为：
-            // 1. 我们已经手动从 filteredApps 中删除了该项（上面的 setFilteredApps）
+            // 1. 我们已经手动从 filteredApps / everythingResults / 展示列表中删除
             // 2. 后端也已经删除了（通过 Promise.all 等待完成）
-            // 3. 下次用户主动搜索时会自动从后端获取最新数据
-            // 如果这里立即调用 searchApplications，可能会在 React 渲染之前覆盖我们的手动更新
+            // 3. 会话内 suppressedBrokenPathsRef 会阻止 Everything 再次带回该项
           } catch (deleteError: any) {
             console.error("Failed to remove app from index:", deleteError);
             // 如果删除失败，仍然显示原始错误

@@ -18,7 +18,8 @@ html, body {
 
 #root {
   width: 100%;
-  height: 100vh;
+  /* 不要用 100vh 撑满透明窗口，否则内容变矮后底部会露出透明空隙 */
+  height: auto;
   min-height: 80px;
   margin: 0;
   padding: 0;

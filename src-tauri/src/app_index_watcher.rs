@@ -226,6 +226,35 @@ fn dir_has_newer_app_file(dir: &Path, cache_mtime: SystemTime, depth: usize) -> 
     false
 }
 
+/// 缓存里是否仍挂着本地已不存在的 .exe/.lnk（误删快捷方式后常见，会导致开始菜单项永久缺失）
+fn cache_has_missing_local_apps(app_data_dir: &Path) -> bool {
+    let apps = match app_search::windows::load_cache(app_data_dir) {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    for app in apps {
+        let p = app.path.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let lower = p.to_lowercase();
+        if lower.starts_with("shell:") || lower.starts_with("ms-settings:") {
+            continue;
+        }
+        if !(lower.ends_with(".exe") || lower.ends_with(".lnk") || lower.ends_with(".bat") || lower.ends_with(".cmd")) {
+            continue;
+        }
+        if !Path::new(p).exists() {
+            eprintln!(
+                "[AppIndexWatcher] 缓存中存在已失效路径，需要重扫: {}",
+                p
+            );
+            return true;
+        }
+    }
+    false
+}
+
 /// 开始菜单/桌面相对 app_cache.json 是否过期（无缓存也视为过期）
 fn index_appears_stale(app_data_dir: &Path) -> bool {
     let cache_file = app_search::windows::get_cache_file_path(app_data_dir);
@@ -236,6 +265,10 @@ fn index_appears_stale(app_data_dir: &Path) -> bool {
             return true;
         }
     };
+
+    if cache_has_missing_local_apps(app_data_dir) {
+        return true;
+    }
 
     for root in collect_watch_roots() {
         if dir_has_newer_app_file(&root, cache_mtime, 0) {
