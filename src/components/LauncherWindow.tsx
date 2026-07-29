@@ -36,6 +36,7 @@ import { useSearch } from "../hooks/useSearch";
 import { useResultsInteractivity } from "../hooks/useResultsInteractivity";
 import { useScrollbarStyle } from "../hooks/useScrollbarStyle";
 import { searchApplicationsFrontend } from "../utils/searchUtils";
+import { pathNeedsExtractedIcon } from "../utils/launcherUtils";
 import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
@@ -198,6 +199,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   
   // 存储从文件历史记录中提取的图标（路径 -> 图标数据）
   const extractedFileIconsRef = useRef<Map<string, string>>(new Map());
+  // Bump when extracted icons change so combined results re-read the ref
+  const [extractedIconsVersion, setExtractedIconsVersion] = useState(0);
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
 
@@ -710,6 +713,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     searchEngines,
     apps,
     extractedFileIconsRef,
+    extractedIconsVersion,
     suppressedBrokenPathsRef,
   });
   
@@ -846,25 +850,21 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     };
   }, [debouncedCombinedResults, query]);
 
-  // 为 Everything 搜索结果中的可执行文件提取图标
+  // 为 Everything 搜索结果中需要提取图标的文件提取图标（.exe/.lnk + shell-associated）
   useEffect(() => {
     if (!everythingResults || everythingResults.length === 0) {
       return;
     }
 
-    // 过滤出可执行文件（.exe 或 .lnk）
-    const executableFiles = everythingResults.filter((result) => {
-      const pathLower = result.path.toLowerCase();
-      return (pathLower.endsWith(".exe") || pathLower.endsWith(".lnk")) && 
-             !pathLower.includes("windowsapps");
-    });
+    const filesNeedingIcons = everythingResults.filter((result) =>
+      pathNeedsExtractedIcon(result.path)
+    );
 
-    // 为每个可执行文件提取图标（如果还没有图标）
-    executableFiles.slice(0, 10).forEach((file) => {
-      // 检查是否已有图标
-      const existingIcon = extractedFileIconsRef.current.get(file.path);
-      if (existingIcon && existingIcon !== "__ICON_EXTRACTION_FAILED__") {
-        return; // 已有图标，跳过
+    // 为每个文件提取图标（如果还没有图标），限制数量避免卡顿
+    filesNeedingIcons.slice(0, 10).forEach((file) => {
+      // 已提取成功或已标记失败则跳过，避免重复请求
+      if (extractedFileIconsRef.current.has(file.path)) {
+        return;
       }
 
       // 检查应用列表中是否已有该路径的应用及其有效图标
@@ -877,15 +877,19 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       if (matchedApp) {
         // 应用列表中已有图标，保存到缓存
         extractedFileIconsRef.current.set(file.path, matchedApp.icon!);
+        setExtractedIconsVersion((v) => v + 1);
         return;
       }
+
+      // 占位：防止并发重复提取
+      extractedFileIconsRef.current.set(file.path, "");
 
       // 触发图标提取（异步，不阻塞）
       tauriApi.extractIconFromPath(file.path)
         .then((icon) => {
           if (icon) {
             extractedFileIconsRef.current.set(file.path, icon);
-            // extractedFileIconsRef 是 useCombinedResults 的依赖项，更新后会自动触发重新计算
+            setExtractedIconsVersion((v) => v + 1);
           } else {
             // 标记为提取失败，避免重复尝试
             extractedFileIconsRef.current.set(file.path, "__ICON_EXTRACTION_FAILED__");

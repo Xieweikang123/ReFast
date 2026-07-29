@@ -28,6 +28,8 @@ export interface UseCombinedResultsOptions {
   searchEngines: SearchEngineConfig[];
   apps: AppInfo[];
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
+  /** Incremented when extractedFileIconsRef contents change (forces recombine) */
+  extractedIconsVersion?: number;
   suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
 }
 
@@ -54,6 +56,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     searchEngines,
     apps,
     extractedFileIconsRef,
+    extractedIconsVersion = 0,
     suppressedBrokenPathsRef,
   } = options;
 
@@ -97,7 +100,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     } else {
       setTimeout(scheduleCompute, 0);
     }
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef, suppressedBrokenPathsRef]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef, extractedIconsVersion, suppressedBrokenPathsRef]);
 
   // 使用 useDeferredValue 延迟 combinedResults 的更新，让输入框保持响应
   // 当用户快速输入时，React 会延迟更新 combinedResults，优先处理输入事件

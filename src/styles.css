@@ -270,3 +270,47 @@ div.results-list-scroll::-webkit-scrollbar-thumb:active {
   font-weight: 500;
 }
 
+/* JSON 格式化查看器 - 深色主题滚动条 */
+.json-formatter-dark-scroll {
+  scrollbar-width: thin !important;
+  scrollbar-color: #424242 #1e1e1e !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar {
+  width: 10px !important;
+  height: 10px !important;
+  display: block !important;
+  -webkit-appearance: none !important;
+  background: transparent !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar-track {
+  background: #1e1e1e !important;
+  border-left: 1px solid #3e3e42 !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar-thumb {
+  background: #424242 !important;
+  border-radius: 8px !important;
+  border: 2px solid #1e1e1e !important;
+  background-clip: content-box !important;
+  min-height: 40px !important;
+  transition: background-color 0.2s ease !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar-thumb:hover {
+  background: #555555 !important;
+  border: 2px solid #1e1e1e !important;
+}
+
+.json-formatter-dark-scroll::-webkit-scrollbar-thumb:active {
+  background: #666666 !important;
+  border: 2px solid #1e1e1e !important;
+}
+

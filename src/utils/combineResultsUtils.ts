@@ -249,12 +249,16 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       }
       return true;
     })
-    .map((everything) => ({
-      type: "everything" as const,
-      everything,
-      displayName: everything.name,
-      path: everything.path,
-    }));
+    .map((everything) => {
+      const extractedIcon = extractedFileIconsRef.current.get(everything.path);
+      return {
+        type: "everything" as const,
+        everything,
+        displayName: everything.name,
+        path: everything.path,
+        icon: isValidIcon(extractedIcon) ? extractedIcon : undefined,
+      };
+    });
 
   // 从 openHistory 中提取 URL 历史记录（仅在查询不为空时）
   const historyUrls: Array<{ url: string; timestamp: number }> = [];
@@ -691,11 +695,13 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
           };
         }
 
+        const extractedIcon = extractedFileIconsRef.current.get(file.path);
         return {
           type: "file" as const,
           file,
           displayName: file.name,
           path: file.path,
+          icon: isValidIcon(extractedIcon) ? extractedIcon : undefined,
         };
       }),
     ...filteredMemos.map((memo) => ({

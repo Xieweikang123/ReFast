@@ -46,6 +46,66 @@ pub mod windows {
             Some(_) => false,  // Has valid icon, no extraction needed
         }
     }
+
+    /// Extensions whose icons come from the Windows file-type association (Shell API).
+    /// Includes scripts (.bat/.cmd/…) and a few other high-value associated types.
+    pub fn is_shell_associated_icon_ext(ext: &str) -> bool {
+        matches!(
+            ext,
+            "msc"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "vbs"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "wsh"
+                | "msi"
+                | "cpl"
+                | "com"
+                | "scr"
+        )
+    }
+
+    /// Whether a successfully extracted path should be persisted into the app index.
+    /// Scripts/associated files get icons for search results but should not become indexed apps.
+    pub fn should_persist_as_app_on_icon_extract(file_path: &str) -> bool {
+        let path_lower = file_path.to_lowercase();
+        if path_lower.starts_with("shell:appsfolder\\") || path_lower.starts_with("ms-settings:") {
+            return true;
+        }
+        let ext = Path::new(file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        matches!(
+            ext.as_deref(),
+            Some("exe") | Some("lnk") | Some("msc") | Some("url")
+        )
+    }
+
+    /// Unified icon extraction by path / extension (exe, lnk, url, UWP, shell-associated).
+    pub fn extract_icon_for_file_path(file_path: &str) -> Option<String> {
+        let path_lower = file_path.to_lowercase();
+        if path_lower.starts_with("shell:appsfolder\\") {
+            return extract_uwp_app_icon_base64(file_path);
+        }
+
+        let path = Path::new(file_path);
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+
+        match ext.as_deref() {
+            Some("lnk") => extract_lnk_icon_base64(path),
+            Some("exe") => extract_icon_base64(path),
+            Some("url") => extract_url_icon_base64(path),
+            Some(e) if is_shell_associated_icon_ext(e) => extract_icon_png_via_shell(path, 32),
+            _ => None,
+        }
+    }
     
     // Cache file name
     pub fn get_cache_file_path(app_data_dir: &Path) -> PathBuf {
@@ -3981,6 +4041,33 @@ pub mod windows {
             Some(s) if s == ICON_EXTRACTION_FAILED_MARKER => false,
             Some(_) => false,
         }
+    }
+
+    pub fn is_shell_associated_icon_ext(ext: &str) -> bool {
+        matches!(
+            ext,
+            "msc"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "vbs"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "wsh"
+                | "msi"
+                | "cpl"
+                | "com"
+                | "scr"
+        )
+    }
+
+    pub fn should_persist_as_app_on_icon_extract(_file_path: &str) -> bool {
+        false
+    }
+
+    pub fn extract_icon_for_file_path(file_path: &str) -> Option<String> {
+        extract_icon_base64(Path::new(file_path))
     }
 
     // Cache file name

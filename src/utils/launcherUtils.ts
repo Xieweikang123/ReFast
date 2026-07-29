@@ -183,6 +183,41 @@ export function isLnkPath(path: string | undefined | null): boolean {
   return path?.toLowerCase().endsWith(".lnk") ?? false;
 }
 
+/** Extensions that use Windows shell-associated icons (via extract_icon_png_via_shell). */
+const SHELL_ASSOCIATED_ICON_EXTS = [
+  ".msc",
+  ".bat",
+  ".cmd",
+  ".ps1",
+  ".vbs",
+  ".js",
+  ".jse",
+  ".wsf",
+  ".wsh",
+  ".msi",
+  ".cpl",
+  ".com",
+  ".scr",
+] as const;
+
+/** .exe / .lnk plus shell-associated types that benefit from extracted icons in search results. */
+export function pathNeedsExtractedIcon(path: string | undefined | null): boolean {
+  if (!path) return false;
+  const pathLower = path.toLowerCase();
+  if (pathLower.includes("windowsapps")) return false;
+  if (pathLower.endsWith(".exe") || pathLower.endsWith(".lnk")) return true;
+  return SHELL_ASSOCIATED_ICON_EXTS.some((ext) => pathLower.endsWith(ext));
+}
+
+/** Script-like extensions shown with a dedicated SVG until/unless a shell icon is available. */
+export function isScriptLikePath(path: string | undefined | null): boolean {
+  if (!path) return false;
+  const pathLower = path.toLowerCase();
+  return [".bat", ".cmd", ".ps1", ".vbs", ".js", ".jse", ".wsf", ".wsh"].some((ext) =>
+    pathLower.endsWith(ext)
+  );
+}
+
 // 检测输入是否为数学表达式
 export function isMathExpression(text: string): boolean {
   if (!text || text.trim().length === 0) return false;
@@ -205,7 +240,7 @@ export function isMathExpression(text: string): boolean {
   
   // 检查是否主要是数学相关字符（数字、运算符、括号、小数点、空格）
   // 允许的字符：数字、运算符、括号、小数点、空格、科学计数法（e/E）
-  const mathPattern = /^[0-9+\-*/%()^.\s]+$/i;
+  const mathPattern = /^[0-9+\-*/%()^.\sEe]+$/;
   const isMathChars = mathPattern.test(withoutSpaces);
   
   // 如果包含太多字母（超过2个），不太可能是纯数学表达式

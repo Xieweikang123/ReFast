@@ -30,6 +30,8 @@ export type SearchResult = {
   jsonContent?: string;
   displayName: string;
   path: string;
+  /** Extracted file icon (base64 / data URL) for non-app file/everything results */
+  icon?: string;
 };
 
 /**
