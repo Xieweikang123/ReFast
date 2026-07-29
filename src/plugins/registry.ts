@@ -165,6 +165,7 @@ export class PluginRegistry {
   searchPlugins(query: string): Plugin[] {
     const lower = query.toLowerCase();
     const allPlugins = this.getAllPlugins();
+
     const results = allPlugins.filter(
       (plugin) =>
         plugin.name.toLowerCase().includes(lower) ||
@@ -181,12 +182,10 @@ export class PluginRegistry {
         if (!alreadyInResults) {
           // 将计算稿纸插件添加到结果的最前面
           results.unshift(calculatorPadPlugin);
-          console.log(`[Plugin Search] Detected math expression, added calculator_pad plugin`);
         }
       }
     }
-    
-    console.log(`[Plugin Search] Query: "${query}", Total plugins: ${allPlugins.length}, Results: ${results.length}`);
+
     return results;
   }
 

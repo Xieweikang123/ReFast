@@ -87,7 +87,6 @@ searchPlugins = (query: string) => {
     }
   }
 
-  console.log(`[Plugin Search Fallback] Query: "${query}", Total plugins: ${plugins.length}, Results: ${results.length}`);
   return results;
 };
 getPluginById = (id: string) => plugins.find((p) => p.id === id);

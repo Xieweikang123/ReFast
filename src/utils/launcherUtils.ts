@@ -574,7 +574,8 @@ export function isQueryIndependentResultType(type: string): boolean {
     type === "json_formatter" ||
     type === "search" ||
     type === "settings" ||
-    type === "history"
+    type === "history" ||
+    type === "plugin"
   );
 }
 

@@ -142,7 +142,14 @@ export function useSearchWrappers(
         return;
       }
 
-      const filtered = searchPlugins(q);
+      let filtered;
+      try {
+        filtered = searchPlugins(q);
+      } catch (err) {
+        console.error(`[handleSearchPlugins] searchPlugins threw:`, err);
+        updateSearchResults(setFilteredPlugins, []);
+        return;
+      }
 
       // Only update if query hasn't changed
       if (query.trim() === q.trim()) {
