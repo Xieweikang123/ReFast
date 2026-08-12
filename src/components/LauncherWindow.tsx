@@ -14,7 +14,7 @@ import { SearchResultArea } from "./SearchResultArea";
 import { LauncherStatusBar } from "./LauncherStatusBar";
 import { getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory } from "../utils/resultUtils";
+import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory, getResultKey } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import { askOllama } from "../utils/ollamaUtils";
@@ -89,6 +89,15 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [selectedHorizontalIndex, setSelectedHorizontalIndex] = useState<number | null>(null);
   const [selectedVerticalIndex, setSelectedVerticalIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0); // Keep for now, will be computed from selectedHorizontalIndex/selectedVerticalIndex
+  /** 选中锁定：用户手动选中后保持该行不因结果刷新而跳走 */
+  const [pinnedResult, setPinnedResult] = useState<SearchResult | null>(null);
+  const pinnedResultRef = useRef<SearchResult | null>(null);
+  pinnedResultRef.current = pinnedResult;
+  /** 选中锁定的结果 key，供增量加载时优先保持该行选中 */
+  const pinnedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    pinnedKeyRef.current = pinnedResult ? getResultKey(pinnedResult) : null;
+  }, [pinnedResult]);
   const [isHoveringAiIcon, setIsHoveringAiIcon] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
@@ -365,6 +374,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setQuery("");
       setSelectedIndex(0);
       setContextMenu(null);
+      setPinnedResult(null); // 清除选中锁定，避免下次唤起时残留
       setSuccessMessage(null); // 清除成功消息
       setErrorMessage(null); // 清除错误消息
       setPastedImagePath(null); // 清除粘贴的图片路径
@@ -495,53 +505,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         hideLauncherAndResetState,
       })) {
         return;
-      }
-      
-      // Handle ArrowDown globally when input might not be focused
-      if (e.key === "ArrowDown" && results.length > 0) {
-        
-        // Only handle if input is not focused (to avoid double handling)
-        const isInputFocused = document.activeElement === inputRef.current;
-        if (!isInputFocused) {
-          e.preventDefault();
-          e.stopPropagation();
-          
-          // Use the same logic as handleKeyDown for ArrowDown
-          // Check if current selected item is in horizontal results
-          const executableResults = results.filter(result => {
-            if (result.type === "app") {
-              const pathLower = result.path.toLowerCase();
-              return pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-            }
-            return false;
-          });
-          
-          const pluginResults = results.filter(result => {
-            return result.type === "plugin";
-          });
-          
-          const horizontalResults = [...executableResults, ...pluginResults];
-          const horizontalIndices = horizontalResults.map(hr => results.indexOf(hr)).filter(idx => idx >= 0);
-          
-          
-          // If current selected item is in horizontal results, jump to first vertical result
-          if (horizontalIndices.includes(selectedIndex)) {
-            const firstVerticalIndex = results.findIndex((_, index) => {
-              return !horizontalIndices.includes(index);
-            });
-            
-            
-            if (firstVerticalIndex >= 0) {
-              setSelectedIndex(firstVerticalIndex);
-              return;
-            }
-          }
-          
-          // Otherwise, increment normally
-          setSelectedIndex((prev) =>
-            prev < results.length - 1 ? prev + 1 : prev
-          );
-        }
       }
     };
     
@@ -737,6 +700,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         currentLoadResultsRef,
         horizontalResultsRef,
         setIsIncrementalLoading,
+        pinnedKeyRef,
     });
   }, [openHistory]);
 
@@ -941,6 +905,33 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setSelectedIndex(0);
     }
   }, [results, openHistory]);
+
+  // 查询变化时清除选中锁定（用户开始新输入，之前的选中不再适用）
+  useEffect(() => {
+    setPinnedResult(null);
+  }, [query]);
+
+  // 选中锁定：结果更新时保持用户手动选中的行不跳走
+  useEffect(() => {
+    if (!pinnedResult) return;
+    const key = getResultKey(pinnedResult);
+    const hIndex = horizontalResults.findIndex((r) => getResultKey(r) === key);
+    if (hIndex >= 0) {
+      setSelectedHorizontalIndex(hIndex);
+      setSelectedVerticalIndex(null);
+      return;
+    }
+    const vIndex = visibleVerticalItems.findIndex(
+      (item) => item.kind === "result" && getResultKey(item.result) === key
+    );
+    if (vIndex >= 0) {
+      setSelectedHorizontalIndex(null);
+      setSelectedVerticalIndex(vIndex);
+      return;
+    }
+    // 锁定项已不在当前可见结果中，清除锁定，避免非交互期 Enter/点击被静默拦截
+    setPinnedResult(null);
+  }, [horizontalResults, visibleVerticalItems, pinnedResult]);
 
   // 使用自定义 hook 处理窗口大小调整
   useWindowSizeAdjustment({
@@ -1690,6 +1681,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         horizontalResults,
         visibleVerticalItems,
         isResultsInteractive: isInteractive,
+        pinnedResultRef,
+        setPinnedResult,
         setContextMenu,
         setErrorMessage,
         setIsPluginListModalOpen,
@@ -1879,6 +1872,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             searchStatus={searchStatus}
             onExpandEverything={handleExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
+            pinnedKey={pinnedResult ? getResultKey(pinnedResult) : null}
           />
 
           {/* Footer */}

@@ -8,6 +8,7 @@ import type { RefObject, MutableRefObject } from "react";
 import type { SearchResult } from "./resultUtils";
 import {
   clearAllResults,
+  getResultKey,
   resetSelectedIndices,
   selectFirstHorizontal,
   selectFirstVertical,
@@ -49,6 +50,10 @@ export interface HandleKeyDownOptions {
   /** 可键盘导航的纵向可见项（含「显示更多」） */
   visibleVerticalItems: VisibleVerticalItem[];
   isResultsInteractive: boolean;
+  /** 选中锁定：用户手动选中结果后记录，结果刷新时保持该行不跳走 */
+  pinnedResultRef: MutableRefObject<SearchResult | null>;
+  /** 记录/清除选中锁定 */
+  setPinnedResult: (result: SearchResult | null) => void;
 
   // Setters
   setContextMenu: (
@@ -129,6 +134,8 @@ export async function handleKeyDown(
     horizontalResults,
     visibleVerticalItems,
     isResultsInteractive,
+    pinnedResultRef,
+    setPinnedResult,
     setContextMenu,
     setErrorMessage,
     setIsPluginListModalOpen,
@@ -151,6 +158,20 @@ export async function handleKeyDown(
   } = options;
 
   const verticalLen = visibleVerticalItems.length;
+
+  /** 根据目标索引记录选中锁定（未选中任何行时清除） */
+  const pinAt = (hIndex: number | null, vIndex: number | null) => {
+    if (hIndex !== null && horizontalResults[hIndex]) {
+      setPinnedResult(horizontalResults[hIndex]);
+      return;
+    }
+    if (vIndex !== null) {
+      const item = visibleVerticalItems[vIndex];
+      setPinnedResult(item && item.kind === "result" ? item.result : null);
+      return;
+    }
+    setPinnedResult(null);
+  };
 
   if (e.key === "Escape" || e.keyCode === 27) {
     e.preventDefault();
@@ -245,6 +266,7 @@ export async function handleKeyDown(
         justJumpedToVerticalRef.current = true;
         setSelectedHorizontalIndex(null);
         setSelectedVerticalIndex(0);
+        pinAt(null, 0);
         setTimeout(() => {
           justJumpedToVerticalRef.current = false;
         }, 200);
@@ -256,7 +278,9 @@ export async function handleKeyDown(
     if (selectedVerticalIndex !== null) {
       if (selectedVerticalIndex < verticalLen - 1) {
         isHorizontalNavigationRef.current = false;
-        setSelectedVerticalIndex(selectedVerticalIndex + 1);
+        const next = selectedVerticalIndex + 1;
+        setSelectedVerticalIndex(next);
+        pinAt(null, next);
         return;
       }
       return;
@@ -264,11 +288,13 @@ export async function handleKeyDown(
 
     if (isInputFocused && horizontalResults.length > 0) {
       selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
+      pinAt(0, null);
       return;
     }
 
     if (isInputFocused && verticalLen > 0) {
       selectFirstVertical(setSelectedHorizontalIndex, setSelectedVerticalIndex);
+      pinAt(null, 0);
       return;
     }
 
@@ -309,12 +335,14 @@ export async function handleKeyDown(
         inputRef.current.setSelectionRange(length, length);
       }
       resetSelectedIndices(setSelectedHorizontalIndex, setSelectedVerticalIndex);
+      pinAt(null, null);
       return;
     }
 
     if (selectedVerticalIndex === 0) {
       if (horizontalResults.length > 0) {
         selectFirstHorizontal(setSelectedHorizontalIndex, setSelectedVerticalIndex);
+        pinAt(0, null);
         return;
       } else {
         if (inputRef.current) {
@@ -323,19 +351,24 @@ export async function handleKeyDown(
           inputRef.current.setSelectionRange(length, length);
         }
         resetSelectedIndices(setSelectedHorizontalIndex, setSelectedVerticalIndex);
+        pinAt(null, null);
         return;
       }
     }
 
     if (selectedVerticalIndex !== null && selectedVerticalIndex > 0) {
       isHorizontalNavigationRef.current = false;
-      setSelectedVerticalIndex(selectedVerticalIndex - 1);
+      const prev = selectedVerticalIndex - 1;
+      setSelectedVerticalIndex(prev);
+      pinAt(null, prev);
       return;
     }
 
     if (selectedHorizontalIndex !== null && selectedHorizontalIndex > 0) {
-      setSelectedHorizontalIndex(selectedHorizontalIndex - 1);
+      const prev = selectedHorizontalIndex - 1;
+      setSelectedHorizontalIndex(prev);
       setSelectedVerticalIndex(null);
+      pinAt(prev, null);
       return;
     }
 
@@ -355,7 +388,8 @@ export async function handleKeyDown(
       }
 
       if (e.key === "ArrowLeft") {
-        if (selectedHorizontalIndex !== null && selectedHorizontalIndex !== 0) {
+        // 仅在光标位于文本开头时才进入横向导航，避免编辑中间文本时箭头被劫持
+        if (selectionStart === 0 && selectedHorizontalIndex !== null && selectedHorizontalIndex !== 0) {
           // continue to horizontal nav
         } else {
           return;
@@ -386,10 +420,13 @@ export async function handleKeyDown(
             : 0;
         setSelectedHorizontalIndex(nextIndex);
         setSelectedVerticalIndex(null);
+        pinAt(nextIndex, null);
       } else if (e.key === "ArrowLeft") {
         if (selectedHorizontalIndex === 0) {
-          setSelectedHorizontalIndex(horizontalResults.length - 1);
+          const lastIndex = horizontalResults.length - 1;
+          setSelectedHorizontalIndex(lastIndex);
           setSelectedVerticalIndex(null);
+          pinAt(lastIndex, null);
           return;
         }
         const prevIndex =
@@ -398,14 +435,18 @@ export async function handleKeyDown(
             : horizontalResults.length - 1;
         setSelectedHorizontalIndex(prevIndex);
         setSelectedVerticalIndex(null);
+        pinAt(prevIndex, null);
       }
     } else {
       if (e.key === "ArrowRight") {
         setSelectedHorizontalIndex(0);
         setSelectedVerticalIndex(null);
+        pinAt(0, null);
       } else if (e.key === "ArrowLeft") {
-        setSelectedHorizontalIndex(horizontalResults.length - 1);
+        const lastIndex = horizontalResults.length - 1;
+        setSelectedHorizontalIndex(lastIndex);
         setSelectedVerticalIndex(null);
+        pinAt(lastIndex, null);
       }
     }
 
@@ -417,9 +458,6 @@ export async function handleKeyDown(
 
   if (e.key === "Enter") {
     e.preventDefault();
-    if (!isResultsInteractive) {
-      return;
-    }
     let selectedResult: SearchResult | null = null;
     if (
       selectedHorizontalIndex !== null &&
@@ -436,6 +474,17 @@ export async function handleKeyDown(
         return;
       }
       selectedResult = getResultFromVisibleItem(item);
+    }
+    if (!isResultsInteractive) {
+      // 选中锁定：用户手动选中的行即使结果仍在刷新也可立即启动
+      const pinned = pinnedResultRef.current;
+      if (
+        !pinned ||
+        !selectedResult ||
+        getResultKey(selectedResult) !== getResultKey(pinned)
+      ) {
+        return;
+      }
     }
     if (selectedResult) {
       await handleLaunch(selectedResult);

@@ -41,6 +41,16 @@ export type SearchResult = {
 };
 
 /**
+ * 结果唯一标识，用于跨结果集匹配同一项。
+ * 路径统一小写并规范分隔符，避免 Windows 下因大小写/斜杠差异导致匹配失败。
+ */
+export function getResultKey(result: SearchResult): string {
+  const rawPath = result.url ?? result.path ?? "";
+  const path = rawPath.toLowerCase().replace(/\\/g, "/");
+  return `${result.type}:${path}`;
+}
+
+/**
  * 有查询时：未命中名称/路径/拼音的常规结果应过滤掉
  * 检测型结果（URL/邮箱/AI 等）始终保留
  */
@@ -388,6 +398,34 @@ export function pickSelectionIndicesByOpenHistoryFromVertical(
 }
 
 /**
+ * 增量加载时的选中策略：优先保持选中锁定项（存在则选中该项），
+ * 锁定项不在可见结果中时回退到按 openHistory 重选。
+ * 避免「自动选中 → 锁定 effect 再纠正」造成的选中抖动。
+ */
+export function pickSelectionIndicesWithPin(
+  horizontal: SearchResult[],
+  vertical: SearchResult[],
+  openHistory: Record<string, number>,
+  pinnedKeyRef?: React.MutableRefObject<string | null>
+): { selectedHorizontalIndex: number | null; selectedVerticalIndex: number | null } {
+  const pinnedKey = pinnedKeyRef?.current;
+  if (pinnedKey) {
+    const hIndex = horizontal.findIndex((r) => getResultKey(r) === pinnedKey);
+    if (hIndex >= 0) {
+      return { selectedHorizontalIndex: hIndex, selectedVerticalIndex: null };
+    }
+    const visible = buildDefaultVisibleVerticalItems(vertical);
+    const vIndex = visible.findIndex(
+      (item) => item.kind === "result" && getResultKey(item.result) === pinnedKey
+    );
+    if (vIndex >= 0) {
+      return { selectedHorizontalIndex: null, selectedVerticalIndex: vIndex };
+    }
+  }
+  return pickSelectionIndicesByOpenHistoryFromVertical(horizontal, vertical, openHistory);
+}
+
+/**
  * 扁平结果列表中优先选中 openHistory 时间戳最新的一项；无匹配时返回 null（由调用方决定默认行为）。
  */
 export function findBestFlatResultIndexFromOpenHistory(
@@ -564,6 +602,8 @@ export interface LoadResultsIncrementallyOptions {
   currentLoadResultsRef: React.MutableRefObject<SearchResult[]>;
   horizontalResultsRef: React.MutableRefObject<SearchResult[]>;
   setIsIncrementalLoading?: (loading: boolean) => void;
+  /** 选中锁定键：存在时优先保持该行选中，而非按 openHistory 重选 */
+  pinnedKeyRef?: React.MutableRefObject<string | null>;
 }
 
 /**
@@ -586,6 +626,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     currentLoadResultsRef,
     horizontalResultsRef,
     setIsIncrementalLoading,
+    pinnedKeyRef,
   } = options;
 
   const setIncrementalLoading = (loading: boolean) => {
@@ -669,10 +710,11 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     setVerticalResults(vertical);
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
-    const sel = pickSelectionIndicesByOpenHistoryFromVertical(
+    const sel = pickSelectionIndicesWithPin(
       finalHorizontal,
       vertical,
-      openHistory
+      openHistory,
+      pinnedKeyRef
     );
     setSelectedHorizontalIndex(sel.selectedHorizontalIndex);
     setSelectedVerticalIndex(sel.selectedVerticalIndex);
@@ -702,10 +744,11 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
     
-    const selInitial = pickSelectionIndicesByOpenHistoryFromVertical(
+    const selInitial = pickSelectionIndicesWithPin(
       finalHorizontal,
       finalVertical,
-      openHistory
+      openHistory,
+      pinnedKeyRef
     );
     setSelectedHorizontalIndex(selInitial.selectedHorizontalIndex);
     setSelectedVerticalIndex(selInitial.selectedVerticalIndex);
@@ -725,6 +768,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
         setSelectedHorizontalIndex,
         setSelectedVerticalIndex,
         currentLoadResultsRef,
+        horizontalResultsRef,
         logMessage: '[horizontalResults] 清空横向结果 (结果已过时或查询已清空)',
       });
       incrementalLoadRef.current = null;
@@ -759,6 +803,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
           setSelectedHorizontalIndex,
           setSelectedVerticalIndex,
           currentLoadResultsRef,
+          horizontalResultsRef,
           logMessage: '[horizontalResults] 清空横向结果 (增量加载中结果已过时)',
         });
         incrementalLoadRef.current = null;

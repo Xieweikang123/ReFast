@@ -8,6 +8,7 @@ import { ResultIcon } from "./ResultIcon";
 import { highlightText, formatLastUsedTime, isLnkPath } from "../utils/launcherUtils";
 import { getAppResultTooltip, useLnkTargetTooltip } from "../hooks/useLnkTargetTooltip";
 import type { SearchResult } from "../utils/resultUtils";
+import { getResultKey } from "../utils/resultUtils";
 import type { AppInfo } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 import { getThemeConfig } from "../utils/themeConfig";
@@ -59,6 +60,8 @@ export interface ResultListProps {
   isInteractive?: boolean;
   onExpandEverything: () => void;
   visibleVerticalItems: VisibleVerticalItem[];
+  /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
+  pinnedKey?: string | null;
 }
 
 /**
@@ -78,15 +81,18 @@ const HorizontalResultItem = React.memo<{
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   isInteractive?: boolean;
-}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true }) => {
+  pinnedKey?: string | null;
+}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true, pinnedKey = null }) => {
   const { resolvedTarget } = useLnkTargetTooltip(result.path);
+  // 选中锁定的行在非交互期也可点击启动
+  const rowInteractive = isInteractive || (pinnedKey != null && getResultKey(result) === pinnedKey);
 
   return (
     <div
       key={`executable-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (!isInteractive || e.button !== 0) return;
+        if (!rowInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -96,11 +102,11 @@ const HorizontalResultItem = React.memo<{
         e.stopPropagation();
       }}
       onContextMenu={(e) => {
-        if (!isInteractive) return;
+        if (!rowInteractive) return;
         onContextMenu(e, result);
       }}
       className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl transition-all duration-200 relative ${
-        isInteractive ? "cursor-pointer" : "cursor-default"
+        rowInteractive ? "cursor-pointer" : "cursor-default"
       } ${
         isSelected 
           ? resultStyle === "soft"
@@ -111,10 +117,10 @@ const HorizontalResultItem = React.memo<{
           : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
       } ${isLaunching ? 'rocket-launching' : ''}`}
       style={{
-        '--target-opacity': !isInteractive ? 0.55 : 1,
+        '--target-opacity': !rowInteractive ? 0.55 : 1,
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : isInteractive
+          : rowInteractive
           ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`
           : undefined,
         marginLeft: index === 0 && isSelected ? '10px' : '0px',
@@ -122,9 +128,9 @@ const HorizontalResultItem = React.memo<{
         height: '80px',
         minWidth: '80px',
         minHeight: '80px',
-        opacity: !isInteractive ? 0.55 : 1,
+        opacity: !rowInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isInteractive ? 'none' : 'auto',
+        pointerEvents: !rowInteractive ? 'none' : 'auto',
       } as React.CSSProperties}
     >
       {isSelected && (
@@ -204,6 +210,7 @@ const VerticalResultItem = React.memo<{
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   onSaveImageToDownloads: (path: string) => Promise<void>;
   isInteractive?: boolean;
+  pinnedKey?: string | null;
 }>(({ 
   result, 
   index, 
@@ -224,8 +231,11 @@ const VerticalResultItem = React.memo<{
   onContextMenu,
   onSaveImageToDownloads,
   isInteractive = true,
+  pinnedKey = null,
 }) => {
   const [isMac, setIsMac] = useState(false);
+  // 选中锁定的行在非交互期也可点击启动
+  const rowInteractive = isInteractive || (pinnedKey != null && getResultKey(result) === pinnedKey);
   const isLnk = isLnkPath(result.path);
   const { resolvedTarget, isLoading } = useLnkTargetTooltip(result.path);
   const displayPath =
@@ -241,7 +251,7 @@ const VerticalResultItem = React.memo<{
       data-item-key={`${result.type}-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (!isInteractive || e.button !== 0) return;
+        if (!rowInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -251,17 +261,17 @@ const VerticalResultItem = React.memo<{
         e.stopPropagation();
       }}
       onContextMenu={(e) => {
-        if (!isInteractive) return;
+        if (!rowInteractive) return;
         onContextMenu(e, result);
       }}
-      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${isInteractive ? 'cursor-pointer' : 'cursor-default'}`}
+      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${rowInteractive ? 'cursor-pointer' : 'cursor-default'}`}
       style={{
-        opacity: !isInteractive ? 0.55 : 1,
+        opacity: !rowInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isInteractive ? 'none' : 'auto',
+        pointerEvents: !rowInteractive ? 'none' : 'auto',
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : isInteractive
+          : rowInteractive
           ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`
           : undefined,
       }}
@@ -514,6 +524,7 @@ export const ResultList = React.memo<ResultListProps>(({
   isInteractive = true,
   onExpandEverything,
   visibleVerticalItems,
+  pinnedKey = null,
 }) => {
   const theme = React.useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
   const [isMac, setIsMac] = useState(false);
@@ -555,6 +566,7 @@ export const ResultList = React.memo<ResultListProps>(({
                   onLaunch={onLaunch}
                   onContextMenu={onContextMenu}
                   isInteractive={isInteractive}
+                  pinnedKey={pinnedKey}
                 />
               ))}
             </div>
@@ -607,6 +619,7 @@ export const ResultList = React.memo<ResultListProps>(({
               onContextMenu={onContextMenu}
               onSaveImageToDownloads={onSaveImageToDownloads}
               isInteractive={isInteractive}
+              pinnedKey={pinnedKey}
             />
           );
         })}

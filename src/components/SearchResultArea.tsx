@@ -42,6 +42,8 @@ interface SearchResultAreaProps {
   searchStatus: SearchStatusDetail;
   onExpandEverything: () => void;
   visibleVerticalItems: VisibleVerticalItem[];
+  /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
+  pinnedKey?: string | null;
 }
 
 export function SearchResultArea({
@@ -78,6 +80,7 @@ export function SearchResultArea({
   searchStatus,
   onExpandEverything,
   visibleVerticalItems,
+  pinnedKey,
 }: SearchResultAreaProps) {
   const renderSearchStatusBanner = () => (
     <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
@@ -314,6 +317,7 @@ export function SearchResultArea({
             isInteractive={isInteractive}
             onExpandEverything={onExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
+            pinnedKey={pinnedKey}
           />
         </div>
       ) : null}
