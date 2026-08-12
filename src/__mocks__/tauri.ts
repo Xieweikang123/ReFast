@@ -92,6 +92,8 @@ export const tauriApi = {
 
   // Utility APIs
   openUrl: async () => {},
+  openUrlWithBrowser: async () => {},
+  detectBrowsers: async () => [],
   revealInFolder: async () => {},
 
   // Memo APIs

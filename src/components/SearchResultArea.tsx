@@ -6,12 +6,7 @@ import type { AppInfo } from "../types";
 import type { SearchResult } from "../utils/resultUtils";
 import type { ResultStyle } from "../utils/themeConfig";
 import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
-import type {
-  GroupCollapseState,
-  VerticalGroupId,
-  VisibleVerticalItem,
-  VerticalGroup,
-} from "../utils/resultGroupUtils";
+import type { VisibleVerticalItem } from "../utils/resultGroupUtils";
 
 interface SearchResultAreaProps {
   showAiAnswer: boolean;
@@ -27,7 +22,6 @@ interface SearchResultAreaProps {
   everythingCurrentCount: number;
   listRef: React.RefObject<HTMLDivElement>;
   horizontalResults: SearchResult[];
-  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   resultStyle: ResultStyle;
@@ -46,8 +40,6 @@ interface SearchResultAreaProps {
   isInteractive: boolean;
   isSearching: boolean;
   searchStatus: SearchStatusDetail;
-  groupCollapsed: GroupCollapseState;
-  onToggleGroup: (groupId: VerticalGroupId) => void;
   onExpandEverything: () => void;
   visibleVerticalItems: VisibleVerticalItem[];
 }
@@ -66,7 +58,6 @@ export function SearchResultArea({
   everythingCurrentCount,
   listRef,
   horizontalResults,
-  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   resultStyle,
@@ -85,8 +76,6 @@ export function SearchResultArea({
   isInteractive,
   isSearching,
   searchStatus,
-  groupCollapsed,
-  onToggleGroup,
   onExpandEverything,
   visibleVerticalItems,
 }: SearchResultAreaProps) {
@@ -305,7 +294,6 @@ export function SearchResultArea({
           {isSearching && renderSearchStatusBanner()}
           <ResultList
             horizontalResults={horizontalResults}
-            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             query={query}
@@ -324,8 +312,6 @@ export function SearchResultArea({
             horizontalScrollContainerRef={horizontalScrollContainerRef}
             listRef={listRef}
             isInteractive={isInteractive}
-            groupCollapsed={groupCollapsed}
-            onToggleGroup={onToggleGroup}
             onExpandEverything={onExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
           />

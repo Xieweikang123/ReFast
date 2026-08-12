@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, startTransition } from "react";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig, BrowserRule } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { plugins, executePlugin } from "../plugins";
@@ -52,17 +52,11 @@ import {
 } from "../utils/contextMenuUtils";
 import { handleKeyDown as handleKeyDownUtil } from "../utils/keyboardUtils";
 import {
-  groupVerticalResults,
   buildVisibleVerticalItems,
   EVERYTHING_DEFAULT_LIMIT,
-  DEFAULT_GROUP_COLLAPSE,
   SHOW_MORE_EVERYTHING_PATH,
-  type GroupCollapseState,
-  type VerticalGroupId,
   type VisibleVerticalItem,
-  type VerticalGroup,
 } from "../utils/resultGroupUtils";
-import { isMacOS } from "../utils/platformUtils";
 
 interface LauncherWindowProps {
   updateInfo?: UpdateCheckResult | null;
@@ -91,9 +85,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [results, setResults] = useState<SearchResult[]>([]); // Keep for backward compatibility, will be removed later
   const [horizontalResults, setHorizontalResults] = useState<SearchResult[]>([]);
   const [verticalResults, setVerticalResults] = useState<SearchResult[]>([]);
-  const [groupCollapsed, setGroupCollapsed] = useState<GroupCollapseState>(DEFAULT_GROUP_COLLAPSE);
   const [everythingLimit, setEverythingLimit] = useState(EVERYTHING_DEFAULT_LIMIT);
-  const [isMacPlatform, setIsMacPlatform] = useState(false);
   const [selectedHorizontalIndex, setSelectedHorizontalIndex] = useState<number | null>(null);
   const [selectedVerticalIndex, setSelectedVerticalIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0); // Keep for now, will be computed from selectedHorizontalIndex/selectedVerticalIndex
@@ -135,6 +127,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [isRemarkModalOpen, setIsRemarkModalOpen] = useState(false);
   const [editingRemarkUrl, setEditingRemarkUrl] = useState<string | null>(null);
   const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>([]);
+  const [browserRules, setBrowserRules] = useState<BrowserRule[]>([]);
   const [remarkText, setRemarkText] = useState<string>("");
   const [urlRemarks, setUrlRemarks] = useState<Record<string, string>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
@@ -204,28 +197,19 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
 
-  useEffect(() => {
-    isMacOS().then(setIsMacPlatform);
-  }, []);
-
-  const verticalGroups: VerticalGroup[] = useMemo(
-    () => groupVerticalResults(verticalResults, isMacPlatform),
-    [verticalResults, isMacPlatform]
-  );
-
   const visibleVerticalItems: VisibleVerticalItem[] = useMemo(
     () =>
       buildVisibleVerticalItems({
-        groups: verticalGroups,
-        collapsed: groupCollapsed,
+        verticalResults,
         everythingLimit,
       }),
-    [verticalGroups, groupCollapsed, everythingLimit]
+    [verticalResults, everythingLimit]
   );
+  const visibleVerticalItemsRef = useRef(visibleVerticalItems);
+  visibleVerticalItemsRef.current = visibleVerticalItems;
 
-  // 查询变化时重置分组折叠与 Everything 展开条数
+  // 查询变化时重置 Everything 展开条数
   useEffect(() => {
-    setGroupCollapsed(DEFAULT_GROUP_COLLAPSE);
     setEverythingLimit(EVERYTHING_DEFAULT_LIMIT);
   }, [query]);
 
@@ -241,26 +225,20 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setQuery(value);
   }, []);
 
-  const handleToggleGroup = useCallback((groupId: VerticalGroupId) => {
-    setGroupCollapsed((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
-    setSelectedVerticalIndex(null);
-  }, []);
-
   const handleExpandEverything = useCallback(() => {
     setEverythingLimit((prev) => prev + EVERYTHING_DEFAULT_LIMIT);
   }, []);
 
-  // 可见纵向列表缩短时，校正选中索引
+  // 可见纵向列表缩短时，校正选中索引（勿夹到最后一项：常为「显示更多」，会滚到底部）
   useEffect(() => {
     if (
       selectedVerticalIndex !== null &&
       selectedVerticalIndex >= visibleVerticalItems.length
     ) {
-      setSelectedVerticalIndex(
-        visibleVerticalItems.length > 0
-          ? visibleVerticalItems.length - 1
-          : null
+      const firstResultIdx = visibleVerticalItems.findIndex(
+        (item) => item.kind === "result"
       );
+      setSelectedVerticalIndex(firstResultIdx >= 0 ? firstResultIdx : null);
     }
   }, [visibleVerticalItems, selectedVerticalIndex]);
 
@@ -711,6 +689,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     openHistory,
     urlRemarks,
     searchEngines,
+    browserRules,
     apps,
     extractedFileIconsRef,
     extractedIconsVersion,
@@ -983,7 +962,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   });
 
   // Scroll selected item into view and adjust window size
-  // 只在 selectedVerticalIndex 变化时滚动，避免在结果更新时意外滚动
+  // 只在 selectedVerticalIndex 变化时滚动，避免结果列表更新时意外滚到底部
   useEffect(() => {
     // 如果正在保持滚动位置，不要执行 scrollIntoView
     if (shouldPreserveScrollRef.current) {
@@ -1007,9 +986,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     
     
     // Only scroll for vertical results (horizontal results are in a horizontal scroll container)
-    if (listRef.current && selectedVerticalIndex !== null && visibleVerticalItems.length > 0 && selectedVerticalIndex >= 0) {
+    const visibleItems = visibleVerticalItemsRef.current;
+    if (listRef.current && selectedVerticalIndex !== null && visibleItems.length > 0 && selectedVerticalIndex >= 0) {
       const container = listRef.current;
-      const visibleItem = visibleVerticalItems[selectedVerticalIndex];
+      const visibleItem = visibleItems[selectedVerticalIndex];
       if (!visibleItem) {
         return;
       }
@@ -1072,7 +1052,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVerticalIndex, visibleVerticalItems]); // 选中项或可见列表变化时滚动
+  }, [selectedVerticalIndex]); // 仅选中项变化时滚动，不用 visibleVerticalItems 作依赖
   // Scroll selected horizontal item into view
   useEffect(() => {
     // Only scroll for horizontal results
@@ -1213,6 +1193,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setResultStyle,
     setCloseOnBlur,
     setSearchEngines,
+    setBrowserRules,
     setIsEverythingAvailable,
     setEverythingError,
     setEverythingPath,
@@ -1468,6 +1449,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         searchFileHistoryWrapper,
         errorMessage,
           tauriApi,
+        browserRules,
       });
     },
     [
@@ -1487,6 +1469,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       horizontalResultsRef,
       suppressedBrokenPathsRef,
       tauriApi,
+      browserRules,
     ]
   );
 
@@ -1876,7 +1859,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             everythingCurrentCount={everythingCurrentCount}
             listRef={listRef}
             horizontalResults={horizontalResults}
-            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             resultStyle={resultStyle}
@@ -1895,8 +1877,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             isInteractive={isInteractive}
             isSearching={isSearching}
             searchStatus={searchStatus}
-            groupCollapsed={groupCollapsed}
-            onToggleGroup={handleToggleGroup}
             onExpandEverything={handleExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
           />
@@ -1959,6 +1939,25 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         }}
         onOpenUrl={async (url: string) => {
           await tauriApi.openUrl(url);
+        }}
+        onOpenUrlWithBrowser={async (url: string, browser: string) => {
+          await tauriApi.openUrlWithBrowser(url, browser);
+        }}
+        onOpenBrowserRules={async () => {
+          try {
+            // 设置标志，让应用中心窗口加载时自动跳转到浏览器路由页面
+            localStorage.setItem("appcenter:open-to-browser-rules", "true");
+            // 先隐藏启动器
+            await tauriApi.hideLauncher();
+            // 打开应用中心窗口
+            await tauriApi.showPluginListWindow();
+            // 窗口已存在时通过事件导航（新窗口由 localStorage 标志处理）
+            const { emit } = await import("@tauri-apps/api/event");
+            await emit("appcenter:navigate-to-browser-rules", {});
+          } catch (error) {
+            console.error("Failed to open browser rules settings:", error);
+            alert("打开浏览器路由设置失败");
+          }
         }}
         onDeleteHistory={handleDeleteHistory}
         onEditRemark={handleEditRemark}

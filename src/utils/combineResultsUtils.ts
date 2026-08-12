@@ -10,6 +10,7 @@ import type {
   EverythingResult,
   MemoItem,
   SearchEngineConfig,
+  BrowserRule,
 } from "../types";
 import {
   type SearchResult,
@@ -25,12 +26,22 @@ import {
   isUninstallShortcutName,
 } from "./launcherUtils";
 import { detectSearchIntent, getSearchResultItem } from "./searchUtils";
+import { resolveBrowserForUrl } from "./browserRules";
 import {
   parseSearchFilter,
   hasSearchKeyword,
   shouldSearchSource,
   resultMatchesScope,
 } from "./searchFilterUtils";
+
+/** 为 URL 解析路由浏览器标识；未命中规则时返回 undefined（不显示路由标签） */
+function browserForUrl(
+  url: string,
+  rules: BrowserRule[] | undefined
+): string | undefined {
+  const browser = resolveBrowserForUrl(url, rules);
+  return browser === "default" ? undefined : browser;
+}
 
 /**
  * 组合搜索结果的选项接口
@@ -60,6 +71,8 @@ export interface CombineResultsOptions {
   urlRemarks: Record<string, string>;
   searchEngines: SearchEngineConfig[];
   apps: AppInfo[];
+  /** 浏览器路由规则：命中时可在启动器直接打开对应站点 */
+  browserRules?: BrowserRule[];
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
   /** 本次会话内已确认失效的快捷方式，合并结果时排除 */
   suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
@@ -289,6 +302,25 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
     historyUrls.sort((a, b) => b.timestamp - a.timestamp);
   }
 
+  // 从浏览器路由规则生成可搜索的直达结果：查询命中规则模式时，
+  // 显示该站点并直接使用规则指定的浏览器打开
+  const ruleBaseUrls: string[] = [];
+  if (queryLower && shouldSearchSource(scope, "url")) {
+    for (const rule of options.browserRules || []) {
+      if (!rule.enabled) continue;
+      const pattern = rule.pattern.trim();
+      if (!pattern) continue;
+      const patternLower = pattern.toLowerCase().replace(/\/+$/, "");
+      const queryMatches =
+        patternLower.includes(queryLower) || queryLower.includes(patternLower);
+      if (!queryMatches) continue;
+      const baseUrl = patternLower.includes("://")
+        ? pattern.replace(/\/+$/, "")
+        : `https://${patternLower.replace(/^\/+/, "")}`;
+      ruleBaseUrls.push(baseUrl);
+    }
+  }
+
   // 合并检测到的 URL 和历史 URL，去重（检测到的 URL 优先）
   const allUrlsSet = new Set(detectedUrls.map((url) => url.toLowerCase()));
   const allUrls: string[] = [...detectedUrls];
@@ -301,11 +333,20 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
     }
   }
 
+  // 添加浏览器路由规则命中的站点（避免重复）
+  for (const baseUrl of ruleBaseUrls) {
+    if (!allUrlsSet.has(baseUrl.toLowerCase())) {
+      allUrls.push(baseUrl);
+      allUrlsSet.add(baseUrl.toLowerCase());
+    }
+  }
+
   const urlResults: SearchResult[] = allUrls.map((url) => ({
     type: "url" as const,
     url,
     displayName: url,
     path: url,
+    browser: browserForUrl(url, options.browserRules),
   }));
 
   // 邮箱结果
@@ -692,6 +733,7 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
             file,
             displayName: file.name,
             path: file.path,
+            browser: browserForUrl(file.path, options.browserRules),
           };
         }
 

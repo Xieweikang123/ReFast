@@ -15,6 +15,10 @@ import {
   isQueryIndependentResultType,
   isLnkPath,
 } from "./launcherUtils";
+import {
+  buildDefaultVisibleVerticalItems,
+  type VisibleVerticalItem,
+} from "./resultGroupUtils";
 
 // SearchResult 类型定义（与 LauncherWindow.tsx 中的定义保持一致）
 export type SearchResult = {
@@ -32,6 +36,8 @@ export type SearchResult = {
   path: string;
   /** Extracted file icon (base64 / data URL) for non-app file/everything results */
   icon?: string;
+  /** URL 类型：命中浏览器路由规则时记录使用的浏览器标识 */
+  browser?: string;
 };
 
 /**
@@ -90,6 +96,13 @@ export function compareSearchResults(
     if (aIsSpecial && !bIsSpecial) return -1;
     if (!aIsSpecial && bIsSpecial) return 1;
     if (aIsSpecial && bIsSpecial) return 0;
+
+    // 浏览器路由直达结果（用户明确配置、查询命中规则的站点）优先显示
+    const aIsRuleUrl = a.type === "url" && !!a.browser;
+    const bIsRuleUrl = b.type === "url" && !!b.browser;
+    if (aIsRuleUrl !== bIsRuleUrl) {
+      return aIsRuleUrl ? -1 : 1;
+    }
   }
 
   const aAppName = (a.app?.name || a.displayName || "").toLowerCase();
@@ -312,11 +325,13 @@ export function getOpenHistoryTimestamp(
 }
 
 /**
- * 在横向/纵向列表中优先选中「打开历史时间戳」最新的一项；无匹配时退回首个横向或首个纵向。
+ * 在横向/「当前可见」纵向列表中优先选中 openHistory 最新一项。
+ * vertical 必须是可见扁平列表（含分组截断），不能对完整 Everything 结果直接取下标，
+ * 否则越界校正会夹到最后一项（常为「显示更多」）并滚到底部。
  */
 export function pickSelectionIndicesByOpenHistory(
   horizontal: SearchResult[],
-  vertical: SearchResult[],
+  visibleVerticalItems: VisibleVerticalItem[],
   openHistory: Record<string, number>
 ): { selectedHorizontalIndex: number | null; selectedVerticalIndex: number | null } {
   let bestTs = -1;
@@ -331,8 +346,10 @@ export function pickSelectionIndicesByOpenHistory(
       selectedV = null;
     }
   }
-  for (let i = 0; i < vertical.length; i++) {
-    const ts = getOpenHistoryTimestamp(vertical[i].path, openHistory);
+  for (let i = 0; i < visibleVerticalItems.length; i++) {
+    const item = visibleVerticalItems[i];
+    if (item.kind !== "result") continue;
+    const ts = getOpenHistoryTimestamp(item.result.path, openHistory);
     if (ts !== undefined && ts > bestTs) {
       bestTs = ts;
       selectedH = null;
@@ -350,10 +367,24 @@ export function pickSelectionIndicesByOpenHistory(
   if (horizontal.length > 0) {
     return { selectedHorizontalIndex: 0, selectedVerticalIndex: null };
   }
-  if (vertical.length > 0) {
-    return { selectedHorizontalIndex: null, selectedVerticalIndex: 0 };
+  const firstVertical = visibleVerticalItems.findIndex((item) => item.kind === "result");
+  if (firstVertical >= 0) {
+    return { selectedHorizontalIndex: null, selectedVerticalIndex: firstVertical };
   }
   return { selectedHorizontalIndex: null, selectedVerticalIndex: null };
+}
+
+/** 从完整纵向结果生成默认可见列表后再选中，供增量加载使用 */
+export function pickSelectionIndicesByOpenHistoryFromVertical(
+  horizontal: SearchResult[],
+  vertical: SearchResult[],
+  openHistory: Record<string, number>
+): { selectedHorizontalIndex: number | null; selectedVerticalIndex: number | null } {
+  return pickSelectionIndicesByOpenHistory(
+    horizontal,
+    buildDefaultVisibleVerticalItems(vertical),
+    openHistory
+  );
 }
 
 /**
@@ -638,7 +669,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     setVerticalResults(vertical);
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
-    const sel = pickSelectionIndicesByOpenHistory(
+    const sel = pickSelectionIndicesByOpenHistoryFromVertical(
       finalHorizontal,
       vertical,
       openHistory
@@ -671,7 +702,7 @@ export function loadResultsIncrementally(options: LoadResultsIncrementallyOption
     // 更新ref以跟踪当前的横向结果
     horizontalResultsRef.current = finalHorizontal;
     
-    const selInitial = pickSelectionIndicesByOpenHistory(
+    const selInitial = pickSelectionIndicesByOpenHistoryFromVertical(
       finalHorizontal,
       finalVertical,
       openHistory

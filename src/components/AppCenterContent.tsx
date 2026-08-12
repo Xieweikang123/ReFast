@@ -4,7 +4,7 @@ import type { PluginContext, IndexStatus, DatabaseBackupInfo, PluginUsage } from
 import { tauriApi } from "../api/tauri";
 import { isMacOS } from "../utils/platformUtils";
 import { listen, emit } from "@tauri-apps/api/event";
-import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage, LauncherSettingsPage } from "./SettingsPages";
+import { OllamaSettingsPage, SystemSettingsPage, AboutSettingsPage, LauncherSettingsPage, BrowserRulesSettingsPage } from "./SettingsPages";
 import { fetchUsersCount, fetchDailyUserCounts } from "../api/events";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { AppIndexList } from "./AppIndexList";
@@ -40,7 +40,7 @@ ChartJS.register(
 // Icon extraction failure marker 和相关函数已移至 AppIndexList 组件
 
 // 菜单分类类型
-type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics";
+type MenuCategory = "plugins" | "settings" | "about" | "index" | "statistics" | "browser_rules";
 
 // 设置子页面类型
 type SettingsPage = "system" | "launcher" | "ollama";
@@ -58,6 +58,11 @@ interface Settings {
     prefix: string;
     url: string;
     name: string;
+  }>;
+  browser_rules?: Array<{
+    pattern: string;
+    browser: string;
+    enabled: boolean;
   }>;
 }
 
@@ -105,6 +110,15 @@ const menuItems: MenuItem[] = [
     ),
   },
   {
+    id: "browser_rules",
+    name: "浏览器路由",
+    icon: (
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
     id: "about",
     name: "关于",
     icon: (
@@ -133,7 +147,7 @@ export function AppCenterContent({
   const [activeCategory, setActiveCategory] = useState<MenuCategory>(() => {
     const savedCategory = localStorage.getItem("appcenter:last-category");
     // 验证保存的值是否有效
-    const validCategories: MenuCategory[] = ["plugins", "settings", "about", "index", "statistics"];
+    const validCategories: MenuCategory[] = ["plugins", "settings", "about", "index", "statistics", "browser_rules"];
     if (savedCategory && validCategories.includes(savedCategory as MenuCategory)) {
       return savedCategory as MenuCategory;
     }
@@ -375,6 +389,13 @@ export function AppCenterContent({
       // 清除标志
       localStorage.removeItem("appcenter:open-to-about");
     }
+    const shouldOpenToBrowserRules = localStorage.getItem("appcenter:open-to-browser-rules");
+    if (shouldOpenToBrowserRules === "true") {
+      console.log("检测到需要跳转到浏览器路由页面");
+      setActiveCategory("browser_rules");
+      // 清除标志
+      localStorage.removeItem("appcenter:open-to-browser-rules");
+    }
   }, []);
 
   // 监听标签页切换，保存到 localStorage
@@ -388,6 +409,18 @@ export function AppCenterContent({
     const unlisten = listen("appcenter:navigate-to-about", () => {
       console.log("收到导航到应用中心关于页面的事件");
       setActiveCategory("about");
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  // 监听导航到浏览器路由页面的事件
+  useEffect(() => {
+    const unlisten = listen("appcenter:navigate-to-browser-rules", () => {
+      console.log("收到导航到应用中心浏览器路由页面的事件");
+      setActiveCategory("browser_rules");
     });
 
     return () => {
@@ -906,7 +939,7 @@ export function AppCenterContent({
 
   // 当切换到设置分类时加载设置
   useEffect(() => {
-    if (activeCategory === "settings") {
+    if (activeCategory === "settings" || activeCategory === "browser_rules") {
       loadSettings();
       
       // 监听设置刷新事件
@@ -1632,6 +1665,24 @@ export function AppCenterContent({
             </div>
           </div>
         );
+      case "browser_rules":
+        if (isLoadingSettings) {
+          return (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-gray-600">加载中...</div>
+            </div>
+          );
+        }
+        return (
+          <div className="flex-1 overflow-y-auto bg-gray-50">
+            <div className="p-6 max-w-4xl mx-auto">
+              <BrowserRulesSettingsPage
+                settings={settings}
+                onSettingsChange={setSettings}
+              />
+            </div>
+          </div>
+        );
       default:
         return null;
     }
@@ -1708,7 +1759,7 @@ export function AppCenterContent({
           )}
 
           {/* Scrollable Content - 设置和关于页面占据整个区域，其他页面有 padding */}
-          {activeCategory === "settings" || activeCategory === "about" ? (
+          {activeCategory === "settings" || activeCategory === "about" || activeCategory === "browser_rules" ? (
             renderContent()
           ) : (
             <div className="flex-1 overflow-y-auto p-4">

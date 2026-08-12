@@ -260,3 +260,15 @@ export interface SearchEngineConfig {
   name: string;
 }
 
+export interface BrowserRule {
+  pattern: string;
+  browser: string;
+  enabled: boolean;
+}
+
+export interface DetectedBrowser {
+  id: string;
+  name: string;
+  path: string;
+}
+

@@ -768,6 +768,8 @@ fn main() {
             show_shortcuts_config,
             show_main_window,
             open_url,
+            open_url_with_browser,
+            detect_browsers,
             record_open_history,
             get_open_history,
             delete_open_history,

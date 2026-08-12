@@ -2,7 +2,7 @@ import { tauriApi } from "../api/tauri";
 import { useEffect, useState } from "react";
 import { UpdateSection } from "./UpdateSection";
 import { ErrorDialog } from "./ErrorDialog";
-import type { SearchEngineConfig } from "../types";
+import type { SearchEngineConfig, BrowserRule, DetectedBrowser } from "../types";
 
 interface OllamaSettingsProps {
   settings: {
@@ -352,6 +352,280 @@ interface LauncherSettingsProps {
     search_engines?: SearchEngineConfig[];
   };
   onSettingsChange: (settings: any) => void;
+}
+
+const BROWSER_OPTIONS = [
+  { value: "default", label: "系统默认浏览器" },
+  { value: "edge", label: "Microsoft Edge" },
+  { value: "chrome", label: "Google Chrome" },
+  { value: "firefox", label: "Mozilla Firefox" },
+];
+
+const CUSTOM_BROWSER_VALUE = "__custom__";
+
+interface BrowserRulesSettingsProps {
+  settings: {
+    browser_rules?: BrowserRule[];
+  };
+  onSettingsChange: (settings: any) => void;
+}
+
+export function BrowserRulesSettingsPage({
+  settings,
+  onSettingsChange,
+}: BrowserRulesSettingsProps) {
+  const [browserRules, setBrowserRules] = useState<BrowserRule[]>(
+    settings.browser_rules || []
+  );
+  const [detectedBrowsers, setDetectedBrowsers] = useState<DetectedBrowser[]>([]);
+  const [errorDialog, setErrorDialog] = useState<{
+    isOpen: boolean;
+    type: "error" | "success" | "warning" | "info";
+    message: string;
+  }>({
+    isOpen: false,
+    type: "error",
+    message: "",
+  });
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  // 当外部设置更新时同步
+  useEffect(() => {
+    if (settings.browser_rules) {
+      setBrowserRules(settings.browser_rules);
+    }
+  }, [settings.browser_rules]);
+
+  // 检测本机已安装的浏览器
+  useEffect(() => {
+    tauriApi
+      .detectBrowsers()
+      .then((browsers) => setDetectedBrowsers(browsers))
+      .catch((error) => console.error("检测浏览器失败:", error));
+  }, []);
+
+  const handleAddRule = () => {
+    setBrowserRules([
+      ...browserRules,
+      { pattern: "", browser: "default", enabled: true },
+    ]);
+  };
+
+  const handleUpdateRule = (
+    index: number,
+    field: keyof BrowserRule,
+    value: string | boolean
+  ) => {
+    const updated = [...browserRules];
+    updated[index] = { ...updated[index], [field]: value };
+    setBrowserRules(updated);
+  };
+
+  const handleDeleteRule = (index: number) => {
+    setBrowserRules(browserRules.filter((_, i) => i !== index));
+  };
+
+  // 计算下拉框当前值：自定义路径时返回 CUSTOM_BROWSER_VALUE
+  const getBrowserSelectValue = (browser: string): string => {
+    return BROWSER_OPTIONS.some((opt) => opt.value === browser)
+      ? browser
+      : CUSTOM_BROWSER_VALUE;
+  };
+
+  const handleBrowserSelectChange = (index: number, value: string) => {
+    if (value === CUSTOM_BROWSER_VALUE) {
+      // 切到自定义时保留现有值（可能是之前的路径）
+      if (BROWSER_OPTIONS.some((opt) => opt.value === browserRules[index].browser)) {
+        handleUpdateRule(index, "browser", "");
+      }
+    } else {
+      handleUpdateRule(index, "browser", value);
+    }
+  };
+
+  const handleSave = () => {
+    // 校验浏览器路由规则
+    for (const rule of browserRules) {
+      if (!rule.pattern.trim()) {
+        setErrorDialog({
+          isOpen: true,
+          type: "warning",
+          message: "请填写每条浏览器路由规则的匹配模式（如 opencode.ai 或 https://opencode.ai）",
+        });
+        return;
+      }
+    }
+    // 保存配置
+    onSettingsChange({
+      ...settings,
+      browser_rules: browserRules,
+    });
+    // 显示成功提示（自动消失）
+    setSaveSuccessMessage("浏览器路由规则已保存成功");
+    setTimeout(() => {
+      setSaveSuccessMessage(null);
+    }, 2000);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold text-gray-800 mb-2">浏览器路由规则</h2>
+        <p className="text-sm text-gray-500">
+          为特定网址指定使用的浏览器，未命中规则的网址使用系统默认浏览器
+        </p>
+      </div>
+
+      {saveSuccessMessage && (
+        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 bg-green-50 text-green-700 border border-green-200 rounded-md px-4 py-2 text-sm flex items-center gap-2 shadow-lg">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>{saveSuccessMessage}</span>
+        </div>
+      )}
+
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="space-y-6">
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-gray-700">规则列表</h3>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAddRule}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors text-sm"
+                >
+                  添加规则
+                </button>
+                <button
+                  onClick={handleSave}
+                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors text-sm"
+                >
+                  保存配置
+                </button>
+              </div>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">
+              模式填写域名（如 <code className="bg-gray-100 px-1 rounded">opencode.ai</code>）或完整网址前缀（如
+              <code className="bg-gray-100 px-1 rounded">https://linux.do</code>）。域名按后缀匹配（子域名也会命中），完整网址按前缀匹配。
+            </p>
+            {detectedBrowsers.length > 0 && (
+              <div className="mb-4">
+                <p className="text-sm font-medium text-gray-700 mb-1">检测到的浏览器：</p>
+                <div className="flex flex-wrap gap-2">
+                  {detectedBrowsers.map((browser) => (
+                    <span
+                      key={browser.id}
+                      className="px-2 py-1 text-xs rounded bg-green-50 text-green-700 border border-green-200"
+                    >
+                      {browser.name}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {browserRules.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <p>暂无浏览器路由规则</p>
+                <p className="text-sm mt-2">点击"添加规则"来为指定网址设置浏览器</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {browserRules.map((rule, index) => (
+                  <div
+                    key={index}
+                    className="border border-gray-200 rounded-lg p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-medium text-gray-700">
+                        规则 #{index + 1}
+                      </h4>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-1 text-xs text-gray-600 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={rule.enabled}
+                            onChange={(e) =>
+                              handleUpdateRule(index, "enabled", e.target.checked)
+                            }
+                            className="rounded border-gray-300"
+                          />
+                          启用
+                        </label>
+                        <button
+                          onClick={() => handleDeleteRule(index)}
+                          className="text-red-600 hover:text-red-700 text-sm"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          匹配模式 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={rule.pattern}
+                          onChange={(e) =>
+                            handleUpdateRule(index, "pattern", e.target.value)
+                          }
+                          placeholder='例如: "opencode.ai" 或 "https://linux.do"'
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          打开方式
+                        </label>
+                        <select
+                          value={getBrowserSelectValue(rule.browser)}
+                          onChange={(e) =>
+                            handleBrowserSelectChange(index, e.target.value)
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        >
+                          {BROWSER_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                          <option value={CUSTOM_BROWSER_VALUE}>
+                            自定义浏览器路径...
+                          </option>
+                        </select>
+                        {getBrowserSelectValue(rule.browser) === CUSTOM_BROWSER_VALUE && (
+                          <input
+                            type="text"
+                            value={rule.browser}
+                            onChange={(e) =>
+                              handleUpdateRule(index, "browser", e.target.value)
+                            }
+                            placeholder="例如: C:\Program Files\App\app.exe"
+                            className="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm font-mono"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <ErrorDialog
+        isOpen={errorDialog.isOpen}
+        type={errorDialog.type}
+        title={errorDialog.type === "success" ? "保存成功" : errorDialog.type === "warning" ? "配置验证" : "错误"}
+        message={errorDialog.message}
+        onClose={() => setErrorDialog({ ...errorDialog, isOpen: false })}
+      />
+    </div>
+  );
 }
 
 export function LauncherSettingsPage({

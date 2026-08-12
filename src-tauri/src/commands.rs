@@ -3698,6 +3698,92 @@ pub fn open_url(url: String) -> Result<(), String> {
     }
 }
 
+/// 本机检测到的浏览器信息
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DetectedBrowser {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// 在常见安装路径中查找浏览器可执行文件
+fn resolve_browser_path(browser: &str) -> Option<String> {
+    let local = env::var("LOCALAPPDATA").unwrap_or_default();
+    match browser.trim().to_lowercase().as_str() {
+        "edge" => {
+            let paths = vec![
+                "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe".to_string(),
+                "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe".to_string(),
+            ];
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        "chrome" => {
+            let mut paths = vec![
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string(),
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe".to_string(),
+            ];
+            if !local.is_empty() {
+                paths.push(format!("{}\\Google\\Chrome\\Application\\chrome.exe", local));
+            }
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        "firefox" => {
+            let paths = vec![
+                "C:\\Program Files\\Mozilla Firefox\\firefox.exe".to_string(),
+                "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe".to_string(),
+            ];
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        other if !other.is_empty() && Path::new(other).is_file() => Some(other.to_string()),
+        _ => None,
+    }
+}
+
+/// 使用指定浏览器打开 URL；browser 为 "default" 时回退到系统默认浏览器
+#[tauri::command]
+pub fn open_url_with_browser(url: String, browser: String) -> Result<(), String> {
+    let browser = browser.trim().to_lowercase();
+    if browser.is_empty() || browser == "default" {
+        return open_url(url);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe = resolve_browser_path(&browser)
+            .ok_or_else(|| format!("未找到浏览器程序：{}", browser))?;
+        std::process::Command::new(&exe)
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("启动浏览器失败 {}: {}", exe, e))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows 平台直接回退默认浏览器
+        open_url(url)
+    }
+}
+
+/// 检测本机已安装的浏览器列表
+#[tauri::command]
+pub fn detect_browsers() -> Vec<DetectedBrowser> {
+    let candidates: Vec<(&str, &str)> = vec![
+        ("edge", "Microsoft Edge"),
+        ("chrome", "Google Chrome"),
+        ("firefox", "Mozilla Firefox"),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(id, name)| {
+            resolve_browser_path(id).map(|path| DetectedBrowser {
+                id: id.to_string(),
+                name: name.to_string(),
+                path,
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn reveal_in_folder(path: String) -> Result<(), String> {
     use std::path::PathBuf;

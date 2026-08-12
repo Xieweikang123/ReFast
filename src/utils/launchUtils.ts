@@ -4,17 +4,32 @@
  */
 
 import type React from "react";
-import type { AppInfo, EverythingResult, FileHistoryItem, PluginContext } from "../types";
+import type { AppInfo, BrowserRule, EverythingResult, FileHistoryItem, PluginContext } from "../types";
 import type { SearchResult } from "./resultUtils";
 import { normalizePathForHistory } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 import { trackEvent } from "../api/events";
 import { executePlugin } from "../plugins";
 import { pushQueryHistory } from "./queryHistoryUtils";
+import { resolveBrowserForUrl } from "./browserRules";
 
 /** 规范化路径用于比较（Windows 不区分大小写，统一反斜杠） */
 function normalizePathForCompare(path: string): string {
   return path.toLowerCase().replace(/\//g, "\\");
+}
+
+/** 按浏览器路由规则打开 URL；未命中规则时使用系统默认浏览器 */
+async function openUrlSmart(
+  url: string,
+  browserRules: BrowserRule[],
+  api: typeof tauriApi
+): Promise<void> {
+  const browser = resolveBrowserForUrl(url, browserRules);
+  if (browser !== "default") {
+    await api.openUrlWithBrowser(url, browser);
+  } else {
+    await api.openUrl(url);
+  }
 }
 
 /**
@@ -62,6 +77,8 @@ export interface LaunchOptions {
   // 其他依赖
   errorMessage: string | null;
   tauriApi: typeof tauriApi;
+  /** 浏览器路由规则，决定 URL 用哪个浏览器打开 */
+  browserRules: BrowserRule[];
 }
 
 /**
@@ -101,6 +118,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     searchFileHistoryWrapper,
     errorMessage,
     tauriApi,
+    browserRules,
   } = options;
 
   try {
@@ -240,7 +258,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     // 对所有结果统一提前处理 http/https 链接，避免走文件/应用启动流程
     const pathLower = result.path?.toLowerCase() || "";
     if (/^https?:\/\//.test(pathLower)) {
-      await tauriApi.openUrl(result.path);
+      await openUrlSmart(result.path, browserRules, tauriApi);
       await hideLauncherAndResetState();
       return;
     }
@@ -252,13 +270,13 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
       // 这里暂时不做任何操作，只是显示结果
       return;
     } else if (result.type === "url" && result.url) {
-      await tauriApi.openUrl(result.url);
+      await openUrlSmart(result.url, browserRules, tauriApi);
       // 注意：历史记录的更新已在开头统一处理
       await hideLauncherAndResetState();
       return;
     } else if (result.type === "search") {
       // 处理搜索类型：打开浏览器进行搜索
-      await tauriApi.openUrl(result.path);
+      await openUrlSmart(result.path, browserRules, tauriApi);
       await hideLauncherAndResetState();
       return;
     } else if (result.type === "email" && result.email) {
@@ -539,7 +557,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
 
         // 如果 Everything 返回的是以 http/https 开头的链接，作为 URL 处理，走浏览器打开
         if (everythingPath && /^https?:\/\//i.test(everythingPath)) {
-          await tauriApi.openUrl(everythingPath);
+          await openUrlSmart(everythingPath, browserRules, tauriApi);
           // 打开链接后直接隐藏启动器，不再走后续文件历史逻辑
           await hideLauncherAndResetState();
           return;

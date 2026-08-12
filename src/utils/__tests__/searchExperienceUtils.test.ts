@@ -13,10 +13,8 @@ import {
   QUERY_HISTORY_MAX,
 } from "../queryHistoryUtils";
 import {
-  groupVerticalResults,
   buildVisibleVerticalItems,
   EVERYTHING_DEFAULT_LIMIT,
-  DEFAULT_GROUP_COLLAPSE,
   SHOW_MORE_EVERYTHING_PATH,
 } from "../resultGroupUtils";
 import type { SearchResult } from "../resultUtils";
@@ -107,27 +105,31 @@ describe("resultGroupUtils", () => {
     path,
   });
 
-  it("分组 files / everything / other", () => {
-    const groups = groupVerticalResults([
-      make("file", "a.txt"),
-      make("everything", "b.txt"),
-      make("memo", "m1"),
-      make("url", "https://x"),
-    ]);
-    expect(groups.map((g) => g.id)).toEqual(["files", "everything", "other"]);
-    expect(groups[0].results).toHaveLength(1);
-    expect(groups[1].results).toHaveLength(1);
-    expect(groups[2].results).toHaveLength(2);
+  it("扁平可见列表保留排序：最近使用的其他类型结果排在前面", () => {
+    const recentUrl: SearchResult = {
+      type: "url",
+      displayName: "https://recent.example.com",
+      path: "https://recent.example.com",
+      url: "https://recent.example.com",
+    };
+    const items = buildVisibleVerticalItems({
+      verticalResults: [
+        recentUrl,
+        make("file", "a.txt"),
+        make("everything", "b.txt"),
+      ],
+      everythingLimit: EVERYTHING_DEFAULT_LIMIT,
+    });
+    expect(items.map((i) => i.kind)).toEqual(["result", "result", "result"]);
+    expect(items[0].kind === "result" && items[0].result).toBe(recentUrl);
   });
 
   it("Everything 默认限制并生成显示更多", () => {
     const everything = Array.from({ length: 20 }, (_, i) =>
       make("everything", `e-${i}`)
     );
-    const groups = groupVerticalResults(everything);
     const items = buildVisibleVerticalItems({
-      groups,
-      collapsed: DEFAULT_GROUP_COLLAPSE,
+      verticalResults: everything,
       everythingLimit: EVERYTHING_DEFAULT_LIMIT,
     });
     expect(items.filter((i) => i.kind === "result")).toHaveLength(
@@ -141,16 +143,21 @@ describe("resultGroupUtils", () => {
     }
   });
 
-  it("折叠组不出现在可见列表", () => {
-    const groups = groupVerticalResults([
-      make("file", "a.txt"),
-      make("everything", "b.txt"),
-    ]);
+  it("Everything 截断不影响其他类型结果展示", () => {
+    const everything = Array.from({ length: 20 }, (_, i) =>
+      make("everything", `e-${i}`)
+    );
     const items = buildVisibleVerticalItems({
-      groups,
-      collapsed: { ...DEFAULT_GROUP_COLLAPSE, everything: true },
+      verticalResults: [...everything, make("file", "a.txt")],
       everythingLimit: EVERYTHING_DEFAULT_LIMIT,
     });
-    expect(items.every((i) => i.groupId === "files")).toBe(true);
+    expect(items.filter((i) => i.kind === "result")).toHaveLength(
+      EVERYTHING_DEFAULT_LIMIT + 1
+    );
+    const more = items.find((i) => i.kind === "show_more");
+    expect(more).toBeDefined();
+    if (more?.kind === "show_more") {
+      expect(more.remaining).toBe(5);
+    }
   });
 });
