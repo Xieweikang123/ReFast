@@ -34,6 +34,8 @@ pub struct Settings {
     pub translation_tab_order: Vec<String>,
     #[serde(default = "default_search_engines")]
     pub search_engines: Vec<SearchEngineConfig>,
+    #[serde(default)]
+    pub browser_rules: Vec<BrowserRule>,
 }
 
 fn default_clipboard_max_items() -> u32 {
@@ -73,6 +75,7 @@ impl Default for Settings {
             clipboard_max_items: default_clipboard_max_items(),
             translation_tab_order: default_translation_tab_order(),
             search_engines: default_search_engines(),
+            browser_rules: Vec::new(),
         }
     }
 }
@@ -103,6 +106,21 @@ pub struct SearchEngineConfig {
     pub prefix: String,  // 触发前缀，如 "s ", "g "
     pub url: String,     // URL 模板，使用 {query} 作为占位符
     pub name: String,    // 显示名称，如 "Google", "百度"
+}
+
+/// 浏览器路由规则：匹配的 URL 使用指定浏览器打开
+/// `browser` 取值："default" | "edge" | "chrome" | "firefox" | 自定义 exe 绝对路径
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct BrowserRule {
+    /// 匹配模式：含 "://" 时按 URL 前缀匹配，否则按域名后缀匹配
+    pub pattern: String,
+    pub browser: String,
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+}
+
+fn default_rule_enabled() -> bool {
+    true
 }
 
 fn default_search_engines() -> Vec<SearchEngineConfig> {

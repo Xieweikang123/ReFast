@@ -66,7 +66,7 @@ function calculateExpression(expr: string): { result: any; error: string | null 
     }
 
     // 安全检查：只允许数字、运算符和括号
-    if (!/^[0-9+\-*/().\s]+$/.test(expr)) {
+    if (!/^[0-9+\-*/%^().\sEe]+$/.test(expr)) {
       return { result: null, error: "包含非法字符" };
     }
 

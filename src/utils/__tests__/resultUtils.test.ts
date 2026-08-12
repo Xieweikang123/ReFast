@@ -1,14 +1,22 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   clearAllResults,
+  getResultKey,
   resetSelectedIndices,
   selectFirstHorizontal,
   selectFirstVertical,
   splitResults,
   compareSearchResults,
   shouldKeepResultForQuery,
+  pickSelectionIndicesByOpenHistory,
+  pickSelectionIndicesByOpenHistoryFromVertical,
+  pickSelectionIndicesWithPin,
 } from "../resultUtils";
 import type { SearchResult } from "../resultUtils";
+import {
+  buildDefaultVisibleVerticalItems,
+  EVERYTHING_DEFAULT_LIMIT,
+} from "../resultGroupUtils";
 
 describe("resultUtils", () => {
   describe("clearAllResults", () => {
@@ -291,6 +299,58 @@ describe("resultUtils", () => {
     });
   });
 
+  describe("getResultKey", () => {
+    it("应按类型与路径生成稳定标识", () => {
+      const result = {
+        type: "app" as const,
+        displayName: "微信",
+        path: "C:\\Users\\Me\\AppData\\微信.exe",
+        app: { name: "微信" },
+      };
+      expect(getResultKey(result)).toBe(
+        "app:c:/users/me/appdata/微信.exe"
+      );
+    });
+
+    it("大小写和斜杠不同的同一路径应得到相同标识", () => {
+      const a = {
+        type: "file" as const,
+        displayName: "a",
+        path: "C:\\Users\\Me\\file.txt",
+      };
+      const b = {
+        type: "file" as const,
+        displayName: "b",
+        path: "c:/users/me/FILE.txt",
+      };
+      expect(getResultKey(a)).toBe(getResultKey(b));
+    });
+
+    it("不同类型同路径应得到不同标识", () => {
+      const app = {
+        type: "app" as const,
+        displayName: "x",
+        path: "C:\\app.exe",
+      };
+      const everything = {
+        type: "everything" as const,
+        displayName: "x",
+        path: "C:\\app.exe",
+      };
+      expect(getResultKey(app)).not.toBe(getResultKey(everything));
+    });
+
+    it("URL 类型优先使用 url 字段作为标识", () => {
+      const url = {
+        type: "url" as const,
+        displayName: "https://opencode.ai",
+        path: "https://opencode.ai",
+        url: "https://opencode.ai",
+      };
+      expect(getResultKey(url)).toBe("url:https://opencode.ai");
+    });
+  });
+
   describe("compareSearchResults", () => {
     it("有查询时完全匹配应压过仅最近使用的弱相关项", () => {
       const nowSec = Math.floor(Date.now() / 1000);
@@ -316,6 +376,164 @@ describe("resultUtils", () => {
           openHistory,
         })
       ).toBeLessThan(0);
+    });
+
+    it("浏览器路由直达结果应优先于普通结果", () => {
+      const ruleUrl: SearchResult = {
+        type: "url",
+        displayName: "https://opencode.ai",
+        path: "https://opencode.ai",
+        url: "https://opencode.ai",
+        browser: "edge",
+      };
+      const normalApp: SearchResult = {
+        type: "app",
+        displayName: "OpenCode 文档",
+        path: "C:\\OpenCode 文档.lnk",
+        app: { name: "OpenCode 文档" },
+      };
+
+      expect(
+        compareSearchResults(ruleUrl, normalApp, {
+          query: "opencode",
+        })
+      ).toBeLessThan(0);
+      // 未标记 browser 的普通 URL 不受影响
+      const plainUrl: SearchResult = {
+        type: "url",
+        displayName: "https://opencode.ai",
+        path: "https://opencode.ai",
+        url: "https://opencode.ai",
+      };
+      expect(
+        compareSearchResults(plainUrl, normalApp, {
+          query: "opencode",
+        })
+      ).toBeGreaterThan(0);
+    });
+  });
+
+  describe("pickSelectionIndicesByOpenHistory", () => {
+    const make = (
+      type: SearchResult["type"],
+      path: string
+    ): SearchResult => ({
+      type,
+      displayName: path,
+      path,
+    });
+
+    it("只在可见纵向项中选中历史，忽略截断外的 Everything 命中", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const horizontal = [make("app", "C:\\Excel.exe")];
+      const vertical = Array.from({ length: 40 }, (_, i) =>
+        make("everything", `C:\\docs\\excel-${i}.xlsx`)
+      );
+      const openHistory = {
+        "C:\\docs\\excel-35.xlsx": nowSec,
+        "C:\\Excel.exe": nowSec - 100,
+      };
+
+      const sel = pickSelectionIndicesByOpenHistoryFromVertical(
+        horizontal,
+        vertical,
+        openHistory
+      );
+
+      // 深度历史不在默认可见范围内，应回退到横向最近（Excel.exe）
+      expect(sel.selectedHorizontalIndex).toBe(0);
+      expect(sel.selectedVerticalIndex).toBeNull();
+    });
+
+    it("可见范围内的纵向历史仍可被选中", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const horizontal: SearchResult[] = [];
+      const vertical = Array.from({ length: 20 }, (_, i) =>
+        make("everything", `C:\\docs\\excel-${i}.xlsx`)
+      );
+      const openHistory = {
+        [`C:\\docs\\excel-3.xlsx`]: nowSec,
+      };
+
+      const visible = buildDefaultVisibleVerticalItems(vertical);
+      const sel = pickSelectionIndicesByOpenHistory(
+        horizontal,
+        visible,
+        openHistory
+      );
+
+      expect(sel.selectedHorizontalIndex).toBeNull();
+      expect(sel.selectedVerticalIndex).toBe(3);
+      expect(sel.selectedVerticalIndex).toBeLessThan(EVERYTHING_DEFAULT_LIMIT);
+    });
+
+    it("无历史时默认选中首个横向", () => {
+      const horizontal = [make("app", "C:\\Excel.exe")];
+      const vertical = [make("everything", "C:\\a.xlsx")];
+      const sel = pickSelectionIndicesByOpenHistoryFromVertical(
+        horizontal,
+        vertical,
+        {}
+      );
+      expect(sel.selectedHorizontalIndex).toBe(0);
+      expect(sel.selectedVerticalIndex).toBeNull();
+    });
+  });
+
+  describe("pickSelectionIndicesWithPin", () => {
+    const make = (
+      type: SearchResult["type"],
+      path: string
+    ): SearchResult => ({
+      type,
+      displayName: path,
+      path,
+    });
+
+    it("锁定横向项时保持该行选中", () => {
+      const horizontal = [make("app", "C:\\A.exe"), make("app", "C:\\B.exe")];
+      const vertical = [make("file", "C:\\doc.txt")];
+      const pinnedKeyRef = { current: getResultKey(horizontal[1]) };
+
+      const sel = pickSelectionIndicesWithPin(horizontal, vertical, {}, pinnedKeyRef);
+
+      expect(sel.selectedHorizontalIndex).toBe(1);
+      expect(sel.selectedVerticalIndex).toBeNull();
+    });
+
+    it("锁定纵向项时保持该行选中", () => {
+      const horizontal = [make("app", "C:\\A.exe")];
+      const vertical = [make("file", "C:\\a.txt"), make("everything", "C:\\b.pdf")];
+      const pinnedKeyRef = { current: getResultKey(vertical[1]) };
+
+      const sel = pickSelectionIndicesWithPin(horizontal, vertical, {}, pinnedKeyRef);
+
+      expect(sel.selectedHorizontalIndex).toBeNull();
+      expect(sel.selectedVerticalIndex).toBe(1);
+    });
+
+    it("锁定项不存在时回退到 openHistory 选中", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const horizontal = [make("app", "C:\\A.exe"), make("app", "C:\\B.exe")];
+      const openHistory = { "C:\\B.exe": nowSec };
+      const pinnedKeyRef = { current: "app:c:/gone.exe" };
+
+      const sel = pickSelectionIndicesWithPin(horizontal, [], openHistory, pinnedKeyRef);
+
+      expect(sel.selectedHorizontalIndex).toBe(1);
+      expect(sel.selectedVerticalIndex).toBeNull();
+    });
+
+    it("未锁定时按 openHistory 选中", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const horizontal = [make("app", "C:\\A.exe"), make("app", "C:\\B.exe")];
+      const openHistory = { "C:\\B.exe": nowSec };
+
+      const sel = pickSelectionIndicesWithPin(horizontal, [], openHistory, {
+        current: null,
+      });
+
+      expect(sel.selectedHorizontalIndex).toBe(1);
     });
   });
 });

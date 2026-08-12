@@ -8,6 +8,7 @@ import { ResultIcon } from "./ResultIcon";
 import { highlightText, formatLastUsedTime, isLnkPath } from "../utils/launcherUtils";
 import { getAppResultTooltip, useLnkTargetTooltip } from "../hooks/useLnkTargetTooltip";
 import type { SearchResult } from "../utils/resultUtils";
+import { getResultKey } from "../utils/resultUtils";
 import type { AppInfo } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 import { getThemeConfig } from "../utils/themeConfig";
@@ -15,18 +16,30 @@ import { isMacOS } from "../utils/platformUtils";
 import { parseSearchFilter } from "../utils/searchFilterUtils";
 import {
   SHOW_MORE_EVERYTHING_PATH,
-  EVERYTHING_DEFAULT_LIMIT,
-  DEFAULT_GROUP_COLLAPSE,
-  type GroupCollapseState,
-  type VerticalGroupId,
   type VisibleVerticalItem,
-  type VerticalGroup,
 } from "../utils/resultGroupUtils";
+
+/** 将浏览器标识格式化为可读名称 */
+function formatBrowserName(browser: string): string {
+  const lower = browser.toLowerCase();
+  switch (lower) {
+    case "edge":
+      return "Edge";
+    case "chrome":
+      return "Chrome";
+    case "firefox":
+      return "Firefox";
+    case "default":
+      return "默认";
+    default:
+      // 自定义路径：显示文件名
+      const fileName = lower.split(/[\\/]/).pop();
+      return fileName ? fileName.replace(/\.exe$/i, "") : "自定义";
+  }
+}
 
 export interface ResultListProps {
   horizontalResults: SearchResult[];
-  /** 已分组的纵向结果（由父组件计算，避免重复分组） */
-  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   query: string;
@@ -45,10 +58,10 @@ export interface ResultListProps {
   horizontalScrollContainerRef: React.RefObject<HTMLDivElement>;
   listRef: React.RefObject<HTMLDivElement>;
   isInteractive?: boolean;
-  groupCollapsed: GroupCollapseState;
-  onToggleGroup: (groupId: VerticalGroupId) => void;
   onExpandEverything: () => void;
   visibleVerticalItems: VisibleVerticalItem[];
+  /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
+  pinnedKey?: string | null;
 }
 
 /**
@@ -68,15 +81,18 @@ const HorizontalResultItem = React.memo<{
   onLaunch: (result: SearchResult) => Promise<void>;
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   isInteractive?: boolean;
-}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true }) => {
+  pinnedKey?: string | null;
+}>(({ result, index, isSelected, isLaunching, query, resultStyle, theme, apps, filteredApps, getPluginIcon, onLaunch, onContextMenu, isInteractive = true, pinnedKey = null }) => {
   const { resolvedTarget } = useLnkTargetTooltip(result.path);
+  // 选中锁定的行在非交互期也可点击启动
+  const rowInteractive = isInteractive || (pinnedKey != null && getResultKey(result) === pinnedKey);
 
   return (
     <div
       key={`executable-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (!isInteractive || e.button !== 0) return;
+        if (!rowInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -86,11 +102,11 @@ const HorizontalResultItem = React.memo<{
         e.stopPropagation();
       }}
       onContextMenu={(e) => {
-        if (!isInteractive) return;
+        if (!rowInteractive) return;
         onContextMenu(e, result);
       }}
       className={`flex flex-col items-center justify-center gap-1.5 p-2 rounded-xl transition-all duration-200 relative ${
-        isInteractive ? "cursor-pointer" : "cursor-default"
+        rowInteractive ? "cursor-pointer" : "cursor-default"
       } ${
         isSelected 
           ? resultStyle === "soft"
@@ -101,10 +117,10 @@ const HorizontalResultItem = React.memo<{
           : "bg-white hover:bg-gray-50 border border-gray-200 hover:border-gray-300 hover:shadow-md"
       } ${isLaunching ? 'rocket-launching' : ''}`}
       style={{
-        '--target-opacity': !isInteractive ? 0.55 : 1,
+        '--target-opacity': !rowInteractive ? 0.55 : 1,
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : isInteractive
+          : rowInteractive
           ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.05}s both`
           : undefined,
         marginLeft: index === 0 && isSelected ? '10px' : '0px',
@@ -112,9 +128,9 @@ const HorizontalResultItem = React.memo<{
         height: '80px',
         minWidth: '80px',
         minHeight: '80px',
-        opacity: !isInteractive ? 0.55 : 1,
+        opacity: !rowInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isInteractive ? 'none' : 'auto',
+        pointerEvents: !rowInteractive ? 'none' : 'auto',
       } as React.CSSProperties}
     >
       {isSelected && (
@@ -194,6 +210,7 @@ const VerticalResultItem = React.memo<{
   onContextMenu: (e: React.MouseEvent, result: SearchResult) => void;
   onSaveImageToDownloads: (path: string) => Promise<void>;
   isInteractive?: boolean;
+  pinnedKey?: string | null;
 }>(({ 
   result, 
   index, 
@@ -214,8 +231,11 @@ const VerticalResultItem = React.memo<{
   onContextMenu,
   onSaveImageToDownloads,
   isInteractive = true,
+  pinnedKey = null,
 }) => {
   const [isMac, setIsMac] = useState(false);
+  // 选中锁定的行在非交互期也可点击启动
+  const rowInteractive = isInteractive || (pinnedKey != null && getResultKey(result) === pinnedKey);
   const isLnk = isLnkPath(result.path);
   const { resolvedTarget, isLoading } = useLnkTargetTooltip(result.path);
   const displayPath =
@@ -231,7 +251,7 @@ const VerticalResultItem = React.memo<{
       data-item-key={`${result.type}-${result.path}-${index}`}
       title={getAppResultTooltip(result.path, result.type, resolvedTarget)}
       onMouseDown={async (e) => {
-        if (!isInteractive || e.button !== 0) return;
+        if (!rowInteractive || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         await onLaunch(result);
@@ -241,17 +261,17 @@ const VerticalResultItem = React.memo<{
         e.stopPropagation();
       }}
       onContextMenu={(e) => {
-        if (!isInteractive) return;
+        if (!rowInteractive) return;
         onContextMenu(e, result);
       }}
-      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${isInteractive ? 'cursor-pointer' : 'cursor-default'}`}
+      className={`${theme.card(isSelected)} ${isLaunching ? 'rocket-launching' : ''} ${rowInteractive ? 'cursor-pointer' : 'cursor-default'}`}
       style={{
-        opacity: !isInteractive ? 0.55 : 1,
+        opacity: !rowInteractive ? 0.55 : 1,
         transition: 'opacity 0.2s ease-in-out',
-        pointerEvents: !isInteractive ? 'none' : 'auto',
+        pointerEvents: !rowInteractive ? 'none' : 'auto',
         animation: isLaunching 
           ? `launchApp 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94) forwards` 
-          : isInteractive
+          : rowInteractive
           ? `fadeInUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) ${index * 0.04}s both`
           : undefined,
       }}
@@ -395,12 +415,21 @@ const VerticalResultItem = React.memo<{
           )}
           {result.type === "url" && (
             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              <span
-                className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("url", isSelected)}`}
-                title="URL 历史记录"
-              >
-                URL 历史
-              </span>
+              {result.browser ? (
+                <span
+                  className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("url", isSelected)}`}
+                  title={`浏览器路由规则：使用 ${formatBrowserName(result.browser)} 打开`}
+                >
+                  路由 → {formatBrowserName(result.browser)}
+                </span>
+              ) : (
+                <span
+                  className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("url", isSelected)}`}
+                  title="URL 历史记录"
+                >
+                  URL 历史
+                </span>
+              )}
               {result.url && urlRemarks[result.url] && (
                 <span
                   className={`text-xs px-2 py-1 rounded-md ${theme.metaText(isSelected)} bg-gray-100`}
@@ -475,7 +504,6 @@ VerticalResultItem.displayName = 'VerticalResultItem';
  */
 export const ResultList = React.memo<ResultListProps>(({
   horizontalResults,
-  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   query,
@@ -494,10 +522,9 @@ export const ResultList = React.memo<ResultListProps>(({
   horizontalScrollContainerRef,
   listRef,
   isInteractive = true,
-  groupCollapsed,
-  onToggleGroup,
   onExpandEverything,
   visibleVerticalItems,
+  pinnedKey = null,
 }) => {
   const theme = React.useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
   const [isMac, setIsMac] = useState(false);
@@ -509,19 +536,6 @@ export const ResultList = React.memo<ResultListProps>(({
     () => parseSearchFilter(query).keyword,
     [query]
   );
-
-  const itemsByGroup = useMemo(() => {
-    const map = new Map<
-      VerticalGroupId,
-      Array<{ item: VisibleVerticalItem; index: number }>
-    >();
-    visibleVerticalItems.forEach((item, index) => {
-      const list = map.get(item.groupId) ?? [];
-      list.push({ item, index });
-      map.set(item.groupId, list);
-    });
-    return map;
-  }, [visibleVerticalItems]);
 
   return (
     <div
@@ -552,90 +566,61 @@ export const ResultList = React.memo<ResultListProps>(({
                   onLaunch={onLaunch}
                   onContextMenu={onContextMenu}
                   isInteractive={isInteractive}
+                  pinnedKey={pinnedKey}
                 />
               ))}
             </div>
           </div>
         )}
 
-        {verticalGroups.map((group) => {
-          const collapsed = groupCollapsed[group.id];
-          const groupItems = itemsByGroup.get(group.id) ?? [];
-
-          return (
-            <div key={group.id} className="mb-1">
-              <button
-                type="button"
-                className="w-full flex items-center gap-2 px-4 py-1.5 text-xs font-medium text-gray-500 hover:bg-gray-50 select-none"
+        {visibleVerticalItems.map((item, index) => {
+          if (item.kind === "show_more") {
+            return (
+              <div
+                key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
+                data-item-key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
                 onMouseDown={(e) => {
+                  if (!isInteractive || e.button !== 0) return;
                   e.preventDefault();
                   e.stopPropagation();
-                  onToggleGroup(group.id);
+                  onExpandEverything();
                 }}
+                className={`mx-3 my-1 px-3 py-2 rounded-lg text-sm text-indigo-600 hover:bg-indigo-50 cursor-pointer border border-dashed ${
+                  selectedVerticalIndex === index
+                    ? "border-indigo-400 bg-indigo-50"
+                    : "border-indigo-200"
+                }`}
               >
-                <svg
-                  className={`w-3 h-3 transition-transform ${collapsed ? "-rotate-90" : ""}`}
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                </svg>
-                <span>{group.title}</span>
-                <span className="text-gray-400 font-normal">({group.results.length})</span>
-              </button>
+                显示更多 {isMac ? "Spotlight" : "Everything"} 结果（还有 {item.remaining} 条）
+              </div>
+            );
+          }
 
-              {!collapsed &&
-                groupItems.map(({ item, index }) => {
-                  if (item.kind === "show_more") {
-                    return (
-                      <div
-                        key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
-                        data-item-key={`${SHOW_MORE_EVERYTHING_PATH}-${index}`}
-                        onMouseDown={(e) => {
-                          if (!isInteractive || e.button !== 0) return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          onExpandEverything();
-                        }}
-                        className={`mx-3 my-1 px-3 py-2 rounded-lg text-sm text-indigo-600 hover:bg-indigo-50 cursor-pointer border border-dashed ${
-                          selectedVerticalIndex === index
-                            ? "border-indigo-400 bg-indigo-50"
-                            : "border-indigo-200"
-                        }`}
-                      >
-                        显示更多 {isMac ? "Spotlight" : "Everything"} 结果（还有 {item.remaining} 条）
-                      </div>
-                    );
-                  }
-
-                  const result = item.result;
-                  return (
-                    <VerticalResultItem
-                      key={`${result.type}-${result.path}-${index}`}
-                      result={result}
-                      index={index}
-                      verticalIndex={index + 1}
-                      isSelected={selectedVerticalIndex === index}
-                      isLaunching={result.type === "app" && launchingAppPath === result.path}
-                      query={highlightQuery}
-                      resultStyle={resultStyle}
-                      theme={theme}
-                      apps={apps}
-                      filteredApps={filteredApps}
-                      pastedImagePath={pastedImagePath}
-                      pastedImageDataUrl={pastedImageDataUrl}
-                      openHistory={openHistory}
-                      urlRemarks={urlRemarks}
-                      getPluginIcon={getPluginIcon}
-                      onLaunch={onLaunch}
-                      onContextMenu={onContextMenu}
-                      onSaveImageToDownloads={onSaveImageToDownloads}
-                      isInteractive={isInteractive}
-                    />
-                  );
-                })}
-            </div>
+          const result = item.result;
+          return (
+            <VerticalResultItem
+              key={`${result.type}-${result.path}-${index}`}
+              result={result}
+              index={index}
+              verticalIndex={index + 1}
+              isSelected={selectedVerticalIndex === index}
+              isLaunching={result.type === "app" && launchingAppPath === result.path}
+              query={highlightQuery}
+              resultStyle={resultStyle}
+              theme={theme}
+              apps={apps}
+              filteredApps={filteredApps}
+              pastedImagePath={pastedImagePath}
+              pastedImageDataUrl={pastedImageDataUrl}
+              openHistory={openHistory}
+              urlRemarks={urlRemarks}
+              getPluginIcon={getPluginIcon}
+              onLaunch={onLaunch}
+              onContextMenu={onContextMenu}
+              onSaveImageToDownloads={onSaveImageToDownloads}
+              isInteractive={isInteractive}
+              pinnedKey={pinnedKey}
+            />
           );
         })}
       </>
@@ -644,6 +629,3 @@ export const ResultList = React.memo<ResultListProps>(({
 });
 
 ResultList.displayName = 'ResultList';
-
-export { EVERYTHING_DEFAULT_LIMIT, DEFAULT_GROUP_COLLAPSE };
-export type { GroupCollapseState, VerticalGroupId, VisibleVerticalItem, VerticalGroup };

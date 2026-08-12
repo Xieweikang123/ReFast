@@ -4,7 +4,6 @@ import { tauriApi } from "../api/tauri";
 import Editor from "@monaco-editor/react";
 import type { editor } from "monaco-editor";
 import { useEscapeKey } from "../hooks/useEscapeKey";
-import { useWindowClose } from "../hooks/useWindowClose";
 import {
   addRecentJsonEntry,
   getRecentJsonEntries,
@@ -32,6 +31,10 @@ export function JsonFormatterWindow() {
   const formatTimeoutRef = useRef<number | null>(null); // 格式化防抖定时器
   const monacoEditorRef = useRef<editor.IStandaloneCodeEditor | null>(null); // Monaco Editor 实例
   const recentMenuRef = useRef<HTMLDivElement>(null);
+  const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 自动保存防抖定时器
+  const isDirtyRef = useRef<boolean>(false); // 是否有未保存的修改
+  const savedContentRef = useRef<string>(""); // 上次已保存的内容，用于去重
+  const latestContentRef = useRef<string>(""); // 最新的内容，用于卸载时保存
   const [recentEntries, setRecentEntries] = useState<RecentJsonEntry[]>([]);
   const [showRecentEntries, setShowRecentEntries] = useState(false);
 
@@ -48,6 +51,20 @@ export function JsonFormatterWindow() {
     },
     [refreshRecentEntries]
   );
+
+  // 防抖自动保存（轻量，不刷新列表，用于编辑时的静默保存）
+  const debouncedSave = useCallback((content: string) => {
+    if (!content.trim() || content === savedContentRef.current) return;
+
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+    autoSaveTimeoutRef.current = setTimeout(async () => {
+      await addRecentJsonEntry(content);
+      savedContentRef.current = content;
+      isDirtyRef.current = false;
+    }, 2000);
+  }, []);
 
 
   // 处理 JSON 内容的函数
@@ -641,10 +658,38 @@ export function JsonFormatterWindow() {
     return <span>{String(value)}</span>;
   };
 
-  // ESC 键关闭窗口
-  const handleClose = useWindowClose();
+  // 自定义关闭：保存当前内容后关闭窗口
+  const handleClose = useCallback(async () => {
+    // 先清空待执行的防抖保存
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+      autoSaveTimeoutRef.current = null;
+    }
+    // 保存当前内容（确保不丢修改）
+    const content = mode === "single" ? singleModeInput : input;
+    if (content.trim() && isDirtyRef.current && content !== savedContentRef.current) {
+      await addRecentJsonEntry(content);
+      isDirtyRef.current = false;
+    }
+    const window = getCurrentWindow();
+    await window.close();
+  }, [mode, singleModeInput, input]);
 
   useEscapeKey(handleClose);
+
+  // 组件卸载时自动保存未持久化的修改（处理窗口 X 按钮、Alt+F4 等）
+  useEffect(() => {
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      if (isDirtyRef.current && latestContentRef.current.trim() && latestContentRef.current !== savedContentRef.current) {
+        // fire-and-forget，组件已卸载，尽力保存
+        addRecentJsonEntry(latestContentRef.current).catch(() => {});
+      }
+    };
+  }, []);
 
   return (
     <div
@@ -680,10 +725,7 @@ export function JsonFormatterWindow() {
           JSON 格式化查看器
         </h1>
         <button
-          onClick={async () => {
-            const window = getCurrentWindow();
-            await window.close();
-          }}
+          onClick={handleClose}
           style={{
             padding: "6px 12px",
             backgroundColor: "#ef4444",
@@ -741,6 +783,7 @@ export function JsonFormatterWindow() {
           </button>
           {showRecentEntries && (
             <div
+              className="json-formatter-dark-scroll"
               style={{
                 position: "absolute",
                 top: "100%",
@@ -1105,7 +1148,13 @@ export function JsonFormatterWindow() {
             </div>
             <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setInput(val);
+                latestContentRef.current = val;
+                isDirtyRef.current = true;
+                debouncedSave(val);
+              }}
               placeholder="在此粘贴或输入 JSON 内容..."
               style={{
                 flex: 1,
@@ -1175,6 +1224,7 @@ export function JsonFormatterWindow() {
               )}
             </div>
             <div
+              className="json-formatter-dark-scroll"
               style={{
                 flex: 1,
                 padding: "12px",
@@ -1208,6 +1258,7 @@ export function JsonFormatterWindow() {
       ) : (
         /* 单框模式：可编辑的格式化结果 */
         <div
+          className="json-formatter-dark-scroll"
           style={{
             flex: 1,
             display: "flex",
@@ -1275,6 +1326,7 @@ export function JsonFormatterWindow() {
                 // 单框模式下只更新内容，不再自动格式化
                 if (value !== undefined) {
                   setSingleModeInput(value);
+                  latestContentRef.current = value;
                   singleModeEditingRef.current = true;
 
                   // 清理历史定时器，避免内存泄漏
@@ -1282,6 +1334,10 @@ export function JsonFormatterWindow() {
                     window.clearTimeout(formatTimeoutRef.current);
                     formatTimeoutRef.current = null;
                   }
+
+                  // 防抖自动保存
+                  isDirtyRef.current = true;
+                  debouncedSave(value);
                 }
               }}
               onMount={(editor) => {

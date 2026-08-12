@@ -46,6 +46,66 @@ pub mod windows {
             Some(_) => false,  // Has valid icon, no extraction needed
         }
     }
+
+    /// Extensions whose icons come from the Windows file-type association (Shell API).
+    /// Includes scripts (.bat/.cmd/…) and a few other high-value associated types.
+    pub fn is_shell_associated_icon_ext(ext: &str) -> bool {
+        matches!(
+            ext,
+            "msc"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "vbs"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "wsh"
+                | "msi"
+                | "cpl"
+                | "com"
+                | "scr"
+        )
+    }
+
+    /// Whether a successfully extracted path should be persisted into the app index.
+    /// Scripts/associated files get icons for search results but should not become indexed apps.
+    pub fn should_persist_as_app_on_icon_extract(file_path: &str) -> bool {
+        let path_lower = file_path.to_lowercase();
+        if path_lower.starts_with("shell:appsfolder\\") || path_lower.starts_with("ms-settings:") {
+            return true;
+        }
+        let ext = Path::new(file_path)
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+        matches!(
+            ext.as_deref(),
+            Some("exe") | Some("lnk") | Some("msc") | Some("url")
+        )
+    }
+
+    /// Unified icon extraction by path / extension (exe, lnk, url, UWP, shell-associated).
+    pub fn extract_icon_for_file_path(file_path: &str) -> Option<String> {
+        let path_lower = file_path.to_lowercase();
+        if path_lower.starts_with("shell:appsfolder\\") {
+            return extract_uwp_app_icon_base64(file_path);
+        }
+
+        let path = Path::new(file_path);
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_lowercase());
+
+        match ext.as_deref() {
+            Some("lnk") => extract_lnk_icon_base64(path),
+            Some("exe") => extract_icon_base64(path),
+            Some("url") => extract_url_icon_base64(path),
+            Some(e) if is_shell_associated_icon_ext(e) => extract_icon_png_via_shell(path, 32),
+            _ => None,
+        }
+    }
     
     // Cache file name
     pub fn get_cache_file_path(app_data_dir: &Path) -> PathBuf {
@@ -150,11 +210,17 @@ pub mod windows {
     }
 
     // Check if a .lnk file points to an existing .exe based on path matching
+    // 仅当已收录的 .exe 在磁盘上真实存在时才判定「快捷方式可省略」，避免陈旧/失效 exe 条目挤掉开始菜单 .lnk
     fn lnk_points_to_existing_exe(lnk_path: &str, lnk_name: &str, seen_exe_paths: &std::collections::HashSet<String>) -> bool {
         let lnk_normalized = normalize_path(lnk_path);
         let name_lower = lnk_name.to_lowercase();
         
         seen_exe_paths.iter().any(|exe_path| {
+            // 失效路径不能用来压制快捷方式（否则搜「Excel助手」只剩 name=goexceler 的死链）
+            if !Path::new(exe_path).exists() && !Path::new(&exe_path.replace('/', "\\")).exists() {
+                return false;
+            }
+
             // Method 1: Extract directory structure from .lnk path and match with .exe path
             if let Some(programs_idx) = lnk_normalized.find("/programs/") {
                 let after_programs = &lnk_normalized[programs_idx + "/programs/".len()..];
@@ -2864,6 +2930,12 @@ try {
             if linkinfo_size >= 28 {
                 let mut linkinfo_header = [0u8; 24];
                 if file.read_exact(&mut linkinfo_header).is_ok() {
+                    let linkinfo_header_size = u32::from_le_bytes([
+                        linkinfo_header[0],
+                        linkinfo_header[1],
+                        linkinfo_header[2],
+                        linkinfo_header[3],
+                    ]);
                     let local_base_path_offset = u32::from_le_bytes([
                         linkinfo_header[12],
                         linkinfo_header[13],
@@ -2877,7 +2949,54 @@ try {
                         linkinfo_header[23],
                     ]);
 
-                    if local_base_path_offset > 0 && (local_base_path_offset as u64) < linkinfo_size {
+                    // LinkInfoHeaderSize >= 0x24 时有 Unicode 路径偏移，优先使用（避免 ANSI/中文问题）
+                    let mut unicode_local_offset: u32 = 0;
+                    let mut unicode_suffix_offset: u32 = 0;
+                    if linkinfo_header_size >= 0x24 {
+                        let mut unicode_offsets = [0u8; 8];
+                        if file.read_exact(&mut unicode_offsets).is_ok() {
+                            unicode_local_offset = u32::from_le_bytes([
+                                unicode_offsets[0],
+                                unicode_offsets[1],
+                                unicode_offsets[2],
+                                unicode_offsets[3],
+                            ]);
+                            unicode_suffix_offset = u32::from_le_bytes([
+                                unicode_offsets[4],
+                                unicode_offsets[5],
+                                unicode_offsets[6],
+                                unicode_offsets[7],
+                            ]);
+                        }
+                    }
+
+                    if unicode_local_offset > 0 && (unicode_local_offset as u64) < linkinfo_size {
+                        let path_offset = linkinfo_start_offset + unicode_local_offset as u64;
+                        if file.seek(SeekFrom::Start(path_offset)).is_ok() {
+                            if let Some(local_path) = read_null_terminated_string_utf16(&mut file) {
+                                let mut full_path = local_path;
+                                if unicode_suffix_offset > 0
+                                    && (unicode_suffix_offset as u64) < linkinfo_size
+                                {
+                                    let suffix_offset =
+                                        linkinfo_start_offset + unicode_suffix_offset as u64;
+                                    if file.seek(SeekFrom::Start(suffix_offset)).is_ok() {
+                                        if let Some(suffix) =
+                                            read_null_terminated_string_utf16(&mut file)
+                                        {
+                                            full_path.push_str(&suffix);
+                                        }
+                                    }
+                                }
+                                target_path = Some(full_path);
+                            }
+                        }
+                    }
+
+                    if target_path.is_none()
+                        && local_base_path_offset > 0
+                        && (local_base_path_offset as u64) < linkinfo_size
+                    {
                         let path_offset = linkinfo_start_offset + local_base_path_offset as u64;
                         if file.seek(SeekFrom::Start(path_offset)).is_ok() {
                             if let Some(local_path) = read_null_terminated_string_ansi(&mut file) {
@@ -2956,8 +3075,7 @@ try {
         Some(std::ffi::OsString::from_wide(&buffer).to_string_lossy().to_string())
     }
     
-    // 辅助函数：从文件中读取以 null 结尾的 UTF-16 字符串（旧版本，保留用于兼容）
-    #[allow(dead_code)]
+    // 辅助函数：从文件中读取以 null 结尾的 UTF-16 字符串（LinkInfo Unicode 路径）
     fn read_null_terminated_string_utf16(file: &mut std::fs::File) -> Option<String> {
         use std::io::Read;
         use std::os::windows::ffi::OsStringExt;
@@ -2985,30 +3103,50 @@ try {
     }
     
     // 辅助函数：从文件中读取以 null 结尾的 ANSI 字符串（用于 LinkInfo 中的路径）
+    // Windows .lnk 的 LocalBasePath 使用系统 ANSI 代码页（中文系统多为 GBK/CP936），不能按 UTF-8 解读
     fn read_null_terminated_string_ansi(file: &mut std::fs::File) -> Option<String> {
         use std::io::Read;
-        
+        use ::windows::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+
         let mut buffer = Vec::new();
         let mut byte = [0u8; 1];
-        
+
         loop {
             if file.read_exact(&mut byte).is_err() {
                 return None;
             }
-            
+
             if byte[0] == 0 {
                 break;
             }
             buffer.push(byte[0]);
         }
-        
+
         if buffer.is_empty() {
             return None;
         }
-        
-        // 将 ANSI 字节转换为字符串（Windows-1252 或 Latin-1 编码）
-        // 对于 ASCII 范围（0-127），直接转换即可
-        Some(String::from_utf8_lossy(&buffer).to_string())
+
+        // 纯 ASCII 可直接转，避免走 WinAPI
+        if buffer.iter().all(|b| *b < 0x80) {
+            return Some(String::from_utf8_lossy(&buffer).to_string());
+        }
+
+        let wide_len = unsafe { MultiByteToWideChar(CP_ACP, Default::default(), &buffer, None) };
+        if wide_len <= 0 {
+            // 回退：按 Latin-1 保字节，总比 UTF-8 lossy 把中文路径毁掉好
+            return Some(buffer.iter().map(|&b| b as char).collect());
+        }
+
+        let mut wide_buf: Vec<u16> = vec![0; wide_len as usize];
+        let converted = unsafe {
+            MultiByteToWideChar(CP_ACP, Default::default(), &buffer, Some(&mut wide_buf))
+        };
+        if converted <= 0 {
+            return Some(buffer.iter().map(|&b| b as char).collect());
+        }
+        wide_buf.truncate(converted as usize);
+        use std::os::windows::ffi::OsStringExt;
+        Some(std::ffi::OsString::from_wide(&wide_buf).to_string_lossy().to_string())
     }
 
     // Extract icon from .lnk file target
@@ -3787,7 +3925,8 @@ public class IconExtractor {
             .unwrap_or(false);
         
         // 启动热路径：绝不调用 PowerShell 解析 .lnk（冷启动可卡数百 ms～数秒，启动器会假死）
-        // 仅检查 .lnk 自身存在；目标存在性用二进制解析（失败则仍交给 ShellExecute，与资源管理器一致）
+        // 仅检查 .lnk 自身存在；目标路径仅作失败时的提示，真正启动一律 ShellExecute（与资源管理器一致）
+        // 注意：切勿在此处因「解析出的目标不存在」提前返回——ANSI 误解析中文路径会导致误杀可用快捷方式
         let mut broken_target: Option<String> = None;
         if is_lnk {
             if !path.exists() {
@@ -3795,12 +3934,6 @@ public class IconExtractor {
             }
             if let Some(target) = get_lnk_target_path_binary(path) {
                 let trimmed = target.trim();
-                if is_valid_lnk_target(path, trimmed) && !Path::new(trimmed).exists() {
-                    return Err(format!(
-                        "快捷方式目标不存在: 快捷方式 '{}' 指向的目标 '{}' 已移动或删除。请更新或重新创建该快捷方式。",
-                        app.path, trimmed
-                    ));
-                }
                 if is_valid_lnk_target(path, trimmed) {
                     broken_target = Some(trimmed.to_string());
                 }
@@ -3858,6 +3991,14 @@ public class IconExtractor {
         } else {
             file_history::launch_file(path_str).map_err(|e| {
                 if is_lnk {
+                    if let Some(ref target) = broken_target {
+                        if !Path::new(target).exists() {
+                            return format!(
+                                "快捷方式目标不存在: 快捷方式 '{}' 指向的目标 '{}' 已移动或删除。请更新或重新创建该快捷方式。",
+                                app.path, target
+                            );
+                        }
+                    }
                     let additional_info = broken_target
                         .as_ref()
                         .map(|t| format!(" (目标路径: {})", t))
@@ -3900,6 +4041,33 @@ pub mod windows {
             Some(s) if s == ICON_EXTRACTION_FAILED_MARKER => false,
             Some(_) => false,
         }
+    }
+
+    pub fn is_shell_associated_icon_ext(ext: &str) -> bool {
+        matches!(
+            ext,
+            "msc"
+                | "bat"
+                | "cmd"
+                | "ps1"
+                | "vbs"
+                | "js"
+                | "jse"
+                | "wsf"
+                | "wsh"
+                | "msi"
+                | "cpl"
+                | "com"
+                | "scr"
+        )
+    }
+
+    pub fn should_persist_as_app_on_icon_extract(_file_path: &str) -> bool {
+        false
+    }
+
+    pub fn extract_icon_for_file_path(file_path: &str) -> Option<String> {
+        extract_icon_base64(Path::new(file_path))
     }
 
     // Cache file name

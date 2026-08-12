@@ -705,13 +705,21 @@ pub fn launch_file(path: &str) -> Result<(), String> {
             normalized.replace("/", "\\")
         };
         
-        if !is_clsid_path {
-            // For normal paths, check if they exist
+        // Directories need a trailing `\`: ShellExecute on a bare folder name can
+        // prefer a sibling `name.bat` / `.cmd` / `.exe` / `.lnk` over the directory.
+        let path_str = if !is_clsid_path {
             let path_buf = PathBuf::from(&path_str);
             if !path_buf.exists() {
                 return Err(format!("Path not found: {}", path_str));
             }
-        }
+            if path_buf.is_dir() && !path_str.ends_with('\\') {
+                format!("{}\\", path_str)
+            } else {
+                path_str
+            }
+        } else {
+            path_str
+        };
         
         eprintln!("[DEBUG] launch_file: opening path '{}' (is_clsid: {})", path_str, is_clsid_path);
         

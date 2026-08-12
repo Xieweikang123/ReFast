@@ -7,7 +7,7 @@ import type React from "react";
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, PluginContext } from "../types";
+import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule, PluginContext } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 
 // 全局标志，确保整个应用只有一个插件快捷键监听器
@@ -30,6 +30,7 @@ export interface LauncherInitializationOptions {
   setResultStyle: (style: ResultStyle) => void;
   setCloseOnBlur: (close: boolean) => void;
   setSearchEngines: (engines: SearchEngineConfig[]) => void;
+  setBrowserRules: (rules: BrowserRule[]) => void;
   setIsEverythingAvailable: (available: boolean) => void;
   setEverythingError: (error: string | null) => void;
   setEverythingPath: (path: string | null) => void;
@@ -69,6 +70,7 @@ export function useLauncherInitialization(
     setResultStyle,
     setCloseOnBlur,
     setSearchEngines,
+    setBrowserRules,
     setIsEverythingAvailable,
     setEverythingError,
     setEverythingPath,
@@ -113,6 +115,10 @@ export function useLauncherInitialization(
         if (settings.search_engines) {
           setSearchEngines(settings.search_engines);
         }
+        // 加载浏览器路由规则
+        if (settings.browser_rules) {
+          setBrowserRules(settings.browser_rules);
+        }
       } catch (error) {
         console.error("Failed to load settings:", error);
       }
@@ -127,7 +133,7 @@ export function useLauncherInitialization(
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [setOllamaSettings, setResultStyle, setCloseOnBlur, setSearchEngines, closeOnBlurRef]);
+  }, [setOllamaSettings, setResultStyle, setCloseOnBlur, setSearchEngines, setBrowserRules, closeOnBlurRef]);
 
   // Check if Everything is available on mount and periodically if not available
   useEffect(() => {

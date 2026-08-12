@@ -7,7 +7,7 @@ import { useState, useEffect, useRef, useDeferredValue, useMemo } from "react";
 import { startTransition } from "react";
 import { computeCombinedResults } from "../utils/combineResultsUtils";
 import type { SearchResult } from "../utils/resultUtils";
-import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig } from "../types";
+import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule } from "../types";
 import type { EverythingResult } from "../types";
 
 export interface UseCombinedResultsOptions {
@@ -26,8 +26,12 @@ export interface UseCombinedResultsOptions {
   openHistory: Record<string, number>;
   urlRemarks: Record<string, string>;
   searchEngines: SearchEngineConfig[];
+  browserRules: BrowserRule[];
   apps: AppInfo[];
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
+  /** Incremented when extractedFileIconsRef contents change (forces recombine) */
+  extractedIconsVersion?: number;
+  suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
 }
 
 /**
@@ -51,8 +55,11 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     openHistory,
     urlRemarks,
     searchEngines,
+    browserRules,
     apps,
     extractedFileIconsRef,
+    extractedIconsVersion = 0,
+    suppressedBrokenPathsRef,
   } = options;
 
   // 使用 useState + useEffect 替代 useMemo，在 useEffect 中使用 startTransition 异步计算
@@ -81,8 +88,10 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
           openHistory,
           urlRemarks,
           searchEngines,
+          browserRules,
           apps,
           extractedFileIconsRef,
+          suppressedBrokenPathsRef,
         });
         setCombinedResultsRaw(results);
       });
@@ -94,7 +103,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     } else {
       setTimeout(scheduleCompute, 0);
     }
-  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, systemFolders, directPathResult, apps, extractedFileIconsRef]);
+  }, [filteredApps, filteredFiles, filteredMemos, filteredPlugins, everythingResults, detectedUrls, detectedEmails, detectedJson, openHistory, urlRemarks, query, aiAnswer, searchEngines, browserRules, systemFolders, directPathResult, apps, extractedFileIconsRef, extractedIconsVersion, suppressedBrokenPathsRef]);
 
   // 使用 useDeferredValue 延迟 combinedResults 的更新，让输入框保持响应
   // 当用户快速输入时，React 会延迟更新 combinedResults，优先处理输入事件

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import type { AppInfo } from "../types";
 import type { ThemeConfig, ResultStyle } from "../utils/themeConfig";
-import { isFolderLikePath } from "../utils/launcherUtils";
+import { isFolderLikePath, isValidIcon, isScriptLikePath } from "../utils/launcherUtils";
 // import { tauriApi } from "../api/tauri"; // 已禁用前端图标提取
 
 // Icon extraction failure marker (must match backend constant)
@@ -513,7 +513,27 @@ export function ResultIcon({
   // 处理文件（file、everything 但不是文件夹的情况）
   if (result.type === "file" || result.type === "everything") {
     const filePath = result.path || "";
-    const isLnkOrExe = filePath.toLowerCase().endsWith(".lnk") || filePath.toLowerCase().endsWith(".exe");
+    const pathLower = filePath.toLowerCase();
+    const isLnkOrExe = pathLower.endsWith(".lnk") || pathLower.endsWith(".exe");
+
+    // Prefer attached extracted icon (shell icons for .bat/.cmd/…, etc.)
+    if (result.icon && isValidIcon(result.icon)) {
+      const iconSrc = result.icon.startsWith("data:image")
+        ? result.icon
+        : `data:image/png;base64,${result.icon}`;
+      return (
+        <img
+          src={iconSrc}
+          alt={result.displayName}
+          className="w-8 h-8 object-contain"
+          style={{ imageRendering: "auto" as const }}
+          onError={(e) => {
+            const target = e.target as HTMLImageElement;
+            target.style.display = "none";
+          }}
+        />
+      );
+    }
     
     if (isLnkOrExe) {
       // 尝试在应用列表中查找匹配的应用（通过规范化路径匹配）
@@ -562,6 +582,20 @@ export function ResultIcon({
           />
         );
       }
+    }
+
+    // Script/batch fallback (distinct from generic document) while shell icon loads or if extraction fails
+    if (isScriptLikePath(filePath)) {
+      return (
+        <svg className={`w-5 h-5 ${theme.iconColor(isSelected, "text-emerald-600")}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8 9l3 3-3 3m5 0h3M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"
+          />
+        </svg>
+      );
     }
     
     // 默认显示文档图标

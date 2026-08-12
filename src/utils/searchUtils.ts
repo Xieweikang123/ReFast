@@ -5,7 +5,7 @@
 
 import type React from "react";
 import type { SearchEngineConfig, AppInfo, FileHistoryItem, MemoItem } from "../types";
-import { containsChinese, processBatchAsync, isValidIcon, normalizePathForHistory } from "./launcherUtils";
+import { containsChinese, processBatchAsync, isValidIcon, normalizePathForHistory, pathNeedsExtractedIcon } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 
 /**
@@ -500,16 +500,12 @@ export async function searchFileHistory(
     if (currentQueryTrimmed === searchQueryTrimmed) {
       deps.updateSearchResults(deps.setFilteredFiles, results);
       
-      // 检查 filteredFiles 中是否有可执行文件（.exe/.lnk），如果有，触发图标提取
-      const executableFiles = results.filter(file => {
-        const pathLower = file.path.toLowerCase();
-        return (pathLower.endsWith('.exe') || pathLower.endsWith('.lnk')) && 
-               !pathLower.includes("windowsapps");
-      });
+      // 检查 filteredFiles 中是否有需要提取图标的文件（.exe/.lnk + shell-associated）
+      const filesNeedingIcons = results.filter((file) => pathNeedsExtractedIcon(file.path));
       
-      if (executableFiles.length > 0) {
+      if (filesNeedingIcons.length > 0) {
         // 过滤出需要提取图标的文件（没有图标或图标无效的文件）
-        const filesToExtract = executableFiles
+        const filesToExtract = filesNeedingIcons
           .slice(0, 10) // 限制最多提取前10个文件，避免过多请求
           .filter((file) => {
             // 检查 extractedFileIconsRef 中是否已有图标

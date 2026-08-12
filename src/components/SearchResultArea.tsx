@@ -6,12 +6,7 @@ import type { AppInfo } from "../types";
 import type { SearchResult } from "../utils/resultUtils";
 import type { ResultStyle } from "../utils/themeConfig";
 import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
-import type {
-  GroupCollapseState,
-  VerticalGroupId,
-  VisibleVerticalItem,
-  VerticalGroup,
-} from "../utils/resultGroupUtils";
+import type { VisibleVerticalItem } from "../utils/resultGroupUtils";
 
 interface SearchResultAreaProps {
   showAiAnswer: boolean;
@@ -27,7 +22,6 @@ interface SearchResultAreaProps {
   everythingCurrentCount: number;
   listRef: React.RefObject<HTMLDivElement>;
   horizontalResults: SearchResult[];
-  verticalGroups: VerticalGroup[];
   selectedHorizontalIndex: number | null;
   selectedVerticalIndex: number | null;
   resultStyle: ResultStyle;
@@ -46,10 +40,10 @@ interface SearchResultAreaProps {
   isInteractive: boolean;
   isSearching: boolean;
   searchStatus: SearchStatusDetail;
-  groupCollapsed: GroupCollapseState;
-  onToggleGroup: (groupId: VerticalGroupId) => void;
   onExpandEverything: () => void;
   visibleVerticalItems: VisibleVerticalItem[];
+  /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
+  pinnedKey?: string | null;
 }
 
 export function SearchResultArea({
@@ -66,7 +60,6 @@ export function SearchResultArea({
   everythingCurrentCount,
   listRef,
   horizontalResults,
-  verticalGroups,
   selectedHorizontalIndex,
   selectedVerticalIndex,
   resultStyle,
@@ -85,10 +78,9 @@ export function SearchResultArea({
   isInteractive,
   isSearching,
   searchStatus,
-  groupCollapsed,
-  onToggleGroup,
   onExpandEverything,
   visibleVerticalItems,
+  pinnedKey,
 }: SearchResultAreaProps) {
   const renderSearchStatusBanner = () => (
     <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
@@ -305,7 +297,6 @@ export function SearchResultArea({
           {isSearching && renderSearchStatusBanner()}
           <ResultList
             horizontalResults={horizontalResults}
-            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             query={query}
@@ -324,10 +315,9 @@ export function SearchResultArea({
             horizontalScrollContainerRef={horizontalScrollContainerRef}
             listRef={listRef}
             isInteractive={isInteractive}
-            groupCollapsed={groupCollapsed}
-            onToggleGroup={onToggleGroup}
             onExpandEverything={onExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
+            pinnedKey={pinnedKey}
           />
         </div>
       ) : null}

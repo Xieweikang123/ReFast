@@ -18,6 +18,8 @@ import type {
   OpenHistoryItem,
   WordRecord,
   SearchEngineConfig,
+  BrowserRule,
+  DetectedBrowser,
 } from "../types";
 
 export const tauriApi = {
@@ -338,6 +340,14 @@ export const tauriApi = {
     return invoke("open_url", { url });
   },
 
+  async openUrlWithBrowser(url: string, browser: string): Promise<void> {
+    return invoke("open_url_with_browser", { url, browser });
+  },
+
+  async detectBrowsers(): Promise<DetectedBrowser[]> {
+    return invoke("detect_browsers");
+  },
+
   async revealInFolder(path: string): Promise<void> {
     return invoke("reveal_in_folder", { path });
   },
@@ -575,11 +585,11 @@ export const tauriApi = {
 
 
   // Settings APIs
-  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[] }> {
+  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[] }> {
     return invoke("get_settings");
   },
 
-  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[] }): Promise<void> {
+  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[] }): Promise<void> {
     return invoke("save_settings", { settings });
   },
 

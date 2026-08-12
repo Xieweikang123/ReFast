@@ -24,6 +24,10 @@ interface ContextMenuProps {
   onEditMemo: () => void;
   onDeleteMemo: (memoId: string) => Promise<void>;
   onOpenUrl: (url: string) => Promise<void>;
+  /** 使用指定浏览器打开 URL（仅 URL 类型显示对应子菜单） */
+  onOpenUrlWithBrowser?: (url: string, browser: string) => Promise<void>;
+  /** 打开应用中心浏览器路由设置页 */
+  onOpenBrowserRules?: () => void;
   onDeleteHistory?: (key: string) => Promise<void>;
   onEditRemark?: (url: string) => Promise<void>;
   onCopyJson: (json: string) => Promise<void>;
@@ -43,6 +47,8 @@ export function ContextMenu({
   onEditMemo,
   onDeleteMemo,
   onOpenUrl,
+  onOpenUrlWithBrowser,
+  onOpenBrowserRules,
   onDeleteHistory,
   onEditRemark,
   onCopyJson,
@@ -257,6 +263,77 @@ export function ContextMenu({
           >
             打开链接
           </button>
+          {onOpenUrlWithBrowser && (
+            <>
+              <div className="my-1 border-t border-gray-100" />
+              <div className="px-4 py-1 text-xs text-gray-400 select-none">
+                用指定浏览器打开
+              </div>
+              <button
+                onClick={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  try {
+                    await onOpenUrlWithBrowser(menu.result.url!, "edge");
+                    onClose();
+                  } catch (error) {
+                    console.error("Failed to open URL with Edge:", error);
+                    alert(`打开失败: ${error}`);
+                    onClose();
+                  }
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+              >
+                Microsoft Edge
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  try {
+                    await onOpenUrlWithBrowser(menu.result.url!, "chrome");
+                    onClose();
+                  } catch (error) {
+                    console.error("Failed to open URL with Chrome:", error);
+                    alert(`打开失败: ${error}`);
+                    onClose();
+                  }
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+              >
+                Google Chrome
+              </button>
+              <button
+                onClick={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  try {
+                    await onOpenUrlWithBrowser(menu.result.url!, "firefox");
+                    onClose();
+                  } catch (error) {
+                    console.error("Failed to open URL with Firefox:", error);
+                    alert(`打开失败: ${error}`);
+                    onClose();
+                  }
+                }}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+              >
+                Mozilla Firefox
+              </button>
+            </>
+          )}
           {onEditRemark && (
             <button
               onClick={async (e) => {
@@ -301,6 +378,23 @@ export function ContextMenu({
               className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
             >
               删除历史记录
+            </button>
+          )}
+          {onOpenBrowserRules && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenBrowserRules();
+                onClose();
+              }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 transition-colors"
+            >
+              配置浏览器路由规则...
             </button>
           )}
         </>

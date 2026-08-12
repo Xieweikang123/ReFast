@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, startTransition } from "react";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig, BrowserRule } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { plugins, executePlugin } from "../plugins";
@@ -14,7 +14,7 @@ import { SearchResultArea } from "./SearchResultArea";
 import { LauncherStatusBar } from "./LauncherStatusBar";
 import { getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory } from "../utils/resultUtils";
+import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory, getResultKey } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import { askOllama } from "../utils/ollamaUtils";
@@ -36,6 +36,7 @@ import { useSearch } from "../hooks/useSearch";
 import { useResultsInteractivity } from "../hooks/useResultsInteractivity";
 import { useScrollbarStyle } from "../hooks/useScrollbarStyle";
 import { searchApplicationsFrontend } from "../utils/searchUtils";
+import { pathNeedsExtractedIcon } from "../utils/launcherUtils";
 import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
@@ -51,17 +52,11 @@ import {
 } from "../utils/contextMenuUtils";
 import { handleKeyDown as handleKeyDownUtil } from "../utils/keyboardUtils";
 import {
-  groupVerticalResults,
   buildVisibleVerticalItems,
   EVERYTHING_DEFAULT_LIMIT,
-  DEFAULT_GROUP_COLLAPSE,
   SHOW_MORE_EVERYTHING_PATH,
-  type GroupCollapseState,
-  type VerticalGroupId,
   type VisibleVerticalItem,
-  type VerticalGroup,
 } from "../utils/resultGroupUtils";
-import { isMacOS } from "../utils/platformUtils";
 
 interface LauncherWindowProps {
   updateInfo?: UpdateCheckResult | null;
@@ -90,12 +85,19 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [results, setResults] = useState<SearchResult[]>([]); // Keep for backward compatibility, will be removed later
   const [horizontalResults, setHorizontalResults] = useState<SearchResult[]>([]);
   const [verticalResults, setVerticalResults] = useState<SearchResult[]>([]);
-  const [groupCollapsed, setGroupCollapsed] = useState<GroupCollapseState>(DEFAULT_GROUP_COLLAPSE);
   const [everythingLimit, setEverythingLimit] = useState(EVERYTHING_DEFAULT_LIMIT);
-  const [isMacPlatform, setIsMacPlatform] = useState(false);
   const [selectedHorizontalIndex, setSelectedHorizontalIndex] = useState<number | null>(null);
   const [selectedVerticalIndex, setSelectedVerticalIndex] = useState<number | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0); // Keep for now, will be computed from selectedHorizontalIndex/selectedVerticalIndex
+  /** 选中锁定：用户手动选中后保持该行不因结果刷新而跳走 */
+  const [pinnedResult, setPinnedResult] = useState<SearchResult | null>(null);
+  const pinnedResultRef = useRef<SearchResult | null>(null);
+  pinnedResultRef.current = pinnedResult;
+  /** 选中锁定的结果 key，供增量加载时优先保持该行选中 */
+  const pinnedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    pinnedKeyRef.current = pinnedResult ? getResultKey(pinnedResult) : null;
+  }, [pinnedResult]);
   const [isHoveringAiIcon, setIsHoveringAiIcon] = useState(false);
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
@@ -134,6 +136,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [isRemarkModalOpen, setIsRemarkModalOpen] = useState(false);
   const [editingRemarkUrl, setEditingRemarkUrl] = useState<string | null>(null);
   const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>([]);
+  const [browserRules, setBrowserRules] = useState<BrowserRule[]>([]);
   const [remarkText, setRemarkText] = useState<string>("");
   const [urlRemarks, setUrlRemarks] = useState<Record<string, string>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
@@ -184,6 +187,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, []);
   const currentLoadResultsRef = useRef<SearchResult[]>([]); // 跟踪当前正在加载的结果，用于验证是否仍有效
   const horizontalResultsRef = useRef<SearchResult[]>([]); // 跟踪当前的横向结果，用于防止被覆盖
+  /** 本会话已确认失效的快捷方式路径（目标不存在等），避免 Everything 再次带回 */
+  const suppressedBrokenPathsRef = useRef<Set<string>>(new Set());
   const [isIncrementalLoading, setIsIncrementalLoading] = useState(false);
   const [isDebouncePending, setIsDebouncePending] = useState(false);
   const [isLocalSearchPending, setIsLocalSearchPending] = useState(false);
@@ -196,31 +201,24 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   
   // 存储从文件历史记录中提取的图标（路径 -> 图标数据）
   const extractedFileIconsRef = useRef<Map<string, string>>(new Map());
+  // Bump when extracted icons change so combined results re-read the ref
+  const [extractedIconsVersion, setExtractedIconsVersion] = useState(0);
 
   const getMainContainer = () => containerRef.current || getMainContainerUtil();
-
-  useEffect(() => {
-    isMacOS().then(setIsMacPlatform);
-  }, []);
-
-  const verticalGroups: VerticalGroup[] = useMemo(
-    () => groupVerticalResults(verticalResults, isMacPlatform),
-    [verticalResults, isMacPlatform]
-  );
 
   const visibleVerticalItems: VisibleVerticalItem[] = useMemo(
     () =>
       buildVisibleVerticalItems({
-        groups: verticalGroups,
-        collapsed: groupCollapsed,
+        verticalResults,
         everythingLimit,
       }),
-    [verticalGroups, groupCollapsed, everythingLimit]
+    [verticalResults, everythingLimit]
   );
+  const visibleVerticalItemsRef = useRef(visibleVerticalItems);
+  visibleVerticalItemsRef.current = visibleVerticalItems;
 
-  // 查询变化时重置分组折叠与 Everything 展开条数
+  // 查询变化时重置 Everything 展开条数
   useEffect(() => {
-    setGroupCollapsed(DEFAULT_GROUP_COLLAPSE);
     setEverythingLimit(EVERYTHING_DEFAULT_LIMIT);
   }, [query]);
 
@@ -236,26 +234,20 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setQuery(value);
   }, []);
 
-  const handleToggleGroup = useCallback((groupId: VerticalGroupId) => {
-    setGroupCollapsed((prev) => ({ ...prev, [groupId]: !prev[groupId] }));
-    setSelectedVerticalIndex(null);
-  }, []);
-
   const handleExpandEverything = useCallback(() => {
     setEverythingLimit((prev) => prev + EVERYTHING_DEFAULT_LIMIT);
   }, []);
 
-  // 可见纵向列表缩短时，校正选中索引
+  // 可见纵向列表缩短时，校正选中索引（勿夹到最后一项：常为「显示更多」，会滚到底部）
   useEffect(() => {
     if (
       selectedVerticalIndex !== null &&
       selectedVerticalIndex >= visibleVerticalItems.length
     ) {
-      setSelectedVerticalIndex(
-        visibleVerticalItems.length > 0
-          ? visibleVerticalItems.length - 1
-          : null
+      const firstResultIdx = visibleVerticalItems.findIndex(
+        (item) => item.kind === "result"
       );
+      setSelectedVerticalIndex(firstResultIdx >= 0 ? firstResultIdx : null);
     }
   }, [visibleVerticalItems, selectedVerticalIndex]);
 
@@ -382,6 +374,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setQuery("");
       setSelectedIndex(0);
       setContextMenu(null);
+      setPinnedResult(null); // 清除选中锁定，避免下次唤起时残留
       setSuccessMessage(null); // 清除成功消息
       setErrorMessage(null); // 清除错误消息
       setPastedImagePath(null); // 清除粘贴的图片路径
@@ -464,16 +457,17 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     // Ensure window has no decorations
     window.setDecorations(false).catch(console.error);
     
-    // Set initial window size to match white container
+    // Set initial window size to match white container (visible height, not scrollHeight)
     const setWindowSize = () => {
       const whiteContainer = getMainContainer();
       if (whiteContainer) {
-        // Use scrollHeight to get the full content height including overflow
-        const containerHeight = whiteContainer.scrollHeight;
-        // Use saved window width or default
+        const containerHeight = Math.max(
+          whiteContainer.getBoundingClientRect().height,
+          whiteContainer.offsetHeight
+        );
         const targetWidth = windowWidth;
-        // Use setSize to match content area exactly (decorations are disabled)
-        window.setSize(new LogicalSize(targetWidth, containerHeight)).catch(console.error);
+        const targetHeight = Math.max(200, Math.min(Math.ceil(containerHeight), 600));
+        window.setSize(new LogicalSize(targetWidth, targetHeight)).catch(console.error);
       }
     };
     
@@ -511,53 +505,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         hideLauncherAndResetState,
       })) {
         return;
-      }
-      
-      // Handle ArrowDown globally when input might not be focused
-      if (e.key === "ArrowDown" && results.length > 0) {
-        
-        // Only handle if input is not focused (to avoid double handling)
-        const isInputFocused = document.activeElement === inputRef.current;
-        if (!isInputFocused) {
-          e.preventDefault();
-          e.stopPropagation();
-          
-          // Use the same logic as handleKeyDown for ArrowDown
-          // Check if current selected item is in horizontal results
-          const executableResults = results.filter(result => {
-            if (result.type === "app") {
-              const pathLower = result.path.toLowerCase();
-              return pathLower.endsWith('.exe') || pathLower.endsWith('.lnk');
-            }
-            return false;
-          });
-          
-          const pluginResults = results.filter(result => {
-            return result.type === "plugin";
-          });
-          
-          const horizontalResults = [...executableResults, ...pluginResults];
-          const horizontalIndices = horizontalResults.map(hr => results.indexOf(hr)).filter(idx => idx >= 0);
-          
-          
-          // If current selected item is in horizontal results, jump to first vertical result
-          if (horizontalIndices.includes(selectedIndex)) {
-            const firstVerticalIndex = results.findIndex((_, index) => {
-              return !horizontalIndices.includes(index);
-            });
-            
-            
-            if (firstVerticalIndex >= 0) {
-              setSelectedIndex(firstVerticalIndex);
-              return;
-            }
-          }
-          
-          // Otherwise, increment normally
-          setSelectedIndex((prev) =>
-            prev < results.length - 1 ? prev + 1 : prev
-          );
-        }
       }
     };
     
@@ -705,8 +652,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     openHistory,
     urlRemarks,
     searchEngines,
+    browserRules,
     apps,
     extractedFileIconsRef,
+    extractedIconsVersion,
+    suppressedBrokenPathsRef,
   });
   
   const everythingLabel =
@@ -750,6 +700,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         currentLoadResultsRef,
         horizontalResultsRef,
         setIsIncrementalLoading,
+        pinnedKeyRef,
     });
   }, [openHistory]);
 
@@ -842,25 +793,21 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     };
   }, [debouncedCombinedResults, query]);
 
-  // 为 Everything 搜索结果中的可执行文件提取图标
+  // 为 Everything 搜索结果中需要提取图标的文件提取图标（.exe/.lnk + shell-associated）
   useEffect(() => {
     if (!everythingResults || everythingResults.length === 0) {
       return;
     }
 
-    // 过滤出可执行文件（.exe 或 .lnk）
-    const executableFiles = everythingResults.filter((result) => {
-      const pathLower = result.path.toLowerCase();
-      return (pathLower.endsWith(".exe") || pathLower.endsWith(".lnk")) && 
-             !pathLower.includes("windowsapps");
-    });
+    const filesNeedingIcons = everythingResults.filter((result) =>
+      pathNeedsExtractedIcon(result.path)
+    );
 
-    // 为每个可执行文件提取图标（如果还没有图标）
-    executableFiles.slice(0, 10).forEach((file) => {
-      // 检查是否已有图标
-      const existingIcon = extractedFileIconsRef.current.get(file.path);
-      if (existingIcon && existingIcon !== "__ICON_EXTRACTION_FAILED__") {
-        return; // 已有图标，跳过
+    // 为每个文件提取图标（如果还没有图标），限制数量避免卡顿
+    filesNeedingIcons.slice(0, 10).forEach((file) => {
+      // 已提取成功或已标记失败则跳过，避免重复请求
+      if (extractedFileIconsRef.current.has(file.path)) {
+        return;
       }
 
       // 检查应用列表中是否已有该路径的应用及其有效图标
@@ -873,15 +820,19 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       if (matchedApp) {
         // 应用列表中已有图标，保存到缓存
         extractedFileIconsRef.current.set(file.path, matchedApp.icon!);
+        setExtractedIconsVersion((v) => v + 1);
         return;
       }
+
+      // 占位：防止并发重复提取
+      extractedFileIconsRef.current.set(file.path, "");
 
       // 触发图标提取（异步，不阻塞）
       tauriApi.extractIconFromPath(file.path)
         .then((icon) => {
           if (icon) {
             extractedFileIconsRef.current.set(file.path, icon);
-            // extractedFileIconsRef 是 useCombinedResults 的依赖项，更新后会自动触发重新计算
+            setExtractedIconsVersion((v) => v + 1);
           } else {
             // 标记为提取失败，避免重复尝试
             extractedFileIconsRef.current.set(file.path, "__ICON_EXTRACTION_FAILED__");
@@ -955,10 +906,38 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     }
   }, [results, openHistory]);
 
+  // 查询变化时清除选中锁定（用户开始新输入，之前的选中不再适用）
+  useEffect(() => {
+    setPinnedResult(null);
+  }, [query]);
+
+  // 选中锁定：结果更新时保持用户手动选中的行不跳走
+  useEffect(() => {
+    if (!pinnedResult) return;
+    const key = getResultKey(pinnedResult);
+    const hIndex = horizontalResults.findIndex((r) => getResultKey(r) === key);
+    if (hIndex >= 0) {
+      setSelectedHorizontalIndex(hIndex);
+      setSelectedVerticalIndex(null);
+      return;
+    }
+    const vIndex = visibleVerticalItems.findIndex(
+      (item) => item.kind === "result" && getResultKey(item.result) === key
+    );
+    if (vIndex >= 0) {
+      setSelectedHorizontalIndex(null);
+      setSelectedVerticalIndex(vIndex);
+      return;
+    }
+    // 锁定项已不在当前可见结果中，清除锁定，避免非交互期 Enter/点击被静默拦截
+    setPinnedResult(null);
+  }, [horizontalResults, visibleVerticalItems, pinnedResult]);
+
   // 使用自定义 hook 处理窗口大小调整
   useWindowSizeAdjustment({
     shouldPreserveScrollRef,
     listRef,
+    containerRef,
     resizeRafId,
     resizeStartX,
     resizeStartWidth,
@@ -974,7 +953,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   });
 
   // Scroll selected item into view and adjust window size
-  // 只在 selectedVerticalIndex 变化时滚动，避免在结果更新时意外滚动
+  // 只在 selectedVerticalIndex 变化时滚动，避免结果列表更新时意外滚到底部
   useEffect(() => {
     // 如果正在保持滚动位置，不要执行 scrollIntoView
     if (shouldPreserveScrollRef.current) {
@@ -998,9 +977,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     
     
     // Only scroll for vertical results (horizontal results are in a horizontal scroll container)
-    if (listRef.current && selectedVerticalIndex !== null && visibleVerticalItems.length > 0 && selectedVerticalIndex >= 0) {
+    const visibleItems = visibleVerticalItemsRef.current;
+    if (listRef.current && selectedVerticalIndex !== null && visibleItems.length > 0 && selectedVerticalIndex >= 0) {
       const container = listRef.current;
-      const visibleItem = visibleVerticalItems[selectedVerticalIndex];
+      const visibleItem = visibleItems[selectedVerticalIndex];
       if (!visibleItem) {
         return;
       }
@@ -1063,7 +1043,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedVerticalIndex, visibleVerticalItems]); // 选中项或可见列表变化时滚动
+  }, [selectedVerticalIndex]); // 仅选中项变化时滚动，不用 visibleVerticalItems 作依赖
   // Scroll selected horizontal item into view
   useEffect(() => {
     // Only scroll for horizontal results
@@ -1204,6 +1184,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setResultStyle,
     setCloseOnBlur,
     setSearchEngines,
+    setBrowserRules,
     setIsEverythingAvailable,
     setEverythingError,
     setEverythingPath,
@@ -1433,6 +1414,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         setFilteredFiles,
         setApps,
         setFilteredApps,
+        setEverythingResults,
+        setResults,
+        setHorizontalResults,
         setLaunchingAppPath,
         setErrorMessage,
         setSuccessMessage,
@@ -1448,11 +1432,15 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           setIsPluginListModalOpen,
         allFileHistoryCacheRef,
         allFileHistoryCacheLoadedRef,
+        allAppsCacheRef,
+        horizontalResultsRef,
+        suppressedBrokenPathsRef,
         hideLauncherAndResetState,
         refreshFileHistoryCache,
         searchFileHistoryWrapper,
         errorMessage,
           tauriApi,
+        browserRules,
       });
     },
     [
@@ -1468,7 +1456,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setContextMenu,
       allFileHistoryCacheRef,
       allFileHistoryCacheLoadedRef,
+      allAppsCacheRef,
+      horizontalResultsRef,
+      suppressedBrokenPathsRef,
       tauriApi,
+      browserRules,
     ]
   );
 
@@ -1689,6 +1681,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         horizontalResults,
         visibleVerticalItems,
         isResultsInteractive: isInteractive,
+        pinnedResultRef,
+        setPinnedResult,
         setContextMenu,
         setErrorMessage,
         setIsPluginListModalOpen,
@@ -1858,7 +1852,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             everythingCurrentCount={everythingCurrentCount}
             listRef={listRef}
             horizontalResults={horizontalResults}
-            verticalGroups={verticalGroups}
             selectedHorizontalIndex={selectedHorizontalIndex}
             selectedVerticalIndex={selectedVerticalIndex}
             resultStyle={resultStyle}
@@ -1877,10 +1870,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             isInteractive={isInteractive}
             isSearching={isSearching}
             searchStatus={searchStatus}
-            groupCollapsed={groupCollapsed}
-            onToggleGroup={handleToggleGroup}
             onExpandEverything={handleExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
+            pinnedKey={pinnedResult ? getResultKey(pinnedResult) : null}
           />
 
           {/* Footer */}
@@ -1941,6 +1933,25 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         }}
         onOpenUrl={async (url: string) => {
           await tauriApi.openUrl(url);
+        }}
+        onOpenUrlWithBrowser={async (url: string, browser: string) => {
+          await tauriApi.openUrlWithBrowser(url, browser);
+        }}
+        onOpenBrowserRules={async () => {
+          try {
+            // 设置标志，让应用中心窗口加载时自动跳转到浏览器路由页面
+            localStorage.setItem("appcenter:open-to-browser-rules", "true");
+            // 先隐藏启动器
+            await tauriApi.hideLauncher();
+            // 打开应用中心窗口
+            await tauriApi.showPluginListWindow();
+            // 窗口已存在时通过事件导航（新窗口由 localStorage 标志处理）
+            const { emit } = await import("@tauri-apps/api/event");
+            await emit("appcenter:navigate-to-browser-rules", {});
+          } catch (error) {
+            console.error("Failed to open browser rules settings:", error);
+            alert("打开浏览器路由设置失败");
+          }
         }}
         onDeleteHistory={handleDeleteHistory}
         onEditRemark={handleEditRemark}

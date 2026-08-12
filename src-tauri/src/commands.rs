@@ -613,31 +613,7 @@ pub async fn search_applications(
         for (idx, path_str) in paths_to_extract.iter().enumerate() {
             eprintln!("[图标提取] 开始提取图标 [{}/{}]: path={}", idx + 1, paths_to_extract.len(), path_str);
             
-            let path_lower = path_str.to_lowercase();
-            let icon = if path_lower.starts_with("shell:appsfolder\\") {
-                // UWP app - extract icon using special method
-                let icon_result = app_search::windows::extract_uwp_app_icon_base64(&path_str);
-                icon_result
-            } else {
-                let path = std::path::Path::new(&path_str);
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_lowercase());
-                if ext == Some("lnk".to_string()) {
-                    app_search::windows::extract_lnk_icon_base64(path)
-                } else if ext == Some("exe".to_string()) {
-                    app_search::windows::extract_icon_base64(path)
-                } else if ext == Some("msc".to_string()) {
-                    // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
-                    app_search::windows::extract_icon_png_via_shell(path, 32)
-                } else if ext == Some("url".to_string()) {
-                    // .url 文件（Internet Shortcut）使用专门的解析和提取方法
-                    app_search::windows::extract_url_icon_base64(path)
-                } else {
-                    None
-                }
-            };
+            let icon = app_search::windows::extract_icon_for_file_path(path_str);
 
             if let Some(icon_data) = icon {
                 icon_updates.push((path_str.clone(), icon_data));
@@ -744,33 +720,7 @@ pub async fn populate_app_icons(
                 eprintln!("[图标提取] 应用无图标: name={}, path={}", app_info.name, app_info.path);
             }
 
-            let path = Path::new(&app_info.path);
-            let path_str = app_info.path.to_lowercase();
-            
-            
-            let icon = if path_str.starts_with("shell:appsfolder\\") {
-                // UWP app - extract icon using special method
-                app_search::windows::extract_uwp_app_icon_base64(&app_info.path)
-            } else {
-                let ext = path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_lowercase());
-                
-                if ext == Some("lnk".to_string()) {
-                    app_search::windows::extract_lnk_icon_base64(path)
-                } else if ext == Some("exe".to_string()) {
-                    app_search::windows::extract_icon_base64(path)
-                } else if ext == Some("msc".to_string()) {
-                    // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
-                    app_search::windows::extract_icon_png_via_shell(path, 32)
-                } else if ext == Some("url".to_string()) {
-                    // .url 文件（Internet Shortcut）使用专门的解析和提取方法
-                    app_search::windows::extract_url_icon_base64(path)
-                } else {
-                    None
-                }
-            };
+            let icon = app_search::windows::extract_icon_for_file_path(&app_info.path);
 
 
             // 更新应用信息：成功提取图标或标记为失败
@@ -954,19 +904,7 @@ pub async fn debug_app_icon(app_name: String, _app: tauri::AppHandle) -> Result<
             // 尝试提取图标（这是耗时操作）
             if app_info.icon.is_none() {
                 result.push_str("  正在尝试提取图标...\n");
-                let icon_result = if ext == Some("lnk".to_string()) {
-                    app_search::windows::extract_lnk_icon_base64(path)
-                } else if ext == Some("exe".to_string()) {
-                    app_search::windows::extract_icon_base64(path)
-                } else if ext == Some("msc".to_string()) {
-                    // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
-                    app_search::windows::extract_icon_png_via_shell(path, 32)
-                } else if ext == Some("url".to_string()) {
-                    // .url 文件（Internet Shortcut）使用专门的解析和提取方法
-                    app_search::windows::extract_url_icon_base64(path)
-                } else {
-                    None
-                };
+                let icon_result = app_search::windows::extract_icon_for_file_path(&app_info.path);
                 
                 if let Some(icon) = icon_result {
                     result.push_str("  ✓ 图标提取成功！\n");
@@ -1006,13 +944,9 @@ pub async fn resolve_lnk_target(lnk_path: String) -> Result<String, String> {
 }
 
 /// 从文件路径提取图标（用于动态提取不在应用列表中的应用图标）
-/// 如果成功提取到图标，会自动将应用添加到应用列表中
+/// 对 exe/lnk/msc/url/UWP：成功后写入应用索引；对 .bat/.cmd 等仅返回图标不入库
 #[tauri::command]
 pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
-    use std::path::Path;
-    
-    
-    let app_clone = app.clone();
     let file_path_clone = file_path.clone();
     
     // 在后台线程执行耗时操作，避免阻塞 UI
@@ -1038,47 +972,29 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
         }
         drop(cache_guard); // 释放锁，避免在后续操作中持有锁
         
-        let path = Path::new(&file_path);
-        let path_lower = file_path.to_lowercase();
-        
-        
-        let icon = if path_lower.starts_with("shell:appsfolder\\") {
-            // UWP app - extract icon using special method
-            let icon_result = app_search::windows::extract_uwp_app_icon_base64(&file_path);
-            icon_result
-        } else {
-            let ext = path
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase());
-            
-            if ext == Some("lnk".to_string()) {
-                app_search::windows::extract_lnk_icon_base64(path)
-            } else if ext == Some("exe".to_string()) {
-                app_search::windows::extract_icon_base64(path)
-            } else if ext == Some("msc".to_string()) {
-                // .msc 文件（Microsoft Management Console）使用 Shell API 提取图标
-                app_search::windows::extract_icon_png_via_shell(path, 32)
-            } else if ext == Some("url".to_string()) {
-                // .url 文件（Internet Shortcut）使用专门的解析和提取方法
-                app_search::windows::extract_url_icon_base64(path)
-            } else {
-                None
-            }
-        };
+        let icon = app_search::windows::extract_icon_for_file_path(&file_path);
         
         Ok::<Option<String>, String>(icon)
     })
     .await
     .map_err(|e| format!("extract_icon_from_path join error: {}", e))??;
     
+    // 仅将可索引为应用的路径写入应用缓存（exe/lnk/msc/url/UWP）。
+    // .bat/.cmd 等仅用于结果图标展示，避免污染应用索引。
+    let should_persist =
+        app_search::windows::should_persist_as_app_on_icon_extract(&file_path_clone);
+    if !should_persist {
+        return Ok(icon_result);
+    }
+
     // 无论成功还是失败，都将应用添加到缓存中（成功时添加图标，失败时标记为失败）
-    let app_clone_for_add = app_clone.clone();
+    let app_clone_for_add = app.clone();
     let file_path_for_add = file_path_clone.clone();
     let icon_result_clone = icon_result.clone();
     
     // 在后台线程执行添加操作
     async_runtime::spawn_blocking(move || {
+        use std::path::Path;
         let cache = get_app_cache();
         let mut cache_guard = lock_app_cache_safe(&cache);
         
@@ -1277,14 +1193,11 @@ pub async fn test_all_icon_extraction_methods(file_path: String) -> Result<Vec<(
             results.push(("实际使用的方法 (extract_icon_base64)".to_string(), actual_result));
 
             Ok(results)
-        } else if ext == Some("msc".to_string()) {
-            // 对于 .msc 文件，使用 Shell API 提取图标
+        } else if ext.as_ref().map(|e| app_search::windows::is_shell_associated_icon_ext(e)).unwrap_or(false) {
+            // Shell-associated types (.bat/.cmd/.msc/…) use Shell API
             let mut results = Vec::new();
-
-            // 实际使用的方法
             let actual_result = app_search::windows::extract_icon_png_via_shell(path, 32);
             results.push(("实际使用的方法 (extract_icon_png_via_shell)".to_string(), actual_result));
-
             Ok(results)
         } else {
             Err(format!("不支持的文件类型: {:?}", ext))
@@ -3783,6 +3696,92 @@ pub fn open_url(url: String) -> Result<(), String> {
     {
         Err("URL opening is not supported on this platform".to_string())
     }
+}
+
+/// 本机检测到的浏览器信息
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DetectedBrowser {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// 在常见安装路径中查找浏览器可执行文件
+fn resolve_browser_path(browser: &str) -> Option<String> {
+    let local = env::var("LOCALAPPDATA").unwrap_or_default();
+    match browser.trim().to_lowercase().as_str() {
+        "edge" => {
+            let paths = vec![
+                "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe".to_string(),
+                "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe".to_string(),
+            ];
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        "chrome" => {
+            let mut paths = vec![
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".to_string(),
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe".to_string(),
+            ];
+            if !local.is_empty() {
+                paths.push(format!("{}\\Google\\Chrome\\Application\\chrome.exe", local));
+            }
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        "firefox" => {
+            let paths = vec![
+                "C:\\Program Files\\Mozilla Firefox\\firefox.exe".to_string(),
+                "C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe".to_string(),
+            ];
+            paths.into_iter().find(|p| Path::new(p).is_file())
+        }
+        other if !other.is_empty() && Path::new(other).is_file() => Some(other.to_string()),
+        _ => None,
+    }
+}
+
+/// 使用指定浏览器打开 URL；browser 为 "default" 时回退到系统默认浏览器
+#[tauri::command]
+pub fn open_url_with_browser(url: String, browser: String) -> Result<(), String> {
+    let browser = browser.trim().to_lowercase();
+    if browser.is_empty() || browser == "default" {
+        return open_url(url);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let exe = resolve_browser_path(&browser)
+            .ok_or_else(|| format!("未找到浏览器程序：{}", browser))?;
+        std::process::Command::new(&exe)
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("启动浏览器失败 {}: {}", exe, e))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // 非 Windows 平台直接回退默认浏览器
+        open_url(url)
+    }
+}
+
+/// 检测本机已安装的浏览器列表
+#[tauri::command]
+pub fn detect_browsers() -> Vec<DetectedBrowser> {
+    let candidates: Vec<(&str, &str)> = vec![
+        ("edge", "Microsoft Edge"),
+        ("chrome", "Google Chrome"),
+        ("firefox", "Mozilla Firefox"),
+    ];
+    candidates
+        .into_iter()
+        .filter_map(|(id, name)| {
+            resolve_browser_path(id).map(|path| DetectedBrowser {
+                id: id.to_string(),
+                name: name.to_string(),
+                path,
+            })
+        })
+        .collect()
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 import { pluginRegistry } from "./registry";
 import { tauriApi } from "../api/tauri";
 import type { Plugin, PluginContext } from "../types";
+import { isMathExpression } from "../utils/launcherUtils";
 
 // 向后兼容：导出旧的 API
 export let plugins: Plugin[] = [];
@@ -74,7 +75,18 @@ searchPlugins = (query: string) => {
       plugin.description?.toLowerCase().includes(lower) ||
       plugin.keywords.some((keyword) => keyword.toLowerCase().includes(lower))
   );
-  console.log(`[Plugin Search Fallback] Query: "${query}", Total plugins: ${plugins.length}, Results: ${results.length}`);
+
+  // 如果输入是数学表达式，自动添加计算稿纸插件
+  if (isMathExpression(query)) {
+    const calculatorPadPlugin = plugins.find((p) => p.id === "calculator_pad");
+    if (calculatorPadPlugin) {
+      const alreadyInResults = results.some((p) => p.id === "calculator_pad");
+      if (!alreadyInResults) {
+        results.unshift(calculatorPadPlugin);
+      }
+    }
+  }
+
   return results;
 };
 getPluginById = (id: string) => plugins.find((p) => p.id === id);
