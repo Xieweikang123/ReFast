@@ -31,9 +31,10 @@ function applyGitProxyEnv() {
 }
 
 function run(cmd, args, options = {}) {
+  // shell:false 直接以参数数组执行，避免经 shell 拼接命令导致通配符/空格被展开
   const result = spawnSync(cmd, args, {
     encoding: 'utf-8',
-    shell: true,
+    shell: false,
     stdio: options.stdio ?? 'pipe',
     cwd: rootDir,
     env: process.env,

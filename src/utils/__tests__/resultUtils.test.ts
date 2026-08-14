@@ -378,6 +378,39 @@ describe("resultUtils", () => {
       ).toBeLessThan(0);
     });
 
+    it("用过的结果无论如何都排在 Everything 上面", () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const usedFile: SearchResult = {
+        type: "file",
+        displayName: "Q4 财务报告",
+        path: "C:\\docs\\Q4 财务报告.xlsx",
+        file: {
+          path: "C:\\docs\\Q4 财务报告.xlsx",
+          name: "Q4 财务报告",
+          use_count: 5,
+          last_used: nowSec,
+        },
+      };
+      const everythingExact: SearchResult = {
+        type: "everything",
+        displayName: "report",
+        path: "C:\\deep\\report.pdf",
+        everything: { path: "C:\\deep\\report.pdf", name: "report" },
+      };
+
+      // Everything 档位更高（精确命中），但用过的结果仍应排前面
+      expect(
+        compareSearchResults(everythingExact, usedFile, {
+          query: "report",
+        })
+      ).toBeGreaterThan(0);
+      expect(
+        compareSearchResults(usedFile, everythingExact, {
+          query: "report",
+        })
+      ).toBeLessThan(0);
+    });
+
     it("浏览器路由直达结果应优先于普通结果", () => {
       const ruleUrl: SearchResult = {
         type: "url",

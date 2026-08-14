@@ -27,3 +27,4 @@ ReFast: a Windows quick-launcher (utools-style) built on Tauri 2 + React + TypeS
 - `tsconfig.json` enables `strict`, `noUnusedLocals`, `noUnusedParameters` — `npm run build` fails on unused vars/params.
 - `src/test/setup.ts` mocks all `@tauri-apps/*` APIs; unit tests that touch Tauri must rely on those mocks (components currently excluded from coverage, which only covers utils).
 - Working branch is `dev` (`master` also exists).
+- Result ranking rule (enforced in `compareSearchResults`, `src/utils/resultUtils.ts`): **any result that has been used (`use_count > 0` or `last_used > 0`) must always sort above Everything results**, regardless of match tier. Everything results have no usage data, so this rule fires before the tier comparison. Don't weaken or move it below tier/score without explicit user approval.

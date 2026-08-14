@@ -144,6 +144,12 @@ export function compareSearchResults(
   const bUseCount = bUsage.useCount;
   const bLastUsed = bUsage.lastUsed;
 
+  // 用过的结果无论如何都排在 Everything 结果上面（优先于档位比较）
+  const aUsed = (aUseCount ?? 0) > 0 || aLastUsed > 0;
+  const bUsed = (bUseCount ?? 0) > 0 || bLastUsed > 0;
+  if (a.type === "everything" && bUsed) return 1;
+  if (b.type === "everything" && aUsed) return -1;
+
   const aScore = calculateRelevanceScore(
     a.displayName,
     a.path,
