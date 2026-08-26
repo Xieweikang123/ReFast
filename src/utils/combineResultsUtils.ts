@@ -24,6 +24,7 @@ import {
   isRecentShortcutPath,
   appSourceRank,
   isUninstallShortcutName,
+  isFolderLikePath,
 } from "./launcherUtils";
 import { detectSearchIntent, getSearchResultItem } from "./searchUtils";
 import { resolveBrowserForUrl } from "./browserRules";
@@ -76,6 +77,23 @@ export interface CombineResultsOptions {
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
   /** 本次会话内已确认失效的快捷方式，合并结果时排除 */
   suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
+}
+
+/** 历史/Everything 结果是否为文件夹：同名应用去重时不应丢掉项目目录 */
+function isFolderSearchResult(result: SearchResult): boolean {
+  if (result.type === "file") {
+    if (result.file?.is_folder !== null && result.file?.is_folder !== undefined) {
+      return !!result.file.is_folder;
+    }
+    return isFolderLikePath(result.path);
+  }
+  if (result.type === "everything") {
+    if (result.everything?.is_folder !== null && result.everything?.is_folder !== undefined) {
+      return !!result.everything.is_folder;
+    }
+    return isFolderLikePath(result.path);
+  }
+  return false;
 }
 
 /**
@@ -823,9 +841,9 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       const normalizedPath = normalizePathForHistory(result.path);
       if (!addedHistoryPaths.has(normalizedPath)) {
         addedHistoryPaths.add(normalizedPath);
-        // 如果已存在同名应用，跳过非应用结果，避免同名文档/文件干扰
+        // 如果已存在同名应用，跳过同名文档，但保留文件夹（如 GitLite.exe 与项目目录 GitLite）
         const normalizedName = normalizeNameForResult(result);
-        if (seenAppNames.has(normalizedName)) {
+        if (seenAppNames.has(normalizedName) && !isFolderSearchResult(result)) {
           continue;
         }
         deduplicatedResults.push(result);
@@ -838,8 +856,8 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
     if (result.type === "everything") {
       const normalizedPath = normalizePathForHistory(result.path);
       const normalizedName = normalizeNameForResult(result);
-      // 如果已有同名应用，跳过 Everything 非应用结果，避免"打开文件夹"指向文档
-      if (seenAppNames.has(normalizedName)) {
+      // 如果已有同名应用，跳过同名文档，但保留同名文件夹
+      if (seenAppNames.has(normalizedName) && !isFolderSearchResult(result)) {
         everythingFilteredByHistoryCount++; // 复用统计
         continue;
       }
