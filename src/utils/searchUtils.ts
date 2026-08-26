@@ -5,7 +5,7 @@
 
 import type React from "react";
 import type { SearchEngineConfig, AppInfo, FileHistoryItem, MemoItem } from "../types";
-import { containsChinese, processBatchAsync, isValidIcon, normalizePathForHistory, pathNeedsExtractedIcon } from "./launcherUtils";
+import { containsChinese, isValidIcon, normalizePathForHistory, pathNeedsExtractedIcon } from "./launcherUtils";
 import { tauriApi } from "../api/tauri";
 
 /**
@@ -148,80 +148,54 @@ export async function searchApplicationsFrontend(query: string, apps: AppInfo[])
   // 按分数排序
   scoredResults.sort((a, b) => b.score - a.score);
   
-  // 限制结果数量并返回（最多返回50个）
-  return scoredResults.slice(0, 50).map((r) => r.item);
+  // 限制结果数量并返回（单字符命中面太大，先收紧以免拖垮合并）
+  const appLimit = queryLower.length <= 1 ? 20 : 50;
+  return scoredResults.slice(0, appLimit).map((r) => r.item);
 }
 
 /**
  * 前端搜索文件历史（基于缓存的文件历史列表）
- * 异步分批处理，避免阻塞UI
  */
 export async function searchFileHistoryFrontend(query: string, fileHistory: FileHistoryItem[]): Promise<FileHistoryItem[]> {
   if (!query || query.trim() === "") {
-    // 返回所有文件，按最后使用时间排序（使用异步排序避免阻塞）
-    return new Promise((resolve) => {
-      const worker = () => {
-        const sorted = [...fileHistory].sort((a, b) => b.last_used - a.last_used);
-        resolve(sorted.slice(0, 100)); // 限制返回数量
-      };
-      if (window.requestIdleCallback) {
-        window.requestIdleCallback(worker, { timeout: 1000 });
-      } else {
-        setTimeout(worker, 0);
-      }
-    });
+    return [...fileHistory]
+      .sort((a, b) => b.last_used - a.last_used)
+      .slice(0, 100);
   }
 
   const queryLower = query.trim().toLowerCase();
+  const scoredResults: Array<{ item: FileHistoryItem; score: number }> = [];
 
-  // 使用分批处理搜索，避免阻塞UI
-  const scoredResults = await processBatchAsync<FileHistoryItem, { item: FileHistoryItem; score: number }>(
-    fileHistory,
-    (item) => {
-      const nameLower = item.name.toLowerCase();
-      const pathLower = item.path.toLowerCase();
-      let score = 0;
+  for (const item of fileHistory) {
+    const nameLower = item.name.toLowerCase();
+    const pathLower = item.path.toLowerCase();
+    let score = 0;
 
-      // 名称匹配（最高优先级）
-      if (nameLower === queryLower) {
-        score += 1000;
-      } else if (nameLower.startsWith(queryLower)) {
-        score += 500;
-      } else if (nameLower.includes(queryLower)) {
-        score += 100;
-      }
-
-      // 路径匹配（较低优先级）
-      if (score === 0 && pathLower.includes(queryLower)) {
-        score += 10;
-      }
-
-      return score > 0 ? { item, score } : null;
-    },
-    50, // 每批处理50项
-    1000 // 超时时间1秒
-  );
-
-  // 排序操作也异步执行
-  return new Promise((resolve) => {
-    const worker = () => {
-      // 按分数排序，然后按最后使用时间排序
-      scoredResults.sort((a, b) => {
-        if (b.score !== a.score) {
-          return b.score - a.score;
-        }
-        return b.item.last_used - a.item.last_used;
-      });
-
-      // 限制结果数量并返回
-      resolve(scoredResults.slice(0, 100).map((r) => r.item));
-    };
-    if (window.requestIdleCallback) {
-      window.requestIdleCallback(worker, { timeout: 1000 });
-    } else {
-      setTimeout(worker, 0);
+    if (nameLower === queryLower) {
+      score += 1000;
+    } else if (nameLower.startsWith(queryLower)) {
+      score += 500;
+    } else if (nameLower.includes(queryLower)) {
+      score += 100;
     }
+
+    if (score === 0 && pathLower.includes(queryLower)) {
+      score += 10;
+    }
+
+    if (score > 0) {
+      scoredResults.push({ item, score });
+    }
+  }
+
+  scoredResults.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return b.item.last_used - a.item.last_used;
   });
+
+  return scoredResults.slice(0, queryLower.length <= 1 ? 20 : 100).map((r) => r.item);
 }
 
 /**
@@ -283,20 +257,11 @@ export async function searchMemos(
       return;
     }
     
-    // 简单策略：前端过滤本地 memos，如果需要更复杂的可以调用后端 search_memos
-    // 使用分批处理避免阻塞UI
     const lower = q.toLowerCase();
-    const filtered = await processBatchAsync(
-      deps.memos,
-      (m) => {
-        if (m.title.toLowerCase().includes(lower) ||
-            m.content.toLowerCase().includes(lower)) {
-          return m;
-        }
-        return null;
-      },
-      50, // 每批处理50项
-      1000 // 超时时间1秒
+    const filtered = deps.memos.filter(
+      (m) =>
+        m.title.toLowerCase().includes(lower) ||
+        m.content.toLowerCase().includes(lower)
     );
     
     // Only update if query hasn't changed
@@ -333,51 +298,46 @@ export async function searchSystemFolders(
       deps.systemFoldersListLoadedRef.current = true;
     }
     
-    // 前端搜索（支持拼音匹配）- 使用分批处理避免阻塞UI
     const queryLower = searchQuery.trim().toLowerCase();
     const queryIsPinyin = !containsChinese(queryLower);
-    
-    // 使用分批处理过滤，避免阻塞UI
-    const results = await processBatchAsync(
-      deps.systemFoldersListRef.current,
-      (folder) => {
-        const nameLower = folder.name.toLowerCase();
-        const displayLower = folder.display_name.toLowerCase();
-        const pathLower = folder.path.toLowerCase();
-        
-        // 直接文本匹配
-        if (nameLower.includes(queryLower) || 
-            displayLower.includes(queryLower) || 
-            pathLower.includes(queryLower)) {
-          return folder;
-        }
-        
-        // 拼音匹配（如果查询是拼音，且文件夹有拼音字段）
-        if (queryIsPinyin && (folder.name_pinyin || folder.name_pinyin_initials)) {
-          // 拼音全拼匹配
-          if (folder.name_pinyin) {
-            if (folder.name_pinyin === queryLower ||
-                folder.name_pinyin.startsWith(queryLower) ||
-                folder.name_pinyin.includes(queryLower)) {
-              return folder;
-            }
-          }
-          
-          // 拼音首字母匹配
-          if (folder.name_pinyin_initials) {
-            if (folder.name_pinyin_initials === queryLower ||
-                folder.name_pinyin_initials.startsWith(queryLower) ||
-                folder.name_pinyin_initials.includes(queryLower)) {
-              return folder;
-            }
+
+    const results = deps.systemFoldersListRef.current.filter((folder) => {
+      const nameLower = folder.name.toLowerCase();
+      const displayLower = folder.display_name.toLowerCase();
+      const pathLower = folder.path.toLowerCase();
+
+      if (
+        nameLower.includes(queryLower) ||
+        displayLower.includes(queryLower) ||
+        pathLower.includes(queryLower)
+      ) {
+        return true;
+      }
+
+      if (queryIsPinyin && (folder.name_pinyin || folder.name_pinyin_initials)) {
+        if (folder.name_pinyin) {
+          if (
+            folder.name_pinyin === queryLower ||
+            folder.name_pinyin.startsWith(queryLower) ||
+            folder.name_pinyin.includes(queryLower)
+          ) {
+            return true;
           }
         }
-        
-        return null;
-      },
-      50, // 每批处理50项
-      1000 // 超时时间1秒
-    );
+
+        if (folder.name_pinyin_initials) {
+          if (
+            folder.name_pinyin_initials === queryLower ||
+            folder.name_pinyin_initials.startsWith(queryLower) ||
+            folder.name_pinyin_initials.includes(queryLower)
+          ) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    });
     
     if (deps.currentQuery.trim() === searchQuery.trim()) {
       deps.updateSearchResults(deps.setSystemFolders, results);
@@ -398,11 +358,8 @@ export async function searchApplications(
   deps: Pick<SearchDependencies, 'currentQuery' | 'updateSearchResults' | 'setFilteredApps' | 'setApps' | 'allAppsCacheRef' | 'allAppsCacheLoadedRef' | 'apps' | 'filterWindowsApps'>
 ): Promise<void> {
   try {
-    // 清空旧结果，避免显示上一个搜索的结果
-    deps.updateSearchResults(deps.setFilteredApps, []);
-    
-    // 验证查询
     if (!searchQuery || searchQuery.trim() === "") {
+      deps.updateSearchResults(deps.setFilteredApps, []);
       return;
     }
 

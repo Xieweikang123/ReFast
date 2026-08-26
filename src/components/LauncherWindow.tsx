@@ -14,7 +14,7 @@ import { SearchResultArea } from "./SearchResultArea";
 import { LauncherStatusBar } from "./LauncherStatusBar";
 import { getLayoutConfig, type ResultStyle } from "../utils/themeConfig";
 import { handleEscapeKey, closePluginModalAndHide, closeMemoModalAndHide } from "../utils/launcherHandlers";
-import { clearAllResults, loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory, getResultKey } from "../utils/resultUtils";
+import { loadResultsIncrementally, findBestFlatResultIndexFromOpenHistory, getResultKey } from "../utils/resultUtils";
 import { getMainContainer as getMainContainerUtil } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import { askOllama } from "../utils/ollamaUtils";
@@ -217,9 +217,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const visibleVerticalItemsRef = useRef(visibleVerticalItems);
   visibleVerticalItemsRef.current = visibleVerticalItems;
 
-  // 查询变化时重置 Everything 展开条数
+  // 查询变化时重置 Everything 展开条数（已是默认值则跳过，避免多余渲染）
   useEffect(() => {
-    setEverythingLimit(EVERYTHING_DEFAULT_LIMIT);
+    setEverythingLimit((prev) =>
+      prev === EVERYTHING_DEFAULT_LIMIT ? prev : EVERYTHING_DEFAULT_LIMIT
+    );
   }, [query]);
 
   const setQueryFromInput = useCallback((value: string) => {
@@ -732,19 +734,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       return;
     }
     
-    // 如果查询变化了，立即清空旧结果，避免显示错误的结果
-    // 这样可以确保在 debouncedCombinedResults 更新之前，不会显示旧查询的结果
+    // 查询变化时不要拆掉现有列表：每个按键清空+重建 DOM 会造成输入卡顿。
+    // 旧结果先留着，等合并结果与当前 query 对齐后再替换。
     if (query.trim() !== lastQueryInEffectRef.current.trim()) {
-      clearAllResults({
-        setResults,
-        setHorizontalResults,
-        setVerticalResults,
-        setSelectedHorizontalIndex,
-        setSelectedVerticalIndex,
-        currentLoadResultsRef,
-        logMessage: `[horizontalResults] 清空横向结果 (useEffect: 查询变化) oldQuery: ${lastQueryInEffectRef.current}, newQuery: ${query}`,
-      });
-      // 取消所有增量加载任务
       if (incrementalLoadRef.current !== null) {
         cancelAnimationFrame(incrementalLoadRef.current);
         incrementalLoadRef.current = null;
@@ -754,29 +746,16 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         incrementalTimeoutRef.current = null;
       }
       setIsIncrementalLoading(false);
-      // 如果查询变化且不是粘贴的图片路径，清除粘贴图片状态
       if (query.trim() !== pastedImagePath) {
         setPastedImagePath(null);
         setPastedImageDataUrl(null);
       }
-      // 重要：查询变化时，重置 lastLoadQueryRef 为空字符串
-      // 这样 loadResultsIncrementally 第一次加载时会通过检查（因为 lastLoadQueryRef === ""）
-      // 之后成功加载后，lastLoadQueryRef 会被更新为当前查询
       lastLoadQueryRef.current = "";
-      // 重置 debouncedResultsQueryRef，因为 debouncedCombinedResults 现在对应的是旧查询
-      debouncedResultsQueryRef.current = "";
       lastQueryInEffectRef.current = query;
     }
-    // 使用分批加载来更新结果，避免一次性渲染大量DOM导致卡顿
-    // 使用防抖后的结果，避免多个搜索结果异步返回时频繁重新排序
-    // 重要：只有当 debouncedCombinedResults 对应的查询与当前查询匹配时才更新
-    // 这样可以避免快速输入时使用过时的结果导致卡顿
-    if (debouncedCombinedResults.length > 0 || query.trim() === "") {
-      // 检查 debouncedCombinedResults 是否与当前查询匹配
-      // 如果不匹配，说明这些结果是过时的，不应该加载
-      if (debouncedResultsQueryRef.current.trim() === query.trim() || query.trim() === "") {
-        loadResultsIncrementallyWrapper(debouncedCombinedResults);
-      }
+
+    if (debouncedResultsQueryRef.current.trim() === query.trim() || query.trim() === "") {
+      loadResultsIncrementallyWrapper(debouncedCombinedResults);
     }
     
     // 清理函数：取消增量加载
@@ -789,7 +768,6 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         clearTimeout(incrementalTimeoutRef.current);
         incrementalTimeoutRef.current = null;
       }
-      currentLoadResultsRef.current = [];
     };
   }, [debouncedCombinedResults, query]);
 
@@ -1669,7 +1647,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         currentLoadResultsRef,
         queryHistoryIndexRef,
         isBrowsingQueryHistoryRef,
-        query,
+        query: inputRef.current?.value ?? query,
         contextMenu,
         errorMessage,
         isPluginListModalOpen,

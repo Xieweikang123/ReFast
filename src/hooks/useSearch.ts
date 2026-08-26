@@ -3,7 +3,7 @@
  * 负责处理查询防抖、URL/Email/JSON 检测、Everything 搜索会话管理等
  */
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { startTransition } from "react";
 import {
   extractUrls,
@@ -17,6 +17,19 @@ import {
   shouldSearchSource,
 } from "../utils/searchFilterUtils";
 import type { AppInfo, FileHistoryItem, MemoItem, EverythingResult } from "../types";
+
+/** 本地源（应用/历史/插件等）短防抖，保证打字后尽快出首屏 */
+const LOCAL_DEBOUNCE_MS = 80;
+
+function everythingDebounceMs(keywordLength: number): number {
+  if (keywordLength >= 6) {
+    return 200;
+  }
+  if (keywordLength >= 3) {
+    return 300;
+  }
+  return 320;
+}
 
 export interface UseSearchOptions {
   // 查询状态
@@ -76,9 +89,16 @@ function buildSearchIdentity(query: string): string {
   return parsed.keyword;
 }
 
+function clearTimer(ref: React.MutableRefObject<number | null>): void {
+  if (ref.current !== null) {
+    clearTimeout(ref.current);
+    ref.current = null;
+  }
+}
+
 /**
  * 搜索逻辑 Hook
- * 处理查询防抖、URL/Email/JSON 检测、Everything 搜索会话管理等
+ * 本地源与 Everything 分开防抖：先出应用/历史，磁盘索引稍后合并
  */
 export function useSearch(options: UseSearchOptions): void {
   const {
@@ -121,13 +141,13 @@ export function useSearch(options: UseSearchOptions): void {
     closeSessionSafe,
   } = options;
 
-  // Search applications, file history, and Everything when query changes (with debounce)
+  const everythingDebounceTimeoutRef = useRef<number | null>(null);
+
   useEffect(() => {
     const parsed = parseSearchFilter(query);
     const searchIdentity = buildSearchIdentity(query);
     const keyword = parsed.keyword;
     
-    // 优化：如果搜索身份没有真正变化，直接返回，避免不必要的操作
     if (searchIdentity === lastSearchQueryRef.current) {
       if (searchIdentity === "") {
         return;
@@ -137,18 +157,14 @@ export function useSearch(options: UseSearchOptions): void {
       }
     }
     
-    // 清除之前的防抖定时器（只有在查询真正变化时才清除）
-    if (debounceTimeoutRef.current !== null) {
-      clearTimeout(debounceTimeoutRef.current);
-      debounceTimeoutRef.current = null;
-    }
+    clearTimer(debounceTimeoutRef);
+    clearTimer(everythingDebounceTimeoutRef);
 
     if (searchIdentity !== "" && searchIdentity !== lastSearchQueryRef.current) {
       setIsDebouncePending?.(true);
       setIsLocalSearchPending?.(false);
     }
     
-    // 空查询或纯过滤器前缀：清空结果
     if (!hasSearchKeyword(parsed)) {
       const oldSessionId = pendingSessionIdRef.current;
       if (oldSessionId) {
@@ -180,22 +196,25 @@ export function useSearch(options: UseSearchOptions): void {
       return;
     }
     
-    // If user is typing new content while in AI answer mode, exit AI answer mode
     if (showAiAnswer) {
       setShowAiAnswer(false);
       setAiAnswer(null);
       setIsAiLoading(false);
     }
-    
-    const queryLength = keyword.length;
-    let debounceTime = 320;
-    if (queryLength >= 3 && queryLength <= 5) {
-      debounceTime = 300;
-    } else if (queryLength >= 6) {
-      debounceTime = 200;
+
+    // 查询已变：取消进行中的 Everything，避免旧 IPC 占着通道
+    if (
+      pendingSessionIdRef.current &&
+      currentSearchQueryRef.current !== keyword
+    ) {
+      closeSessionSafe(pendingSessionIdRef.current).catch(() => {});
+      pendingSessionIdRef.current = null;
+      currentSearchQueryRef.current = "";
+      displayedSearchQueryRef.current = "";
+      setIsSearchingEverything(false);
     }
 
-    const timeoutId = setTimeout(() => {
+    const localTimeoutId = window.setTimeout(() => {
       setIsDebouncePending?.(false);
 
       const currentParsed = parseSearchFilter(query);
@@ -209,21 +228,7 @@ export function useSearch(options: UseSearchOptions): void {
       const currentScope = currentParsed.scope;
       
       setIsLocalSearchPending?.(true);
-      if (searchIdentity !== lastSearchQueryRef.current) {
-        startTransition(() => {
-          setFilteredApps([]);
-          setFilteredFiles([]);
-          setFilteredMemos([]);
-          setFilteredPlugins([]);
-          setEverythingResults([]);
-          setEverythingTotalCount(null);
-          setEverythingCurrentCount(0);
-          setDirectPathResult(null);
-        });
-        hasResultsRef.current = false;
-      }
-      
-      // URL/Email/JSON 检测：仅在 all/file 等允许的 scope 下
+
       startTransition(() => {
         try {
           if (shouldSearchSource(currentScope, "url")) {
@@ -258,43 +263,13 @@ export function useSearch(options: UseSearchOptions): void {
           setDetectedJson(null);
         }
       });
-      
+
       const isPastedImageQuery =
         !!pastedImagePath && currentKeyword === pastedImagePath.trim();
       const isPathQuery =
         shouldSearchSource(currentScope, "path") &&
         (isLikelyAbsolutePath(currentKeyword) || isPastedImageQuery);
-      
-      const hasActiveSession =
-        pendingSessionIdRef.current &&
-        currentSearchQueryRef.current === currentKeyword;
-      const hasResults = hasResultsRef.current;
-      
-      if (hasActiveSession && hasResults) {
-        return;
-      }
-      
-      if (
-        pendingSessionIdRef.current &&
-        currentSearchQueryRef.current !== currentKeyword
-      ) {
-        const oldSessionId = pendingSessionIdRef.current;
-        closeSessionSafe(oldSessionId).catch(() => {});
-        pendingSessionIdRef.current = null;
-        currentSearchQueryRef.current = "";
-        displayedSearchQueryRef.current = "";
-      }
-      
-      if (hasActiveSession && !hasResults) {
-        const oldSessionId = pendingSessionIdRef.current;
-        if (oldSessionId) {
-          closeSessionSafe(oldSessionId).catch(() => {});
-        }
-        pendingSessionIdRef.current = null;
-        currentSearchQueryRef.current = "";
-        displayedSearchQueryRef.current = "";
-      }
-      
+
       lastSearchQueryRef.current = searchIdentity;
 
       if (isPathQuery) {
@@ -315,86 +290,131 @@ export function useSearch(options: UseSearchOptions): void {
         startTransition(() => {
           setDirectPathResult(null);
         });
-        
-        if (
-          isEverythingAvailable &&
-          shouldSearchSource(currentScope, "everything")
-        ) {
-          startSearchSession(currentKeyword).catch(() => {});
-        } else {
-          setEverythingResults([]);
-          setEverythingTotalCount(null);
-          setEverythingCurrentCount(0);
-          setIsSearchingEverything(false);
-          const oldSessionId = pendingSessionIdRef.current;
-          if (oldSessionId) {
-            closeSessionSafe(oldSessionId).catch(() => {});
-          }
-          pendingSessionIdRef.current = null;
-          currentSearchQueryRef.current = "";
-          displayedSearchQueryRef.current = "";
-        }
       }
-      
-      setTimeout(() => {
-        const localSearchGeneration = searchIdentity;
-        const tasks: Promise<void>[] = [];
 
-        if (shouldSearchSource(currentScope, "systemFolder")) {
-          tasks.push(searchSystemFoldersWrapper(currentKeyword));
-        } else {
-          // 清空可能残留的系统文件夹由 combine 侧过滤；此处不拉新数据
-        }
+      const localSearchGeneration = searchIdentity;
+      const tasks: Promise<void>[] = [];
 
-        if (shouldSearchSource(currentScope, "file")) {
-          tasks.push(searchFileHistoryWrapper(currentKeyword));
-        } else {
-          startTransition(() => setFilteredFiles([]));
-        }
+      if (shouldSearchSource(currentScope, "systemFolder")) {
+        tasks.push(searchSystemFoldersWrapper(currentKeyword));
+      }
 
-        if (shouldSearchSource(currentScope, "app")) {
-          tasks.push(searchApplicationsWrapper(currentKeyword));
-        } else {
-          startTransition(() => setFilteredApps([]));
-        }
+      if (shouldSearchSource(currentScope, "file")) {
+        tasks.push(searchFileHistoryWrapper(currentKeyword));
+      } else {
+        startTransition(() => setFilteredFiles([]));
+      }
 
-        const finishLocal = () => {
-          if (lastSearchQueryRef.current === localSearchGeneration) {
-            setIsLocalSearchPending?.(false);
-          }
-        };
+      if (shouldSearchSource(currentScope, "app")) {
+        tasks.push(searchApplicationsWrapper(currentKeyword));
+      } else {
+        startTransition(() => setFilteredApps([]));
+      }
 
-        if (tasks.length > 0) {
-          Promise.all(tasks)
-            .catch((error) => {
-              console.error("[搜索错误] 并行搜索失败:", error);
-            })
-            .finally(finishLocal);
-        } else {
-          finishLocal();
-        }
-        
-        if (shouldSearchSource(currentScope, "memo")) {
-          searchMemosWrapper(currentKeyword);
-        } else {
-          startTransition(() => setFilteredMemos([]));
-        }
+      if (shouldSearchSource(currentScope, "memo")) {
+        tasks.push(searchMemosWrapper(currentKeyword));
+      } else {
+        startTransition(() => setFilteredMemos([]));
+      }
 
-        if (shouldSearchSource(currentScope, "plugin")) {
-          handleSearchPlugins(currentKeyword);
-        } else {
-          startTransition(() => setFilteredPlugins([]));
+      if (shouldSearchSource(currentScope, "plugin")) {
+        handleSearchPlugins(currentKeyword);
+      } else {
+        startTransition(() => setFilteredPlugins([]));
+      }
+
+      const finishLocal = () => {
+        if (lastSearchQueryRef.current === localSearchGeneration) {
+          setIsLocalSearchPending?.(false);
         }
-      }, 0);
-    }, debounceTime) as unknown as number;
+      };
+
+      if (tasks.length > 0) {
+        Promise.all(tasks)
+          .catch((error) => {
+            console.error("[搜索错误] 并行搜索失败:", error);
+          })
+          .finally(finishLocal);
+      } else {
+        finishLocal();
+      }
+    }, LOCAL_DEBOUNCE_MS);
+
+    const everythingTimeoutId = window.setTimeout(() => {
+      const currentParsed = parseSearchFilter(query);
+      const currentIdentity = buildSearchIdentity(query);
+      if (!hasSearchKeyword(currentParsed) || currentIdentity !== searchIdentity) {
+        return;
+      }
+
+      const currentKeyword = currentParsed.keyword;
+      const currentScope = currentParsed.scope;
+      const isPastedImageQuery =
+        !!pastedImagePath && currentKeyword === pastedImagePath.trim();
+      const isPathQuery =
+        shouldSearchSource(currentScope, "path") &&
+        (isLikelyAbsolutePath(currentKeyword) || isPastedImageQuery);
+
+      if (isPathQuery) {
+        return;
+      }
+
+      const hasActiveSession =
+        pendingSessionIdRef.current &&
+        currentSearchQueryRef.current === currentKeyword;
+      const hasResults = hasResultsRef.current;
+
+      if (hasActiveSession && hasResults) {
+        return;
+      }
+
+      if (
+        pendingSessionIdRef.current &&
+        currentSearchQueryRef.current !== currentKeyword
+      ) {
+        closeSessionSafe(pendingSessionIdRef.current).catch(() => {});
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
+      }
+
+      if (hasActiveSession && !hasResults) {
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          closeSessionSafe(oldSessionId).catch(() => {});
+        }
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
+      }
+
+      if (
+        isEverythingAvailable &&
+        shouldSearchSource(currentScope, "everything") &&
+        currentKeyword.length >= 2
+      ) {
+        startSearchSession(currentKeyword).catch(() => {});
+      } else {
+        setEverythingResults([]);
+        setEverythingTotalCount(null);
+        setEverythingCurrentCount(0);
+        setIsSearchingEverything(false);
+        const oldSessionId = pendingSessionIdRef.current;
+        if (oldSessionId) {
+          closeSessionSafe(oldSessionId).catch(() => {});
+        }
+        pendingSessionIdRef.current = null;
+        currentSearchQueryRef.current = "";
+        displayedSearchQueryRef.current = "";
+      }
+    }, everythingDebounceMs(keyword.length));
     
-    debounceTimeoutRef.current = timeoutId;
+    debounceTimeoutRef.current = localTimeoutId;
+    everythingDebounceTimeoutRef.current = everythingTimeoutId;
     
     return () => {
-      if (debounceTimeoutRef.current !== null) {
-        clearTimeout(debounceTimeoutRef.current);
-        debounceTimeoutRef.current = null;
-      }
+      clearTimer(debounceTimeoutRef);
+      clearTimer(everythingDebounceTimeoutRef);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, isEverythingAvailable, pastedImagePath]);

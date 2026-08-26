@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect } from "react";
+import React, { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { parseSearchFilter } from "../utils/searchFilterUtils";
 
 interface LayoutConfig {
@@ -25,7 +25,7 @@ interface SearchInputHeaderProps {
   setContextMenu: (menu: any) => void;
 }
 
-export function SearchInputHeader({
+export const SearchInputHeader = React.memo(function SearchInputHeader({
   layout,
   inputRef,
   query,
@@ -40,8 +40,24 @@ export function SearchInputHeader({
   contextMenu,
   setContextMenu,
 }: SearchInputHeaderProps) {
+  const [localQuery, setLocalQuery] = useState(query);
+  const lastEmittedRef = useRef(query);
+  const isComposingRef = useRef(false);
+
+  useEffect(() => {
+    if (query !== lastEmittedRef.current) {
+      setLocalQuery(query);
+      lastEmittedRef.current = query;
+    }
+  }, [query]);
+
+  const emitQuery = (value: string) => {
+    lastEmittedRef.current = value;
+    startTransition(() => {
+      setQuery(value);
+    });
+  };
   
-  // 缓存输入框的 className 和 style，避免每次渲染都创建新对象
   const inputClassName = useMemo(() => {
     return `w-full bg-transparent border-none outline-none p-0 text-lg ${layout.input.split(' ').filter(c => c.includes('placeholder') || c.includes('text-')).join(' ') || 'placeholder-gray-400 text-gray-700'}`;
   }, [layout.input]);
@@ -54,36 +70,31 @@ export function SearchInputHeader({
   }), []);
 
   const filterHint = useMemo(() => {
-    const parsed = parseSearchFilter(query);
+    const parsed = parseSearchFilter(localQuery);
     return parsed.hasFilter ? parsed.prefixLabel : undefined;
-  }, [query]);
+  }, [localQuery]);
 
-  // 粘贴长路径时滚到末尾，优先露出文件名
   useEffect(() => {
     const el = inputRef.current;
-    if (!el || !query) return;
-    const looksLikePath = /[\\/]/.test(query) && query.length > 40;
+    if (!el || !localQuery) return;
+    const looksLikePath = /[\\/]/.test(localQuery) && localQuery.length > 40;
     if (pastedImageDataUrl || looksLikePath) {
       requestAnimationFrame(() => {
         el.scrollLeft = el.scrollWidth;
       });
     }
-  }, [query, pastedImageDataUrl, inputRef]);
+  }, [localQuery, pastedImageDataUrl, inputRef]);
 
   return (
     <div 
       className={`${layout.header} select-none`}
       onMouseDown={async (e) => {
-        // 手动触发拖拽，移除 data-tauri-drag-region 避免冲突
-        // 排除输入框、应用中心按钮和 footer 区域的按钮
-        // 注意：wrapper 区域会 stopPropagation，所以这里主要处理 wrapper 上方的区域
         const target = e.target as HTMLElement;
         const isInput = target.tagName === 'INPUT' || target.closest('input');
         const isAppCenterButton = target.closest('[title="应用中心"]');
         const isFooterButton = target.closest('button') && target.closest('[class*="border-t"]');
         const isButton = target.tagName === 'BUTTON' || target.closest('button');
         if (!isInput && !isAppCenterButton && !isFooterButton && !isButton) {
-          // 使用和 wrapper 相同的可靠逻辑：先阻止默认行为和冒泡，再调用拖拽
           e.preventDefault();
           e.stopPropagation();
           onStartWindowDragging();
@@ -91,7 +102,6 @@ export function SearchInputHeader({
       }}
     >
       <div className="flex items-center gap-3 select-none h-full">
-        {/* 拖拽手柄图标 */}
         <svg
           className={layout.dragHandleIcon}
           fill="currentColor"
@@ -119,7 +129,6 @@ export function SearchInputHeader({
             d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
           />
         </svg>
-        {/* 输入框包裹层 - 负责占位和拖拽，缩小 input 的实际点击区域 */}
         <div 
           className="flex-1 flex select-none" 
           style={{ 
@@ -130,20 +139,16 @@ export function SearchInputHeader({
             gap: '8px'
           }}
           onMouseDown={async (e) => {
-            // 如果点击的不是输入框，触发拖拽（这个逻辑是可靠的，从不失效）
             const target = e.target as HTMLElement;
             const isInput = target.tagName === 'INPUT' || target.closest('input');
             const isImage = target.tagName === 'IMG' || target.closest('img');
             if (!isInput && !isImage) {
-              // 阻止事件冒泡，避免 header 重复处理
               e.stopPropagation();
               e.preventDefault();
               onStartWindowDragging();
             }
-            // 如果是输入框，不阻止冒泡，让输入框自己处理
           }}
         >
-          {/* 粘贴图片预览 */}
           {pastedImageDataUrl && (
             <img
               src={pastedImageDataUrl}
@@ -151,7 +156,6 @@ export function SearchInputHeader({
               className="w-8 h-8 object-cover rounded border border-gray-300 flex-shrink-0"
               style={{ imageRendering: 'auto' }}
               onError={(e) => {
-                // 如果图片加载失败，隐藏预览
                 (e.target as HTMLImageElement).style.display = 'none';
               }}
               onClick={(e) => {
@@ -170,12 +174,26 @@ export function SearchInputHeader({
           <input
             ref={inputRef}
             type="text"
-            value={query}
-            title={query || undefined}
+            value={localQuery}
+            title={localQuery || undefined}
             onChange={(e) => {
-              // 参考搜索插件输入框的简单实现，直接更新状态
-              // React 的受控组件本身就能很好地处理输入法组合输入，不需要额外的干预
-              setQuery(e.target.value);
+              const value = e.target.value;
+              const nativeEvent = e.nativeEvent as { isComposing?: boolean };
+              const composing = isComposingRef.current || !!nativeEvent.isComposing;
+              setLocalQuery(value);
+              if (composing) {
+                return;
+              }
+              emitQuery(value);
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true;
+            }}
+            onCompositionEnd={(e) => {
+              isComposingRef.current = false;
+              const value = e.currentTarget.value;
+              setLocalQuery(value);
+              emitQuery(value);
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
@@ -184,25 +202,19 @@ export function SearchInputHeader({
             style={inputStyle}
             autoFocus
             onFocus={(e) => {
-              // Ensure input is focused, but don't select text if user is typing
               e.target.focus();
             }}
             onMouseDown={(e) => {
-              // 阻止事件冒泡，防止触发窗口拖拽
-              // 输入框内应该只处理输入和文本选择，不应该触发窗口拖拽
               e.stopPropagation();
-              // Close context menu when clicking on search input
               if (contextMenu) {
                 setContextMenu(null);
               }
             }}
             onClick={(e) => {
-              // 点击输入框时，确保焦点正确，阻止事件冒泡避免触发其他操作
               e.stopPropagation();
             }}
           />
         </div>
-        {/* 应用中心按钮 */}
         <div
           className="relative flex items-center justify-center"
           onMouseEnter={() => setIsHoveringAiIcon(true)}
@@ -212,7 +224,6 @@ export function SearchInputHeader({
             onPluginListClick();
           }}
           onMouseDown={(e) => {
-            // 阻止拖拽，让按钮可以正常点击
             e.stopPropagation();
           }}
           style={{ cursor: 'pointer', minWidth: '24px', minHeight: '24px' }}
@@ -224,7 +235,6 @@ export function SearchInputHeader({
             stroke="currentColor"
             viewBox="0 0 24 24"
           >
-            {/* 应用中心/插件图标 */}
             <path
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -236,4 +246,4 @@ export function SearchInputHeader({
       </div>
     </div>
   );
-}
+});
