@@ -50,6 +50,9 @@ jobs:
             "skip=0" | Add-Content $env:GITHUB_OUTPUT
             Write-Host "Release $version 不存在，开始构建"
           }
+          # gh release view 对不存在的 release 返回非零退出码（预期的负向检查），
+          # 而 Actions 的 pwsh 包装器会以 $LASTEXITCODE 结束脚本，这里显式归零
+          exit 0
 
       - name: Install dependencies
         if: steps.check.outputs.skip == '0'
