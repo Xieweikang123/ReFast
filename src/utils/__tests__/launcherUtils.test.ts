@@ -3,6 +3,8 @@ import {
   extractUrls,
   extractEmails,
   isValidJson,
+  looksLikeBareUrl,
+  ensureUrlScheme,
   highlightText,
   containsChinese,
   isLikelyAbsolutePath,
@@ -49,6 +51,55 @@ describe("launcherUtils", () => {
       const text = "ftp://example.com 和 https://test.org";
       const urls = extractUrls(text);
       expect(urls).toEqual(["https://test.org"]);
+    });
+  });
+
+  describe("looksLikeBareUrl", () => {
+    it("应该识别常见裸域名", () => {
+      expect(looksLikeBareUrl("ollama.com")).toBe("ollama.com");
+      expect(looksLikeBareUrl("ollama.com/settings")).toBe(
+        "ollama.com/settings"
+      );
+      expect(looksLikeBareUrl("www.github.com")).toBe("www.github.com");
+      expect(looksLikeBareUrl("example.cn")).toBe("example.cn");
+    });
+
+    it("应该拒绝已有协议的 URL", () => {
+      expect(looksLikeBareUrl("https://ollama.com")).toBeNull();
+      expect(looksLikeBareUrl("http://example.com")).toBeNull();
+    });
+
+    it("应该拒绝普通搜索词和版本号", () => {
+      expect(looksLikeBareUrl("hello world")).toBeNull();
+      expect(looksLikeBareUrl("文件搜索")).toBeNull();
+      expect(looksLikeBareUrl("1.2.3")).toBeNull();
+      expect(looksLikeBareUrl("npm install")).toBeNull();
+    });
+
+    it("应该拒绝未知后缀", () => {
+      expect(looksLikeBareUrl("helloXYZ")).toBeNull();
+      expect(looksLikeBareUrl("test.abc123xyz/")).toBeNull();
+    });
+  });
+
+  describe("ensureUrlScheme", () => {
+    it("应该为裸域名补全 https://", () => {
+      expect(ensureUrlScheme("ollama.com/settings")).toBe(
+        "https://ollama.com/settings"
+      );
+      expect(ensureUrlScheme("example.cn")).toBe("https://example.cn");
+    });
+
+    it("应该保留已有协议的 URL", () => {
+      expect(ensureUrlScheme("https://example.com")).toBe(
+        "https://example.com"
+      );
+      expect(ensureUrlScheme("http://example.com")).toBe("http://example.com");
+    });
+
+    it("非网址内容应原样返回", () => {
+      expect(ensureUrlScheme("普通文本")).toBe("普通文本");
+      expect(ensureUrlScheme("")).toBe("");
     });
   });
 
@@ -228,25 +279,17 @@ describe("launcherUtils", () => {
     });
 
     it("应该识别科学计数法", () => {
-      // isMathExpression 的实现逻辑：
-      // 1. 第137行检查是否有运算符：/[+\-*/%=^]/
-      // 2. 第138行：如果没有运算符，直接返回 false
-      // 3. 第159行的科学计数法检查永远不会被执行，因为已经在第138行返回了
-      // 
-      // 因此，纯科学计数法（如 1e5）不会被识别，因为没有运算符
-      // 这是预期的行为，因为函数要求必须有运算符
-      
-      // 根据代码逻辑，纯科学计数法不会被识别（因为没有运算符）
+      // 纯科学计数法（如 1e5）没有运算符，不会被识别
       expect(isMathExpression("1e5")).toBe(false);
+      // 带运算符的科学计数法（如 2E-3）会被识别
       expect(isMathExpression("2E-3")).toBe(true);
-      
+
       // 正常的数学表达式会被识别
       expect(isMathExpression("2 + 2")).toBe(true);
       expect(isMathExpression("10 * 5")).toBe(true);
-      
-      // 包含运算符和科学计数法的表达式也不会被识别
-      // 因为 mathPattern 不包含 e/E 字符
-      expect(isMathExpression("1e5 + 2")).toBe(false);
+
+      // mathPattern 已包含 e/E 字符，含运算符与科学计数法的表达式会被识别
+      expect(isMathExpression("1e5 + 2")).toBe(true);
     });
 
     it("应该返回 false 当不是数学表达式时", () => {

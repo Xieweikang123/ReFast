@@ -25,6 +25,7 @@ import {
   appSourceRank,
   isUninstallShortcutName,
   isFolderLikePath,
+  ensureUrlScheme,
 } from "./launcherUtils";
 import { detectSearchIntent, getSearchResultItem } from "./searchUtils";
 import { resolveBrowserForUrl } from "./browserRules";
@@ -146,7 +147,7 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
     ? options.filteredPlugins
     : [];
   const detectedUrls = shouldSearchSource(scope, "url")
-    ? options.detectedUrls
+    ? options.detectedUrls.map(ensureUrlScheme)
     : [];
   const detectedEmails = shouldSearchSource(scope, "email")
     ? options.detectedEmails

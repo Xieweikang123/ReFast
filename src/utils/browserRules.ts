@@ -33,6 +33,13 @@ export function isBrowserRuleMatch(rule: BrowserRule, url: string): boolean {
     return urlLower.startsWith(pattern);
   }
 
+  // 裸域名 URL（无协议）：直接与规则模式比较
+  if (!urlLower.includes("://")) {
+    if (urlLower === pattern || urlLower.startsWith(`${pattern}/`)) {
+      return true;
+    }
+  }
+
   const hostname = extractHostname(url);
   if (!hostname) return false;
 

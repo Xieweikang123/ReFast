@@ -9,6 +9,7 @@ import {
   extractUrls,
   extractEmails,
   isValidJson,
+  looksLikeBareUrl,
   isLikelyAbsolutePath,
 } from "../utils/launcherUtils";
 import {
@@ -232,7 +233,10 @@ export function useSearch(options: UseSearchOptions): void {
       startTransition(() => {
         try {
           if (shouldSearchSource(currentScope, "url")) {
-            setDetectedUrls(extractUrls(currentKeyword));
+            const httpUrls = extractUrls(currentKeyword);
+            // 裸域名（如 ollama.com/settings）也识别为网址
+            const bare = httpUrls.length === 0 ? looksLikeBareUrl(currentKeyword) : null;
+            setDetectedUrls(bare ? [bare] : httpUrls);
           } else {
             setDetectedUrls([]);
           }

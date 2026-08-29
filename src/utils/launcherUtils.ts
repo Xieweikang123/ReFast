@@ -6,17 +6,125 @@
 // Extract URLs from text
 export function extractUrls(text: string): string[] {
   if (!text || text.trim().length === 0) return [];
-  
+
   // 只匹配以 http:// 或 https:// 开头的 URL
   const urlPattern = /https?:\/\/[^\s<>"']+/gi;
   const matches = text.match(urlPattern);
   if (!matches) return [];
-  
   // 清理并返回 URL
   return matches
     .map(url => url.trim())
     .filter((url): url is string => url.length > 0)
     .filter((url, index, self) => self.indexOf(url) === index); // Remove duplicates
+}
+
+// 裸域名常见后缀（不含 http/https 前缀时用于判断是否像网址）
+const BARE_DOMAIN_SUFFIXES = [
+  "com",
+  "cn",
+  "net",
+  "org",
+  "io",
+  "ai",
+  "dev",
+  "app",
+  "me",
+  "cc",
+  "tv",
+  "co",
+  "gov",
+  "edu",
+  "info",
+  "xyz",
+  "top",
+  "site",
+  "online",
+  "tech",
+  "store",
+  "cloud",
+  "live",
+  "news",
+  "so",
+  "de",
+  "uk",
+  "jp",
+  "kr",
+  "ru",
+  "fr",
+  "in",
+  "au",
+  "ca",
+  "us",
+  "tw",
+  "hk",
+  "moe",
+  "wiki",
+  "run",
+  "fyi",
+  "page",
+  "sh",
+  "is",
+  "to",
+  "gg",
+  "fm",
+  "am",
+  "ly",
+  "gl",
+  "it",
+  "nl",
+  "se",
+  "no",
+  "fi",
+  "dk",
+  "pl",
+  "cz",
+  "es",
+  "pt",
+  "br",
+  "mx",
+  "ar",
+  "za",
+  "vn",
+  "th",
+  "sg",
+  "my",
+  "id",
+  "ph",
+];
+
+/**
+ * 判断文本是否像一个裸域名网址（不带 http/https 前缀）
+ * 例如：ollama.com、ollama.com/settings、github.com
+ * 规则：唯一一段词、含点、最后一段是常见后缀且长度>=2，首段不能全数字（避免混淆 IP/版本号）
+ */
+export function looksLikeBareUrl(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || /https?:\/\//i.test(trimmed)) return null;
+  // 含空格或中文的不算
+  if (/[\s\u4e00-\u9fff]/.test(trimmed)) return null;
+  // 不能是纯数字/版本号样式
+  if (!/^[a-zA-Z0-9.-]+\.[a-zA-Z0-9.-]+(\/[^\s]*)?$/.test(trimmed)) return null;
+  const parts = trimmed.split("/");
+  const domainPart = parts[0];
+  const domainLabels = domainPart.split(".");
+  if (domainLabels.length < 2) return null;
+  const last = domainLabels[domainLabels.length - 1].toLowerCase();
+  if (last.length < 2) return null;
+  if (!BARE_DOMAIN_SUFFIXES.includes(last)) return null;
+  // 首段全数字（如 1.2.3）视为版本号，不当作网址
+  if (/^\d+$/.test(domainLabels[0])) return null;
+  return trimmed;
+}
+
+/**
+ * 为 URL 补全协议前缀：裸域名自动加 https://，已有协议的不变
+ */
+export function ensureUrlScheme(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (looksLikeBareUrl(trimmed)) return `https://${trimmed}`;
+  return trimmed;
 }
 
 // Extract email addresses from text
