@@ -1,50 +1,56 @@
 # 发版说明
 
-将本地打好的 MSI 发布到 [GitHub Releases](https://github.com/Xieweikang123/ReFast/releases)。
+ReFast 采用 **merge 到 master 自动发布** 的流程，本地打包上传（`npm run release`）仅作应急备用。
 
-## 一次性准备
+## 日常工作流
 
-1. 安装 [GitHub CLI](https://cli.github.com/)：
-
-```powershell
-winget install --id GitHub.cli
-```
-
-2. 登录（需能访问 GitHub；若本机 git 已配代理，发版脚本会自动沿用）：
+在 `dev` 上开发，发版时：
 
 ```powershell
-# 若直连超时，先设代理（按本机 Clash 等端口调整）
-$env:HTTP_PROXY = "http://127.0.0.1:10809"
-$env:HTTPS_PROXY = "http://127.0.0.1:10809"
+# 1.（在 dev 上）bump 版本号，同步 package.json / Cargo.toml / tauri.conf.json
+node scripts/sync-version.js patch    # 或 minor
 
-gh auth login --hostname github.com --git-protocol https --web
+# 2. 提交 bump + 推送 dev（CI 会跑 tsc + vitest + cargo check）
+git add -A
+git commit -m "chore: bump version to 1.0.x"
+git push origin dev
+
+# 3. 确认 dev 的 CI 绿后，合并到 master
+git checkout master
+git merge dev
+git push origin master
+
+# 4. 回到 dev 继续开发
+git checkout dev
 ```
 
-按提示打开 https://github.com/login/device ，输入终端里的一次性验证码并授权。
+push 到 master 触发 `release.yml`：
 
-## 日常发版
+1. 读取 `package.json` 版本号（如 `1.0.82`）
+2. **幂等检查**：GitHub 已存在同名 Release → 直接跳过（忘 bump 就 merge 不会发重复版本）
+3. 发布前门禁：`npm run build`（tsc）+ `npm test`
+4. `npx tauri build` 产出 `src-tauri/target/release/bundle/msi/ReFast_<版本>_x64_zh-CN.msi`
+5. `scripts/generate-notes.mjs` 从提交记录生成分组更新日志
+6. 创建 Release（tag 与版本同名，无 `v` 前缀）并上传 MSI
 
-```powershell
-# 1. 打包（自动 bump patch 版本）
-npm run build:tauri
+## 更新日志规则
 
-# 2. 上传到 GitHub Releases
-npm run release
-```
+自动从 commit log 生成，按 conventional commits 前缀分组：
 
-`npm run build:tauri` 会自动 patch 递增版本号，并同步到 `package.json`、`Cargo.toml`、`tauri.conf.json`，产物在：
+| 前缀 | 分组 |
+|---|---|
+| `feat:` | ✨ 新功能 |
+| `fix:` | 🐛 修复 |
+| `perf:` | ⚡ 性能优化 |
+| `style:` | 🎨 界面改进 |
+| `chore:` / `docs:` / `ci:` 等 | 🔧 内部改进 |
+| `chore: bump version …` | 剔除不显示 |
 
-`src-tauri/target/release/bundle/msi/ReFast_<版本>_x64_zh-CN.msi`
+所以 **commit message 要写用户能看懂的中文描述**，这直接决定 Release 页面的质量。
 
-### 可选参数
+## 注意事项
 
-```powershell
-npm run release -- --notes "修复 xxx" --title "1.0.71"
-npm run release -- --dry-run   # 只预览，不实际上传
-```
-
-## 说明
-
-- 脚本读取当前 `package.json` 版本，上传对应 MSI，创建同名 tag（如 `1.0.71`，无 `v` 前缀）。
-- 若该 Release 已存在会报错，需先删旧 Release，或升版本后重新打包。
-- 实现脚本：`scripts/release.js`。
+- 忘 bump 就合并 master：workflow 会跳过发布（日志写明原因），下个版本 bump 后正常发。
+- Rust 全量构建在 CI 上约 15–30 分钟（首跑无缓存更久），发版后留意 Actions 页面。
+- 应急通道：本地打好的 MSI 仍可用 `npm run release` 手动上传（需要 `gh auth login`），发版前需确保对应版本 Release 不存在。
+- 实现文件：`.github/workflows/release.yml`、`scripts/generate-notes.mjs`、`scripts/release.js`（本地应急）。

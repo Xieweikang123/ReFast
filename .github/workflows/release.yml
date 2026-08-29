@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & Publish
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 幂等：版本号没变（Release 已存在）时直接跳过，不报错不重复发
+      - name: Check release exists
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          "version=$version" | Add-Content $env:GITHUB_OUTPUT
+          $exists = gh release view $version --repo '${{ github.repository }}' 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            "skip=1" | Add-Content $env:GITHUB_OUTPUT
+            Write-Host "Release $version 已存在，跳过发布（master 合并未带版本号 bump）"
+          } else {
+            "skip=0" | Add-Content $env:GITHUB_OUTPUT
+            Write-Host "Release $version 不存在，开始构建"
+          }
+
+      - name: Install dependencies
+        if: steps.check.outputs.skip == '0'
+        run: npm ci
+
+      # 发布前门禁：typecheck + build + 单测（与 CI 同标准）
+      - name: Frontend build & test
+        if: steps.check.outputs.skip == '0'
+        run: |
+          npm run build
+          npm test
+
+      - name: Build Tauri app
+        if: steps.check.outputs.skip == '0'
+        run: npx tauri build
+
+      - name: Find MSI
+        if: steps.check.outputs.skip == '0'
+        id: msi
+        run: |
+          $version = '${{ steps.check.outputs.version }}'
+          if (-not $version) {
+            $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          }
+          $dir = "src-tauri/target/release/bundle/msi"
+          $msi = Get-ChildItem $dir -Filter "ReFast_${version}_*.msi" | Select-Object -First 1
+          if (-not $msi) {
+            Write-Error "未找到版本 $version 的 MSI（目录: $dir）"
+            exit 1
+          }
+          "path=$($msi.FullName)" | Add-Content $env:GITHUB_OUTPUT
+          Write-Host "MSI: $($msi.FullName)"
+
+      - name: Generate release notes
+        if: steps.check.outputs.skip == '0'
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $notes = node scripts/generate-notes.mjs $version
+          $notes | Out-File -FilePath release-notes.md -Encoding utf8
+          Write-Host "---- 更新日志 ----"
+          Get-Content release-notes.md
+          Write-Host "------------------"
+
+      - name: Publish GitHub Release
+        if: steps.check.outputs.skip == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          gh release create $version "${{ steps.msi.outputs.path }}" `
+            --repo '${{ github.repository }}' `
+            --title "$version" `
+            --notes-file release-notes.md
+          Write-Host "✅ 已发布: https://github.com/${{ github.repository }}/releases/tag/$version"
