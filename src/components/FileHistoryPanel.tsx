@@ -11,9 +11,32 @@ interface FileHistoryPanelProps {
   onRefresh?: () => Promise<void> | void;
 }
 
+// 列表每页渲染条数（避免大量数据一次性渲染导致卡顿）
+const PAGE_SIZE = 50;
+
+const CATEGORY_OPTIONS = [
+  { value: "all", label: "全部" },
+  { value: "url", label: "URL" },
+  { value: "exe", label: "EXE" },
+  { value: "folder", label: "文件夹" },
+  { value: "image", label: "图片" },
+  { value: "other", label: "其他" },
+] as const;
+
 // 格式化时间戳
 const formatTimestamp = (timestamp?: number | null) => {
   if (!timestamp) return "暂无";
+  return formatSimpleDateTime(timestamp);
+};
+
+// 格式化为相对时间（如「3 小时前」超过30天则显示绝对日期）
+const formatRelativeTime = (timestamp?: number | null) => {
+  if (!timestamp) return "暂无";
+  const diffSec = Math.floor(Date.now() / 1000 - timestamp);
+  if (diffSec < 60) return "刚刚";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+  if (diffSec < 2592000) return `${Math.floor(diffSec / 86400)} 天前`;
   return formatSimpleDateTime(timestamp);
 };
 
@@ -34,6 +57,13 @@ const parseDateRangeToTs = (start: string, end: string): { start?: number; end?:
     start: toTs(start, false),
     end: toTs(end, true),
   };
+};
+
+// 判断记录的最后使用时间是否落在 [start, end] 范围内（列表筛选与汇总统计共用）
+const matchRange = (lastUsed: number, start?: number, end?: number): boolean => {
+  if (start !== undefined && lastUsed < start) return false;
+  if (end !== undefined && lastUsed > end) return false;
+  return true;
 };
 
 // 超时保护辅助函数
@@ -72,6 +102,8 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
   const [categoryFilter, setCategoryFilter] = useState<"all" | "url" | "exe" | "folder" | "image" | "other">("all");
   const [isDeletingHistory, setIsDeletingHistory] = useState(false);
   const [historyMessage, setHistoryMessage] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<"time" | "count">("time");
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [pendingDeleteCount, setPendingDeleteCount] = useState(0);
   const [isSingleDeleteConfirmOpen, setIsSingleDeleteConfirmOpen] = useState(false);
@@ -86,21 +118,8 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
         15000,
         "加载文件历史超时，数据量可能较大，请稍后重试"
       );
-      // 后端已按时间排序，但这里再保险按 last_used 降序
-      // 使用 requestIdleCallback 优化数组排序，避免阻塞 UI（无论数据量大小）
-      const sorted = await new Promise<FileHistoryItem[]>((resolve) => {
-        const worker = () => {
-          const sorted = [...list].sort((a, b) => b.last_used - a.last_used);
-          resolve(sorted);
-        };
-        if (window.requestIdleCallback) {
-          // 使用 requestIdleCallback 在浏览器空闲时执行排序，避免阻塞 UI
-          window.requestIdleCallback(worker, { timeout: 1000 });
-        } else {
-          // 降级方案：使用 setTimeout 让出主线程
-          setTimeout(worker, 0);
-        }
-      });
+      // 后端已按时间排序，这里再保险按 last_used 降序作为基础顺序
+      const sorted = [...list].sort((a, b) => b.last_used - a.last_used);
       setFileHistoryItems(sorted);
     } catch (error: any) {
       console.error("加载文件历史失败:", error);
@@ -120,6 +139,11 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
     }, 100);
     return () => clearTimeout(timer);
   }, [loadFileHistoryList, refreshKey]);
+
+  // 筛选条件变化时重置分页
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [historyStartDate, historyEndDate, historyDaysAgo, searchQuery, categoryFilter, sortOrder]);
 
   const handleQueryDaysAgo = useCallback((daysValue?: string) => {
     const value = daysValue !== undefined ? daysValue : historyDaysAgo;
@@ -212,81 +236,17 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
   // 处理点击汇总统计的时间段，自动查询（清空天数输入框）
   const handleClickSummaryPeriod = useCallback((period: '5days' | '5-10days' | '10-30days' | '30days') => {
     const range = getPeriodDateRange(period);
-    if (period === '5-10days') {
-      // 计算实际的时间范围（包含小时、分钟、秒）
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 10);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date();
-      endDate.setDate(endDate.getDate() - 5);
-      endDate.setHours(23, 59, 59, 999);
-      const { start, end } = parseDateRangeToTs(range.startDate, range.endDate);
-      
-      // 使用与 historySummary 和 filteredHistoryItems 完全相同的计算逻辑（简单时间范围过滤）
-      // 这样按钮统计数量和列表筛选数量会完全一致
-      const { start: start5_10Days, end: end5_10Days } = parseDateRangeToTs(range.startDate, range.endDate);
-      
-      // 计算按钮上显示的数字（使用与列表筛选相同的简单时间范围过滤逻辑）
-      const buttonCount = fileHistoryItems.filter((item) => {
-        // 与 filteredHistoryItems 完全相同的逻辑
-        if (start5_10Days !== undefined && item.last_used < start5_10Days) return false;
-        if (end5_10Days !== undefined && item.last_used > end5_10Days) return false;
-        return true;
-      }).length;
-      
-      console.log('========== 点击5-10天按钮 ==========');
-      console.log('按钮信息:', {
-        按钮文字: '5-10天',
-        按钮显示数字: buttonCount,
-        说明: `按钮上显示的数字 ${buttonCount} 表示该时间段内的记录数量（排除已计入近5天的记录）`,
-      });
-      console.log('查询条件:', {
-        时间范围说明: '从10天前 00:00:00 到 5天前 23:59:59',
-        开始日期: range.startDate,
-        结束日期: range.endDate,
-        开始时间: startDate.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
-        结束时间: endDate.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
-        开始时间戳: start,
-        结束时间戳: end,
-      });
-      console.log('筛选条件（数字形式）:', {
-        条件: `last_used >= ${start} && last_used <= ${end}`,
-        条件说明: `last_used >= ${start} (${new Date(start! * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}) && last_used <= ${end} (${new Date(end! * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })})`,
-        说明: '使用简单时间范围过滤，与按钮统计逻辑一致，数量应完全匹配',
-      });
-      console.log('====================================');
-    }
     setHistoryDaysAgo(""); // 清空天数输入框
     setHistoryStartDate(range.startDate);
     setHistoryEndDate(range.endDate);
-  }, [getPeriodDateRange, fileHistoryItems]);
+  }, [getPeriodDateRange]);
 
   const filteredHistoryItems = useMemo(() => {
     const { start, end } = parseDateRangeToTs(historyStartDate, historyEndDate);
-    // 检查是否是5-10天的筛选范围
-    const range5_10Days = getPeriodDateRange('5-10days');
-    const { start: start5_10Days, end: end5_10Days } = parseDateRangeToTs(range5_10Days.startDate, range5_10Days.endDate);
-    if (start === start5_10Days && end === end5_10Days) {
-      console.log('========== 5-10天筛选执行 ==========');
-      console.log('筛选参数:', {
-        开始日期: historyStartDate,
-        结束日期: historyEndDate,
-        开始时间: start ? new Date(start * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无',
-        结束时间: end ? new Date(end * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无',
-        开始时间戳: start,
-        结束时间戳: end,
-        总记录数: fileHistoryItems.length,
-      });
-      console.log('查询条件（数字形式）:', {
-        条件: `last_used >= ${start} && last_used <= ${end}`,
-        条件说明: `筛选 last_used 时间戳在 [${start}, ${end}] 范围内的记录`,
-      });
-    }
     const filtered = fileHistoryItems.filter((item) => {
       // 日期过滤
-      if (start && item.last_used < start) return false;
-      if (end && item.last_used > end) return false;
-      
+      if (!matchRange(item.last_used, start, end)) return false;
+
       // 分类过滤
       if (categoryFilter !== "all") {
         const pathLower = item.path.toLowerCase();
@@ -308,34 +268,27 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
           }
         } else if (categoryFilter === "other") {
           // 其他类型：既不是 URL，也不是 exe，也不是文件夹，也不是图片
-          if (pathLower.startsWith("http://") || pathLower.startsWith("https://") || 
+          if (pathLower.startsWith("http://") || pathLower.startsWith("https://") ||
               pathLower.endsWith(".exe") || isItemFolder(item) || isImageFile(item.path)) {
             return false;
           }
         }
       }
-      
+
       // 文件名搜索过滤
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         return item.name.toLowerCase().includes(query) || item.path.toLowerCase().includes(query);
       }
-      
+
       return true;
     });
-    if (start === start5_10Days && end === end5_10Days) {
-      console.log('5-10天筛选结果:', {
-        筛选前记录数: fileHistoryItems.length,
-        筛选后记录数: filtered.length,
-        查询条件: start !== undefined && end !== undefined
-          ? `last_used >= ${start} (${new Date(start * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}) && last_used <= ${end} (${new Date(end * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })})`
-          : '无效的时间范围',
-        条件说明: `筛选条件：last_used 时间戳 >= ${start} 且 <= ${end}`,
-      });
-      console.log('====================================');
+    // 排序：使用次数降序（并列时按时间降序）或时间降序
+    if (sortOrder === "count") {
+      filtered.sort((a, b) => (b.use_count - a.use_count) || (b.last_used - a.last_used));
     }
     return filtered;
-  }, [fileHistoryItems, historyStartDate, historyEndDate, getPeriodDateRange, searchQuery, categoryFilter]);
+  }, [fileHistoryItems, historyStartDate, historyEndDate, searchQuery, categoryFilter, sortOrder]);
 
   // 计算不同时间段的数据汇总（使用与查询完全相同的逻辑）
   const historySummary = useMemo(() => {
@@ -351,98 +304,30 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
     const { start: start10_30Days, end: end10_30Days } = parseDateRangeToTs(range10_30Days.startDate, range10_30Days.endDate);
     const { end: end30Days } = parseDateRangeToTs(range30Days.startDate, range30Days.endDate);
 
-    // 打印 5-10天 的计算参数
-    console.log('========== historySummary.tenDaysAgo 计算开始 ==========');
-    console.log('5-10天计算参数:', {
-      日期范围: {
-        开始日期: range5_10Days.startDate,
-        结束日期: range5_10Days.endDate,
-      },
-      时间戳范围: {
-        开始时间戳: start5_10Days,
-        结束时间戳: end5_10Days,
-        开始时间: start5_10Days ? new Date(start5_10Days * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无',
-        结束时间: end5_10Days ? new Date(end5_10Days * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '无',
-      },
-      筛选条件: `last_used >= ${start5_10Days} && last_used <= ${end5_10Days}`,
-      总记录数: fileHistoryItems.length,
-      计算方式: '使用与列表筛选完全相同的逻辑（简单时间范围过滤，不使用优先级判断）',
-    });
-
     let count5Days = 0;
     let count5_10Days = 0;
     let count10_30Days = 0;
     let count30DaysOlder = 0;
 
-    // 用于记录 5-10天 的匹配详情（只记录前10条，避免日志过多）
-    const matched5_10Days: Array<{ path: string; last_used: number; last_used_str: string }> = [];
-
-    // 使用与 filteredHistoryItems 完全相同的过滤逻辑（简单时间范围过滤，不使用优先级）
-    // 这样按钮统计数量和列表筛选数量会完全一致
     // 每个时间段独立计算，只根据时间范围判断，不互相影响
     fileHistoryItems.forEach((item) => {
-      // 近5天：使用与 filteredHistoryItems 完全相同的逻辑
-      if (start5Days !== undefined && item.last_used < start5Days) {
-        // 不在范围内
-      } else if (end5Days !== undefined && item.last_used > end5Days) {
-        // 不在范围内
-      } else {
-        // 在范围内（与 filteredHistoryItems 的逻辑一致）
+      // 近5天
+      if (matchRange(item.last_used, start5Days, end5Days)) {
         count5Days++;
       }
-
-      // 5-10天：使用与 filteredHistoryItems 完全相同的逻辑
-      if (start5_10Days !== undefined && item.last_used < start5_10Days) {
-        // 不在范围内
-      } else if (end5_10Days !== undefined && item.last_used > end5_10Days) {
-        // 不在范围内
-      } else {
-        // 在范围内（与 filteredHistoryItems 的逻辑一致）
+      // 5-10天
+      if (matchRange(item.last_used, start5_10Days, end5_10Days)) {
         count5_10Days++;
-        // 记录匹配的详情（只记录前10条）
-        if (matched5_10Days.length < 10) {
-          matched5_10Days.push({
-            path: item.path,
-            last_used: item.last_used,
-            last_used_str: new Date(item.last_used * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
-          });
-        }
       }
-
-      // 10-30天：使用与 filteredHistoryItems 完全相同的逻辑
-      if (start10_30Days !== undefined && item.last_used < start10_30Days) {
-        // 不在范围内
-      } else if (end10_30Days !== undefined && item.last_used > end10_30Days) {
-        // 不在范围内
-      } else {
-        // 在范围内（与 filteredHistoryItems 的逻辑一致）
+      // 10-30天
+      if (matchRange(item.last_used, start10_30Days, end10_30Days)) {
         count10_30Days++;
       }
-
-      // 30天前（只有 end，没有 start）：使用与 filteredHistoryItems 完全相同的逻辑
-      if (end30Days !== undefined && item.last_used > end30Days) {
-        // 不在范围内
-      } else if (end30Days !== undefined) {
-        // 在范围内（与 filteredHistoryItems 的逻辑一致）
+      // 30天前（只有 end，没有 start）
+      if (end30Days !== undefined && item.last_used <= end30Days) {
         count30DaysOlder++;
       }
     });
-
-    // 打印 5-10天 的计算结果
-    console.log('5-10天计算结果:', {
-      tenDaysAgo: count5_10Days,
-      计算说明: `遍历了 ${fileHistoryItems.length} 条记录，找到 ${count5_10Days} 条匹配 5-10天 范围的记录`,
-      匹配条件: `与列表筛选逻辑一致：!(last_used < ${start5_10Days}) && !(last_used > ${end5_10Days})`,
-      简化条件: `last_used >= ${start5_10Days} && last_used <= ${end5_10Days}`,
-      说明: '此数量应与点击按钮后列表筛选的数量完全一致',
-    });
-    
-    // 打印匹配的示例记录（前10条）
-    if (matched5_10Days.length > 0) {
-      console.log('匹配的示例记录（前10条）:', matched5_10Days);
-    }
-    
-    console.log('========== historySummary.tenDaysAgo 计算完成 ==========');
 
     return {
       fiveDaysAgo: count5Days,
@@ -546,138 +431,118 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
     setPendingDeleteItem(null);
   }, []);
 
+  // 打开记录（URL 用浏览器打开，本地路径用系统默认方式打开）
+  const handleOpenItem = useCallback(async (item: FileHistoryItem) => {
+    try {
+      const pathLower = item.path.toLowerCase();
+      if (pathLower.startsWith("http://") || pathLower.startsWith("https://")) {
+        await tauriApi.openUrl(item.path);
+      } else {
+        await tauriApi.launchFile(item.path);
+      }
+    } catch (error: any) {
+      console.error("打开文件历史记录失败:", error);
+      setHistoryMessage(error?.message || "打开失败，文件可能已不存在");
+      setTimeout(() => setHistoryMessage(null), 3000);
+    }
+  }, []);
+
+  // 判断当前日期筛选是否来自某个时段按钮（用于回显选中态）
+  const activePeriod = useMemo<'5days' | '5-10days' | '10-30days' | '30days' | null>(() => {
+    if (!historyStartDate && !historyEndDate) return null;
+    const periods = ['5days', '5-10days', '10-30days', '30days'] as const;
+    for (const period of periods) {
+      const range = getPeriodDateRange(period);
+      if (range.startDate === historyStartDate && range.endDate === historyEndDate) {
+        return period;
+      }
+    }
+    return null;
+  }, [historyStartDate, historyEndDate, getPeriodDateRange]);
+
+  const hasActiveFilter = Boolean(
+    historyStartDate || historyEndDate || historyDaysAgo || searchQuery || categoryFilter !== "all"
+  );
+
   return (
     <>
       <div className={`p-4 ${skeuoSurface} md:col-span-2`}>
         <div className="flex items-center justify-between mb-3">
-          <div className="font-semibold text-gray-900">文件历史</div>
-          <span className="text-xs px-2 py-1 rounded-full bg-gray-50 text-gray-700 border border-gray-200">
-            {(historyStartDate || historyEndDate) 
+          <div className="flex items-baseline gap-2 min-w-0">
+            <div className="font-semibold text-gray-900 shrink-0">文件历史</div>
+            <div className="flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
+              <span className="truncate" title={indexStatus?.file_history?.path || ""}>
+                {indexStatus?.file_history?.path || "未生成"}
+              </span>
+              <span>·</span>
+              <span className="shrink-0">更新 {formatTimestamp(indexStatus?.file_history?.mtime)}</span>
+            </div>
+          </div>
+          <span className="text-xs px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 shrink-0 font-medium">
+            {hasActiveFilter
               ? `${filteredHistoryItems.length} / ${indexStatus?.file_history?.total ?? 0} 条`
               : `${indexStatus?.file_history?.total ?? 0} 条`}
           </span>
         </div>
-        <div className="space-y-1 text-sm text-gray-700">
-          <div className="break-all">存储路径：{indexStatus?.file_history?.path || "未生成"}</div>
-          <div>更新时间：{formatTimestamp(indexStatus?.file_history?.mtime)}</div>
-        </div>
         {!isLoadingHistory && fileHistoryItems.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              onClick={() => handleClickSummaryPeriod('5days')}
-              className="group relative inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-gradient-to-br from-blue-50 to-blue-100/80 text-blue-700 border border-blue-200/70 hover:border-blue-300 hover:from-blue-100 hover:to-blue-200/80 hover:shadow-sm hover:shadow-blue-200/40 active:scale-[0.98] transition-all duration-200 cursor-pointer"
-            >
-              <span className="font-medium">近5天</span>
-              <span className="inline-flex items-center justify-center min-w-[24px] h-5 px-1.5 rounded-full bg-blue-500 text-white text-[10px] font-bold shadow-sm group-hover:bg-blue-600 transition-colors">
-                {historySummary.fiveDaysAgo}
-              </span>
-            </button>
-            <button
-              onClick={() => handleClickSummaryPeriod('5-10days')}
-              className="group relative inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-gradient-to-br from-emerald-50 to-emerald-100/80 text-emerald-700 border border-emerald-200/70 hover:border-emerald-300 hover:from-emerald-100 hover:to-emerald-200/80 hover:shadow-sm hover:shadow-emerald-200/40 active:scale-[0.98] transition-all duration-200 cursor-pointer"
-            >
-              <span className="font-medium">5-10天</span>
-              <span className="inline-flex items-center justify-center min-w-[24px] h-5 px-1.5 rounded-full bg-emerald-500 text-white text-[10px] font-bold shadow-sm group-hover:bg-emerald-600 transition-colors">
-                {historySummary.tenDaysAgo}
-              </span>
-            </button>
-            <button
-              onClick={() => handleClickSummaryPeriod('10-30days')}
-              className="group relative inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md bg-gradient-to-br from-amber-50 to-amber-100/80 text-amber-700 border border-amber-200/70 hover:border-amber-300 hover:from-amber-100 hover:to-amber-200/80 hover:shadow-sm hover:shadow-amber-200/40 active:scale-[0.98] transition-all duration-200 cursor-pointer"
-            >
-              <span className="font-medium">10-30天</span>
-              <span className="inline-flex items-center justify-center min-w-[24px] h-5 px-1.5 rounded-full bg-amber-500 text-white text-[10px] font-bold shadow-sm group-hover:bg-amber-600 transition-colors">
-                {historySummary.thirtyDaysAgo}
-              </span>
-            </button>
-            <button
-              onClick={() => handleClickSummaryPeriod('30days')}
-              className={`group relative inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border transition-all duration-200 ${
-                historySummary.older > 0
-                  ? 'bg-gradient-to-br from-slate-50 to-slate-100/80 text-slate-700 border-slate-200/70 hover:border-slate-300 hover:from-slate-100 hover:to-slate-200/80 hover:shadow-sm hover:shadow-slate-200/40 active:scale-[0.98] cursor-pointer'
-                  : 'bg-gray-50/50 text-gray-400 border-gray-200/40 cursor-not-allowed opacity-60'
-              }`}
-              disabled={historySummary.older === 0}
-            >
-              <span className="font-medium">30天前</span>
-              <span className={`inline-flex items-center justify-center min-w-[24px] h-5 px-1.5 rounded-full text-[10px] font-bold shadow-sm transition-colors ${
-                historySummary.older > 0
-                  ? 'bg-slate-500 text-white group-hover:bg-slate-600'
-                  : 'bg-gray-300 text-gray-500'
-              }`}>
-                {historySummary.older}
-              </span>
-            </button>
+            {([
+              { period: '5days', label: '近5天', count: historySummary.fiveDaysAgo },
+              { period: '5-10days', label: '5-10天', count: historySummary.tenDaysAgo },
+              { period: '10-30days', label: '10-30天', count: historySummary.thirtyDaysAgo },
+              { period: '30days', label: '30天前', count: historySummary.older },
+            ] as const).map(({ period, label, count }) => {
+              const isActive = activePeriod === period;
+              const isDisabled = period === '30days' && count === 0;
+              return (
+                <button
+                  key={period}
+                  onClick={() => handleClickSummaryPeriod(period)}
+                  className={`inline-flex items-center gap-1.5 h-8 px-3.5 text-xs rounded-full transition-all duration-200 active:scale-[0.97] ${
+                    isDisabled
+                      ? 'bg-gray-50 text-gray-400 cursor-not-allowed opacity-60'
+                      : isActive
+                        ? 'bg-indigo-600 text-white font-medium shadow-[0_2px_8px_rgba(79,70,229,0.4)] cursor-pointer'
+                        : 'bg-indigo-50/70 text-indigo-900 cursor-pointer hover:bg-indigo-100'
+                  }`}
+                  disabled={isDisabled}
+                >
+                  <span className="font-medium">{label}</span>
+                  <span className={`inline-flex items-center justify-center min-w-[22px] h-5 px-1.5 rounded-full text-[10px] font-bold transition-colors ${
+                    isDisabled
+                      ? 'bg-gray-200 text-gray-400'
+                      : isActive
+                        ? 'bg-white/25 text-white'
+                        : 'bg-indigo-200/80 text-indigo-800'
+                  }`}>
+                    {count}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
         <div className="mt-3 flex flex-col gap-3">
           {/* 第一行：分类筛选和搜索 */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            {/* 分类筛选按钮 */}
-            <div className="flex items-center gap-1 bg-gray-50/50 p-1 rounded-lg border border-gray-100">
-              <button
-                onClick={() => setCategoryFilter("all")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "all"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                全部
-              </button>
-              <button
-                onClick={() => setCategoryFilter("url")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "url"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                URL
-              </button>
-              <button
-                onClick={() => setCategoryFilter("exe")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "exe"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                EXE
-              </button>
-              <button
-                onClick={() => setCategoryFilter("folder")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "folder"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                文件夹
-              </button>
-              <button
-                onClick={() => setCategoryFilter("image")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "image"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                图片
-              </button>
-              <button
-                onClick={() => setCategoryFilter("other")}
-                className={`px-3 py-1.5 text-xs rounded-md transition-all duration-200 ${
-                  categoryFilter === "other"
-                    ? "bg-white text-blue-600 font-medium shadow-sm border border-gray-200/50"
-                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100/50"
-                }`}
-              >
-                其他
-              </button>
+            {/* 分类筛选 Chips */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {CATEGORY_OPTIONS.map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setCategoryFilter(value)}
+                  className={`px-3.5 h-7 inline-flex items-center text-xs rounded-full border transition-all duration-200 ${
+                    categoryFilter === value
+                      ? "bg-indigo-600 text-white font-medium border-indigo-600 shadow-[0_1px_4px_rgba(79,70,229,0.35)]"
+                      : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50 hover:border-gray-400"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
-            {/* 搜索框 */}
+            {/* 搜索框（Material 圆角填充样式） */}
             <div className="relative group">
               <input
                 type="text"
@@ -686,12 +551,12 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                   setSearchQuery(e.target.value);
                 }}
                 placeholder="搜索文件名..."
-                className="w-48 px-3 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 pl-8 transition-all"
+                className="w-48 h-8 px-3 pl-8 text-xs border border-transparent rounded-full bg-gray-100/90 text-gray-700 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 transition-all"
               />
-              <svg 
-                className="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-blue-500 transition-colors"
-                fill="none" 
-                viewBox="0 0 24 24" 
+              <svg
+                className="absolute left-2.5 top-1/2 transform -translate-y-1/2 w-3.5 h-3.5 text-gray-400 group-focus-within:text-indigo-500 transition-colors"
+                fill="none"
+                viewBox="0 0 24 24"
                 stroke="currentColor"
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -699,7 +564,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery("")}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5 rounded-full hover:bg-gray-100 transition-all"
+                  className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5 rounded-full hover:bg-gray-200/70 transition-all"
                 >
                   <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -711,50 +576,72 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
 
           {/* 第二行：日期筛选和操作 */}
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 bg-gray-50/50 p-1 rounded-lg border border-gray-100">
-              <div className="flex items-center gap-1.5 px-1">
-                <span className="text-xs text-gray-500">最近</span>
-                <input
-                  type="number"
-                  value={historyDaysAgo}
-                  onChange={(e) => {
-                    const newValue = e.target.value;
-                    setHistoryDaysAgo(newValue);
-                    handleQueryDaysAgo(newValue);
-                  }}
-                  placeholder="0"
-                  min="0"
-                  className="w-12 px-1.5 py-0.5 text-xs text-center border border-gray-200 rounded focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 bg-white"
-                />
-                <span className="text-xs text-gray-500">天</span>
-              </div>
-              
-              <div className="w-px h-4 bg-gray-200 mx-1"></div>
+            <div className="flex items-center gap-1.5 text-gray-500">
+              <span className="text-xs">最近</span>
+              <input
+                type="number"
+                value={historyDaysAgo}
+                onChange={(e) => {
+                  const newValue = e.target.value;
+                  setHistoryDaysAgo(newValue);
+                  handleQueryDaysAgo(newValue);
+                }}
+                placeholder="0"
+                min="0"
+                className="w-14 h-7 px-1.5 text-xs text-center bg-gray-100/90 border border-transparent rounded-full text-gray-700 focus:outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 transition-all"
+              />
+              <span className="text-xs">天</span>
+            </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="date"
-                  value={historyStartDate}
-                  onChange={(e) => {
-                    setHistoryStartDate(e.target.value);
-                  }}
-                  className="px-2 py-1 text-xs border border-gray-200 rounded focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 bg-white"
-                />
-                <span className="text-xs text-gray-400">至</span>
-                <input
-                  type="date"
-                  value={historyEndDate}
-                  onChange={(e) => {
-                    setHistoryEndDate(e.target.value);
-                  }}
-                  className="px-2 py-1 text-xs border border-gray-200 rounded focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/20 bg-white"
-                />
-              </div>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date"
+                value={historyStartDate}
+                onChange={(e) => {
+                  setHistoryStartDate(e.target.value);
+                }}
+                className="h-7 px-2.5 text-xs bg-gray-100/90 border border-transparent rounded-full text-gray-700 focus:outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 transition-all"
+              />
+              <span className="text-xs text-gray-400">至</span>
+              <input
+                type="date"
+                value={historyEndDate}
+                onChange={(e) => {
+                  setHistoryEndDate(e.target.value);
+                }}
+                className="h-7 px-2.5 text-xs bg-gray-100/90 border border-transparent rounded-full text-gray-700 focus:outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 transition-all"
+              />
             </div>
 
             <div className="flex-1"></div>
 
-            {(historyStartDate || historyEndDate || historyDaysAgo || searchQuery || categoryFilter !== "all") && (
+            {/* 排序切换 */}
+            <div className="flex items-center rounded-full bg-indigo-50/70 p-0.5">
+              <button
+                onClick={() => setSortOrder("time")}
+                className={`px-3 h-6 text-xs rounded-full transition-all ${
+                  sortOrder === "time"
+                    ? "bg-indigo-600 text-white font-medium shadow-[0_1px_4px_rgba(79,70,229,0.35)]"
+                    : "text-indigo-900/60 hover:text-indigo-900"
+                }`}
+                title="按最后使用时间降序"
+              >
+                时间
+              </button>
+              <button
+                onClick={() => setSortOrder("count")}
+                className={`px-3 h-6 text-xs rounded-full transition-all ${
+                  sortOrder === "count"
+                    ? "bg-indigo-600 text-white font-medium shadow-[0_1px_4px_rgba(79,70,229,0.35)]"
+                    : "text-indigo-900/60 hover:text-indigo-900"
+                }`}
+                title="按使用次数降序"
+              >
+                次数
+              </button>
+            </div>
+
+            {hasActiveFilter && (
               <button
                 onClick={() => {
                   setHistoryDaysAgo("");
@@ -763,10 +650,10 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                   setSearchQuery("");
                   setCategoryFilter("all");
                 }}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md transition-all"
+                className="flex items-center gap-1 px-2.5 h-7 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-full transition-all"
               >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
                 清除筛选
               </button>
@@ -774,7 +661,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
 
             <button
               onClick={handleOpenDeleteConfirm}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 hover:border-red-200 transition-all shadow-sm"
+              className="flex items-center gap-1 px-3 h-7 text-xs font-medium text-red-600 hover:bg-red-50 rounded-full transition-all active:scale-[0.97]"
               disabled={isDeletingHistory}
             >
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -783,87 +670,95 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
               {isDeletingHistory ? "删除中..." : "删除结果"}
             </button>
           </div>
-          
+
           {historyMessage && (
-            <div className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 flex items-center gap-1">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div className="text-xs text-indigo-700 bg-indigo-50 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               {historyMessage}
             </div>
           )}
         </div>
-        <div className="mt-3 border-t border-gray-100 pt-3 h-96 overflow-y-auto">
-          {isLoadingHistory && <div className="text-xs text-gray-500">加载中...</div>}
+        <div className="mt-3 border-t border-indigo-100/60 pt-3 h-96 overflow-y-auto">
+          {isLoadingHistory && <div className="text-xs text-gray-400">加载中...</div>}
           {!isLoadingHistory && filteredHistoryItems.length === 0 && (
-            <div className="text-xs text-gray-500">暂无历史记录</div>
+            <div className="text-xs text-gray-400">暂无历史记录</div>
           )}
           {!isLoadingHistory && filteredHistoryItems.length > 0 && (
-            <div className="space-y-2 text-xs text-gray-700">
-              {filteredHistoryItems.map((item, index) => (
+            <div className="space-y-0.5">
+              {filteredHistoryItems.slice(0, visibleCount).map((item, index) => {
+                const isUrl = item.path.match(/^https?:\/\//i) !== null;
+                const isExe = item.path.toLowerCase().endsWith(".exe");
+                const isFolder = isItemFolder(item);
+                const isImg = isImageFile(item.path);
+                const badgeCls = isUrl
+                  ? "text-blue-600 bg-blue-50"
+                  : isExe
+                    ? "text-purple-600 bg-purple-50"
+                    : isFolder
+                      ? "text-amber-600 bg-amber-50"
+                      : isImg
+                        ? "text-pink-600 bg-pink-50"
+                        : "text-gray-500 bg-gray-100";
+                const badgeText = isUrl ? "URL" : isExe ? "EXE" : isFolder ? "DIR" : isImg ? "IMG" : "FILE";
+                return (
                 <div
                   key={item.path}
-                  className="group p-2.5 rounded-lg border border-gray-100 bg-white hover:border-blue-200 hover:shadow-sm transition-all duration-200 flex items-start gap-3"
+                  className="group flex items-center gap-3 px-2.5 py-2 rounded-xl transition-colors duration-150 hover:bg-indigo-50/50"
                 >
-                  <span className="flex items-center justify-center w-5 h-5 rounded-full bg-gray-50 text-gray-400 text-xs font-mono shrink-0 border border-gray-100 mt-0.5">
+                  <span className="w-5 text-right text-[11px] font-mono text-gray-300 shrink-0">
                     {index + 1}
                   </span>
-                  <div className="flex-1 min-w-0 space-y-0.5">
-                    <div className="flex items-center gap-2">
-                      <div className="font-medium text-gray-900 truncate text-sm">{item.name}</div>
-                      {item.path && (item.path.startsWith("http://") || item.path.startsWith("https://")) && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100 shrink-0 font-medium uppercase tracking-wide">
-                          URL
-                        </span>
-                      )}
-                      {item.path && item.path.toLowerCase().endsWith(".exe") && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-600 border border-purple-100 shrink-0 font-medium uppercase tracking-wide">
-                          EXE
-                        </span>
-                      )}
-                      {isItemFolder(item) && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-600 border border-amber-100 shrink-0 font-medium uppercase tracking-wide">
-                          DIR
-                        </span>
-                      )}
-                      {item.path && isImageFile(item.path) && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-pink-50 text-pink-600 border border-pink-100 shrink-0 font-medium uppercase tracking-wide">
-                          图片
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500 truncate font-mono bg-gray-50/50 px-1.5 py-0.5 rounded w-fit max-w-full" title={item.path}>
-                      {item.path}
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-gray-400 pt-0.5">
-                      <span className="flex items-center gap-1">
-                        <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                        </svg>
-                        {item.use_count} 次
-                      </span>
-                      <span className="w-0.5 h-0.5 rounded-full bg-gray-300"></span>
-                      <span className="flex items-center gap-1">
-                        <svg className="w-3 h-3 opacity-70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        {formatTimestamp(item.last_used)}
+                  <span className={`text-[10px] w-9 h-5 inline-flex items-center justify-center shrink-0 font-semibold rounded-full uppercase tracking-wide ${badgeCls}`}>
+                    {badgeText}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-medium text-gray-800 truncate">{item.name}</span>
+                      <span className="text-[11px] text-gray-400 truncate" title={item.path}>
+                        {item.path}
                       </span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleOpenSingleDeleteConfirm(item)}
-                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-md transition-all duration-200"
-                    title="删除此记录"
-                    disabled={isDeletingHistory}
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
+                  <div className="flex items-center gap-2.5 text-[11px] shrink-0 font-mono text-gray-400">
+                    <span>{item.use_count} 次</span>
+                    <span className="w-1 h-1 rounded-full bg-gray-200"></span>
+                    <span title={formatTimestamp(item.last_used)}>{formatRelativeTime(item.last_used)}</span>
+                  </div>
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <button
+                      onClick={() => handleOpenItem(item)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-indigo-600 hover:bg-indigo-100/60 p-1 rounded-full transition-all duration-150"
+                      title="打开"
+                      disabled={isDeletingHistory}
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => handleOpenSingleDeleteConfirm(item)}
+                      className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-600 hover:bg-red-50 p-1 rounded-full transition-all duration-150"
+                      title="删除此记录"
+                      disabled={isDeletingHistory}
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
+              {visibleCount < filteredHistoryItems.length && (
+                <button
+                  onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                  className="w-full py-2 mt-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 rounded-full transition-all"
+                >
+                  显示更多 {filteredHistoryItems.length - visibleCount} 条 ▾
+                </button>
+              )}
             </div>
           )}
         </div>
