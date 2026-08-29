@@ -18,6 +18,11 @@ function normalizePathForCompare(path: string): string {
   return path.toLowerCase().replace(/\//g, "\\");
 }
 
+/** 延迟指定毫秒 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** 按浏览器路由规则打开 URL；未命中规则时使用系统默认浏览器 */
 async function openUrlSmart(
   url: string,
@@ -259,6 +264,8 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     const pathLower = result.path?.toLowerCase() || "";
     if (/^https?:\/\//.test(pathLower)) {
       await openUrlSmart(result.path, browserRules, tauriApi);
+      // 等待浏览器完成前台激活后再隐藏窗口，避免浏览器开在后台
+      await sleep(200);
       await hideLauncherAndResetState();
       return;
     }
@@ -272,11 +279,15 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     } else if (result.type === "url" && result.url) {
       await openUrlSmart(result.url, browserRules, tauriApi);
       // 注意：历史记录的更新已在开头统一处理
+      // 等待浏览器完成前台激活后再隐藏窗口，避免浏览器开在后台
+      await sleep(200);
       await hideLauncherAndResetState();
       return;
     } else if (result.type === "search") {
       // 处理搜索类型：打开浏览器进行搜索
       await openUrlSmart(result.path, browserRules, tauriApi);
+      // 等待浏览器完成前台激活后再隐藏窗口，避免浏览器开在后台
+      await sleep(200);
       await hideLauncherAndResetState();
       return;
     } else if (result.type === "email" && result.email) {
