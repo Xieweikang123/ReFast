@@ -2,7 +2,7 @@
  * 判断搜索结果是否已稳定，可用于控制是否允许点击/启动
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 export interface SearchStatusDetail {
   primary: string;
@@ -139,10 +139,21 @@ export function useResultsInteractivity(
 
   const [isInteractive, setIsInteractive] = useState(true);
   const [isSettling, setIsSettling] = useState(false);
+  // 粘性交互：记录已完成结算的 query。本查询内 Everything 晚到、图标提取等
+  // 只更新列表、不再重新锁定交互，避免「能点了又变灰一遍」的二次锁定观感
+  const settledQueryRef = useRef<string | null>(null);
   const hasQuery = query.trim().length > 0;
 
   useEffect(() => {
     if (!hasQuery) {
+      settledQueryRef.current = null;
+      setIsInteractive(true);
+      setIsSettling(false);
+      return;
+    }
+
+    // 本查询已结算过：保持可交互，不再锁定（状态条仍会提示正在更新）
+    if (settledQueryRef.current === query) {
       setIsInteractive(true);
       setIsSettling(false);
       return;
@@ -165,6 +176,7 @@ export function useResultsInteractivity(
 
     setIsSettling(true);
     const timer = window.setTimeout(() => {
+      settledQueryRef.current = query;
       setIsInteractive(true);
       setIsSettling(false);
     }, settleDelayMs);
