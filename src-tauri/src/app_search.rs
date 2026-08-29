@@ -3669,7 +3669,7 @@ public class IconExtractor {
     }
 
     // Check if text contains Chinese characters
-    fn contains_chinese(text: &str) -> bool {
+    pub(crate) fn contains_chinese(text: &str) -> bool {
         text.chars().any(|c| {
             matches!(c as u32,
                 0x4E00..=0x9FFF |  // CJK Unified Ideographs
@@ -4115,7 +4115,7 @@ pub mod windows {
             .collect::<String>()
     }
 
-    fn contains_chinese(text: &str) -> bool {
+    pub(crate) fn contains_chinese(text: &str) -> bool {
         text.chars().any(|c| {
             matches!(c as u32,
                 0x4E00..=0x9FFF |
