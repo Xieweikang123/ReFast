@@ -7,7 +7,7 @@ ReFast: a Windows quick-launcher (utools-style) built on Tauri 2 + React + TypeS
 - `npm run dev:tauri` — dev mode. Vite runs on fixed port 1420 (`strictPort`).
 - `npm run build` — typecheck (`tsc`) + Vite build. There is no separate lint/typecheck script; use this (or `npx tsc --noEmit`) to typecheck.
 - `cargo check` (in `src-tauri/`) — required after every Rust change (see `.cursor/rules/checkrule.mdc`). No Rust test suite exists.
-- `npm test` — vitest (jsdom, ~60s). Currently has pre-existing failures: a deterministic one in `src/utils/__tests__/launcherUtils.test.ts` (`isMathExpression` scientific-notation case) plus occasional wait-for timeouts in component tests when the whole suite runs together. Don't "fix" these unless asked; they predate your work.
+- `npm test` — vitest (jsdom, ~15–60s; fully green as of 1.0.81). Run a single file with `npx vitest run src/utils/__tests__/dateUtils.test.ts` or add `-t "name"` for a single case. Full suite includes component tests (`.tsx` under `src/components/__tests__/`) which may log React `act()` warnings — pre-existing, not failures.
 - `npm run build:tauri` — ⚠️ NOT a plain build: it first runs `scripts/sync-version.js patch` (bumps the patch version in `package.json`, `Cargo.toml`, `tauri.conf.json`), then builds. Use `tauri build` directly if you don't want a version bump.
 - `npm run release` — uploads the built MSI to GitHub Releases via `gh`. Details in `docs/RELEASE.md`. Release tags have no `v` prefix.
 
