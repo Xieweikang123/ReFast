@@ -61,6 +61,16 @@ cargoToml = cargoToml.replace(/^version = ".*"$/m, `version = "${version}"`);
 writeFileSync(cargoTomlPath, cargoToml, 'utf-8');
 console.log(`✓ 已更新 ${cargoTomlPath}`);
 
+// 同步到 Cargo.lock（CI 使用 cargo check --locked，版本不一致会失败）
+const cargoLockPath = join(rootDir, 'src-tauri', 'Cargo.lock');
+let cargoLock = readFileSync(cargoLockPath, 'utf-8');
+cargoLock = cargoLock.replace(
+  /(\[\[package\]\]\nname = "re-fast"\nversion = ")[^"]+(")/,
+  `$1${version}$2`
+);
+writeFileSync(cargoLockPath, cargoLock, 'utf-8');
+console.log(`✓ 已更新 ${cargoLockPath}`);
+
 // 同步到 tauri.conf.json
 const tauriConfPath = join(rootDir, 'src-tauri', 'tauri.conf.json');
 const tauriConf = JSON.parse(readFileSync(tauriConfPath, 'utf-8'));
