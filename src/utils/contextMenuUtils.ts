@@ -8,11 +8,85 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { AppInfo } from "../types";
 import type { SearchResult } from "./resultUtils";
 import { tauriApi } from "../api/tauri";
+import { getUrlHistoryDisplay } from "./urlDisplayUtils";
 import { isLnkPath } from "./launcherUtils";
 import { getRevealPath } from "../hooks/useLnkTargetTooltip";
 
 function normalizePathForCompare(path: string): string {
   return path.toLowerCase().replace(/\//g, "\\");
+}
+
+const CONTEXT_MENU_MIN_WIDTH = 160;
+const CONTEXT_MENU_VIEWPORT_PADDING = 8;
+
+/** 根据结果类型估算菜单高度，用于首次定位（渲染后会再按实际尺寸校正） */
+export function estimateContextMenuHeight(result: SearchResult | null): number {
+  if (!result) return 50;
+
+  switch (result.type) {
+    case "url":
+      return 360;
+    case "memo":
+      return 90;
+    case "app":
+      return 120;
+    case "file":
+    case "everything":
+      return 45;
+    default:
+      return 50;
+  }
+}
+
+/** 将菜单位置限制在视口内，避免被窗口裁切 */
+export function clampContextMenuPosition(
+  x: number,
+  y: number,
+  menuSize: { width: number; height: number },
+  viewport: { width: number; height: number } = {
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }
+): { x: number; y: number } {
+  const padding = CONTEXT_MENU_VIEWPORT_PADDING;
+  let clampedX = x;
+  let clampedY = y;
+
+  if (clampedX + menuSize.width > viewport.width - padding) {
+    clampedX = Math.max(padding, viewport.width - menuSize.width - padding);
+  }
+  if (clampedY + menuSize.height > viewport.height - padding) {
+    clampedY = Math.max(padding, viewport.height - menuSize.height - padding);
+  }
+  if (clampedX < padding) clampedX = padding;
+  if (clampedY < padding) clampedY = padding;
+
+  return { x: clampedX, y: clampedY };
+}
+
+function computeInitialContextMenuPosition(
+  clientX: number,
+  clientY: number,
+  menuWidth: number,
+  menuHeight: number
+): { x: number; y: number } {
+  let x = clientX;
+  let y = clientY;
+
+  if (x + menuWidth > window.innerWidth) {
+    x = clientX - menuWidth;
+  }
+
+  if (y + menuHeight > window.innerHeight) {
+    y = Math.max(CONTEXT_MENU_VIEWPORT_PADDING, clientY - menuHeight);
+  }
+
+  return clampContextMenuPosition(
+    x,
+    y,
+    { width: menuWidth, height: menuHeight },
+    { width: window.innerWidth, height: window.innerHeight }
+  );
 }
 
 /**
@@ -31,23 +105,15 @@ export function handleContextMenu(options: HandleContextMenuOptions): void {
 
   e.preventDefault();
   e.stopPropagation();
-  // 计算菜单位置，避免遮挡文字
-  // 如果右键位置在窗口右侧，将菜单显示在鼠标左侧
-  const windowWidth = window.innerWidth;
-  const menuWidth = 160; // min-w-[160px]
-  let x = e.clientX;
-  let y = e.clientY;
 
-  // 如果菜单会超出右边界，调整到左侧
-  if (x + menuWidth > windowWidth) {
-    x = e.clientX - menuWidth;
-  }
-
-  // 如果菜单会超出下边界，调整到上方
-  const menuHeight = 50; // 估算高度
-  if (y + menuHeight > window.innerHeight) {
-    y = e.clientY - menuHeight;
-  }
+  const menuWidth = CONTEXT_MENU_MIN_WIDTH;
+  const menuHeight = estimateContextMenuHeight(null);
+  const { x, y } = computeInitialContextMenuPosition(
+    e.clientX,
+    e.clientY,
+    menuWidth,
+    menuHeight
+  );
 
   setContextMenu({ x, y, result: (e.currentTarget as any).dataset?.result || null });
 }
@@ -71,23 +137,15 @@ export function handleContextMenuWithResult(
 
   e.preventDefault();
   e.stopPropagation();
-  // 计算菜单位置，避免遮挡文字
-  // 如果右键位置在窗口右侧，将菜单显示在鼠标左侧
-  const windowWidth = window.innerWidth;
-  const menuWidth = 160; // min-w-[160px]
-  let x = e.clientX;
-  let y = e.clientY;
 
-  // 如果菜单会超出右边界，调整到左侧
-  if (x + menuWidth > windowWidth) {
-    x = e.clientX - menuWidth;
-  }
-
-  // 如果菜单会超出下边界，调整到上方
-  const menuHeight = 50; // 估算高度
-  if (y + menuHeight > window.innerHeight) {
-    y = e.clientY - menuHeight;
-  }
+  const menuWidth = CONTEXT_MENU_MIN_WIDTH;
+  const menuHeight = estimateContextMenuHeight(result);
+  const { x, y } = computeInitialContextMenuPosition(
+    e.clientX,
+    e.clientY,
+    menuWidth,
+    menuHeight
+  );
 
   setContextMenu({ x, y, result });
 }
@@ -322,6 +380,7 @@ export interface SaveRemarkOptions {
   setEditingRemarkUrl: (url: string | null) => void;
   setRemarkText: (text: string) => void;
   tauriApi: typeof tauriApi;
+  onSaved?: () => void | Promise<void>;
 }
 
 /**
@@ -337,6 +396,7 @@ export async function saveRemark(options: SaveRemarkOptions): Promise<void> {
     setEditingRemarkUrl,
     setRemarkText,
     tauriApi,
+    onSaved,
   } = options;
 
   if (!editingRemarkUrl) return;
@@ -349,8 +409,12 @@ export async function saveRemark(options: SaveRemarkOptions): Promise<void> {
     // 更新本地备注状态（备注存储在 name 字段中）
     setUrlRemarks((prev) => {
       const newRemarks = { ...prev };
-      if (updatedItem.name) {
-        newRemarks[editingRemarkUrl] = updatedItem.name;
+      const { remark } = getUrlHistoryDisplay({
+        path: editingRemarkUrl,
+        name: updatedItem.name ?? "",
+      });
+      if (remark) {
+        newRemarks[editingRemarkUrl] = remark;
       } else {
         delete newRemarks[editingRemarkUrl];
       }
@@ -362,6 +426,7 @@ export async function saveRemark(options: SaveRemarkOptions): Promise<void> {
     setIsRemarkModalOpen(false);
     setEditingRemarkUrl(null);
     setRemarkText("");
+    await onSaved?.();
   } catch (error) {
     console.error("Failed to update remark:", error);
     alert(`保存备注失败: ${error}`);

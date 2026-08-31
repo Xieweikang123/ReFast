@@ -28,6 +28,7 @@ import {
 } from "../utils/everythingUtils";
 import { useLauncherInitialization } from "../hooks/useLauncherInitialization";
 import { useWindowSizeAdjustment } from "../hooks/useWindowSizeAdjustment";
+import { useLauncherOverlayExpansion } from "../hooks/useLauncherOverlayExpansion";
 import { useSystemFoldersInitialization } from "../hooks/useSystemFoldersInitialization";
 import { useAppIconsListener } from "../hooks/useAppIconsListener";
 import { useSearchWrappers } from "../hooks/useSearchWrappers";
@@ -911,6 +912,13 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setPinnedResult(null);
   }, [horizontalResults, visibleVerticalItems, pinnedResult]);
 
+  const isLauncherOverlayActive = contextMenu !== null || isRemarkModalOpen;
+  const { expandToMenuBottom, expandForOverlayContent } = useLauncherOverlayExpansion({
+    isActive: isLauncherOverlayActive,
+    windowWidth,
+    getMainContainer,
+  });
+
   // 使用自定义 hook 处理窗口大小调整
   useWindowSizeAdjustment({
     shouldPreserveScrollRef,
@@ -921,6 +929,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     resizeStartWidth,
     isMemoModalOpen,
     isPluginListModalOpen,
+    isOverlayActive: isLauncherOverlayActive,
     isResizing,
     windowWidth,
     debouncedCombinedResults,
@@ -1559,6 +1568,13 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setEditingRemarkUrl,
       setRemarkText,
       tauriApi,
+      onSaved: async () => {
+        await refreshFileHistoryCache();
+        const currentQuery = query.trim();
+        if (currentQuery) {
+          await searchFileHistoryWrapper(currentQuery);
+        }
+      },
     });
   }, [
     editingRemarkUrl,
@@ -1569,6 +1585,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setEditingRemarkUrl,
     setRemarkText,
     tauriApi,
+    refreshFileHistoryCache,
+    searchFileHistoryWrapper,
+    query,
   ]);
 
   const processPastedPath = useCallback(
@@ -1895,6 +1914,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       <ContextMenu
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
+        onMenuLayout={expandToMenuBottom}
         onRevealInFolder={handleRevealInFolder}
         onRequestRemoveFromAppIndex={handleRequestRemoveFromAppIndex}
         onRequestOpenAppIndexSameName={handleRequestOpenAppIndexSameName}
@@ -1959,6 +1979,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         editingRemarkUrl={editingRemarkUrl}
         remarkText={remarkText}
         setRemarkText={setRemarkText}
+        onContentLayout={expandForOverlayContent}
         onClose={() => {
           setIsRemarkModalOpen(false);
           setEditingRemarkUrl(null);

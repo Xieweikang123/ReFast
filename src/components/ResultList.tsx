@@ -225,7 +225,7 @@ const VerticalResultItem = React.memo<{
   pastedImagePath,
   pastedImageDataUrl,
   openHistory,
-  urlRemarks,
+  urlRemarks: _urlRemarks,
   getPluginIcon, 
   onLaunch, 
   onContextMenu,
@@ -428,14 +428,6 @@ const VerticalResultItem = React.memo<{
                   title="URL 历史记录"
                 >
                   URL 历史
-                </span>
-              )}
-              {result.url && urlRemarks[result.url] && (
-                <span
-                  className={`text-xs px-2 py-1 rounded-md ${theme.metaText(isSelected)} bg-gray-100`}
-                  title={`备注: ${urlRemarks[result.url]}`}
-                >
-                  📝 {urlRemarks[result.url]}
                 </span>
               )}
             </div>

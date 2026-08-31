@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   handleContextMenu,
   handleContextMenuWithResult,
+  clampContextMenuPosition,
+  estimateContextMenuHeight,
 } from "../contextMenuUtils";
 import type { SearchResult } from "../resultUtils";
 
@@ -27,6 +29,43 @@ describe("contextMenuUtils", () => {
       writable: true,
       configurable: true,
       value: 600,
+    });
+  });
+
+  describe("estimateContextMenuHeight", () => {
+    it("URL 类型菜单应使用更大的估算高度", () => {
+      const result: SearchResult = {
+        type: "url",
+        url: "https://example.com",
+        displayName: "https://example.com",
+        path: "https://example.com",
+      };
+
+      expect(estimateContextMenuHeight(result)).toBeGreaterThan(200);
+    });
+  });
+
+  describe("clampContextMenuPosition", () => {
+    it("应将超出底部的菜单上移", () => {
+      const position = clampContextMenuPosition(
+        100,
+        550,
+        { width: 160, height: 360 },
+        { width: 800, height: 600 }
+      );
+
+      expect(position.y + 360).toBeLessThanOrEqual(600 - 8);
+    });
+
+    it("应将超出右侧的菜单左移", () => {
+      const position = clampContextMenuPosition(
+        700,
+        100,
+        { width: 160, height: 200 },
+        { width: 800, height: 600 }
+      );
+
+      expect(position.x + 160).toBeLessThanOrEqual(800 - 8);
     });
   });
 
@@ -133,19 +172,22 @@ describe("contextMenuUtils", () => {
       expect(callArgs.result).toBe(result);
     });
 
-    it("应该正确计算菜单位置", () => {
+    it("URL 结果应使用更大的初始偏移避免底部裁切", () => {
       const setContextMenu = vi.fn();
+      const windowHeight = 600;
+      const clientY = windowHeight - 20;
       const result: SearchResult = {
-        type: "app",
-        displayName: "Test App",
-        path: "C:\\test\\app.exe",
+        type: "url",
+        url: "https://example.com",
+        displayName: "https://example.com",
+        path: "https://example.com",
       };
 
       const mockEvent = {
         preventDefault: vi.fn(),
         stopPropagation: vi.fn(),
         clientX: 100,
-        clientY: 100,
+        clientY,
       } as any;
 
       handleContextMenuWithResult({
@@ -155,9 +197,10 @@ describe("contextMenuUtils", () => {
       });
 
       const callArgs = setContextMenu.mock.calls[0][0];
-      expect(callArgs.x).toBe(100);
-      expect(callArgs.y).toBe(100);
-      expect(callArgs.result).toBe(result);
+      expect(callArgs.y).toBeLessThan(clientY);
+      expect(callArgs.y + estimateContextMenuHeight(result)).toBeLessThanOrEqual(
+        windowHeight - 8
+      );
     });
   });
 });
