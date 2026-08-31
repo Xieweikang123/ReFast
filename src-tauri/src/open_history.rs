@@ -161,6 +161,20 @@ pub fn save_history(app_data_dir: &Path) -> Result<(), String> {
     save_history_internal(&state, app_data_dir)
 }
 
+// Extract domain from URL for default display name
+fn extract_url_domain(url: &str) -> String {
+    if let Some(domain_start) = url.find("://") {
+        let after_protocol = &url[domain_start + 3..];
+        if let Some(slash_pos) = after_protocol.find('/') {
+            after_protocol[..slash_pos].to_string()
+        } else {
+            after_protocol.to_string()
+        }
+    } else {
+        url.to_string()
+    }
+}
+
 // Add a file path or URL to open_history (similar to file_history::add_file_path)
 pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
     // Normalize path: trim whitespace and remove trailing backslashes/slashes
@@ -172,19 +186,7 @@ pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
     let (normalized_path_str, is_folder, name) = if is_url {
         // Handle URL
         let url = trimmed.to_string();
-        
-        // Extract domain name as the display name
-        let name = if let Some(domain_start) = url.find("://") {
-            let after_protocol = &url[domain_start + 3..];
-            if let Some(slash_pos) = after_protocol.find('/') {
-                after_protocol[..slash_pos].to_string()
-            } else {
-                after_protocol.to_string()
-            }
-        } else {
-            url.clone()
-        };
-        
+        let name = extract_url_domain(&url);
         (url, false, Some(name))
     } else {
         // Handle file system path
@@ -238,8 +240,13 @@ pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
         item.use_count += 1;
         eprintln!("[open_history::add_item] 路径已存在: {}, use_count: {} -> {}", normalized_path_str, old_count, item.use_count);
         item.is_folder = Some(is_folder); // Update is_folder in case it changed
-        if name.is_some() {
-            item.name = name; // Update name if provided
+        if is_url {
+            // URL 再次打开时保留用户备注，不要用域名覆盖
+            if item.name.is_none() {
+                item.name = name;
+            }
+        } else if name.is_some() {
+            item.name = name;
         }
     } else {
         eprintln!("[open_history::add_item] 创建新项: {}, use_count: 1", normalized_path_str);

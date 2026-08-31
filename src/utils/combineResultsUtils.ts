@@ -28,6 +28,7 @@ import {
   ensureUrlScheme,
 } from "./launcherUtils";
 import { detectSearchIntent, getSearchResultItem } from "./searchUtils";
+import { getUrlHistoryDisplay, getUrlResultDisplayName } from "./urlDisplayUtils";
 import { resolveBrowserForUrl } from "./browserRules";
 import {
   parseSearchFilter,
@@ -309,7 +310,11 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
         // URL 包含查询内容，或者备注包含查询内容，则添加到历史 URL 列表
         const urlMatches = keyLower.includes(queryLower);
         const remark = urlRemarks[key];
-        const remarkMatches = remark && remark.toLowerCase().includes(queryLower);
+        const remarkText = remark
+          ? getUrlHistoryDisplay({ path: key, name: remark }).remark
+          : null;
+        const remarkMatches =
+          remarkText && remarkText.toLowerCase().includes(queryLower);
 
         if (urlMatches || remarkMatches) {
           historyUrls.push({ url: key, timestamp });
@@ -363,7 +368,7 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   const urlResults: SearchResult[] = allUrls.map((url) => ({
     type: "url" as const,
     url,
-    displayName: url,
+    displayName: getUrlResultDisplayName(url, urlRemarks[url]),
     path: url,
     browser: browserForUrl(url, options.browserRules),
   }));
@@ -750,7 +755,10 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
             type: "url" as const,
             url: file.path,
             file,
-            displayName: file.name,
+            displayName: getUrlResultDisplayName(
+              file.path,
+              options.urlRemarks[file.path] ?? file.name
+            ),
             path: file.path,
             browser: browserForUrl(file.path, options.browserRules),
           };

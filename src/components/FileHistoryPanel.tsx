@@ -4,6 +4,7 @@ import { tauriApi } from "../api/tauri";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { formatSimpleDateTime } from "../utils/dateUtils";
 import { isFolderLikePath } from "../utils/launcherUtils";
+import { getUrlHistoryDisplay } from "../utils/urlDisplayUtils";
 
 interface FileHistoryPanelProps {
   indexStatus?: IndexStatus | null;
@@ -91,6 +92,46 @@ const isImageFile = (path: string): boolean => {
   const imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif', '.heic', '.heif'];
   return imageExtensions.some(ext => pathLower.endsWith(ext));
 };
+
+function renderHistoryItemContent(item: FileHistoryItem, isUrl: boolean) {
+  if (isUrl) {
+    const { hostname, remark } = getUrlHistoryDisplay(item);
+    return (
+      <div className="flex-1 min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          {remark ? (
+            <>
+              <span className="shrink-0 rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+                备注
+              </span>
+              <span className="truncate text-sm font-medium text-gray-800" title={remark}>
+                {remark}
+              </span>
+            </>
+          ) : (
+            <span className="truncate text-sm font-medium text-gray-800" title={hostname}>
+              {hostname}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 truncate text-[11px] text-gray-400" title={item.path}>
+          {item.path}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-w-0">
+      <div className="truncate text-sm font-medium text-gray-800" title={item.name}>
+        {item.name}
+      </div>
+      <div className="mt-0.5 truncate text-[11px] text-gray-400" title={item.path}>
+        {item.path}
+      </div>
+    </div>
+  );
+}
 
 export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded-lg border border-gray-200 shadow-sm", onRefresh, refreshKey }: FileHistoryPanelProps & { refreshKey?: number }) {
   const [fileHistoryItems, setFileHistoryItems] = useState<FileHistoryItem[]>([]);
@@ -550,7 +591,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                 onChange={(e) => {
                   setSearchQuery(e.target.value);
                 }}
-                placeholder="搜索文件名..."
+                placeholder={categoryFilter === "url" ? "搜索备注或 URL..." : "搜索文件名..."}
                 className="w-48 h-8 px-3 pl-8 text-xs border border-transparent rounded-full bg-gray-100/90 text-gray-700 placeholder:text-gray-400 focus:outline-none focus:bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/15 transition-all"
               />
               <svg
@@ -713,14 +754,7 @@ export function FileHistoryPanel({ indexStatus, skeuoSurface = "bg-white rounded
                   <span className={`text-[10px] w-9 h-5 inline-flex items-center justify-center shrink-0 font-semibold rounded-full uppercase tracking-wide ${badgeCls}`}>
                     {badgeText}
                   </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-sm font-medium text-gray-800 truncate">{item.name}</span>
-                      <span className="text-[11px] text-gray-400 truncate" title={item.path}>
-                        {item.path}
-                      </span>
-                    </div>
-                  </div>
+                  {renderHistoryItemContent(item, isUrl)}
                   <div className="flex items-center gap-2.5 text-[11px] shrink-0 font-mono text-gray-400">
                     <span>{item.use_count} 次</span>
                     <span className="w-1 h-1 rounded-full bg-gray-200"></span>

@@ -24,6 +24,7 @@ export interface UseWindowSizeAdjustmentOptions {
   // States
   isMemoModalOpen: boolean;
   isPluginListModalOpen: boolean;
+  isOverlayActive?: boolean;
   isResizing: boolean;
   windowWidth: number;
   debouncedCombinedResults: SearchResult[];
@@ -53,6 +54,7 @@ export function useWindowSizeAdjustment(
     resizeStartWidth,
     isMemoModalOpen,
     isPluginListModalOpen,
+    isOverlayActive = false,
     isResizing,
     windowWidth,
     debouncedCombinedResults,
@@ -67,9 +69,11 @@ export function useWindowSizeAdjustment(
   const lastAppliedHeightRef = useRef<number | null>(null);
   const windowWidthRef = useRef(windowWidth);
   const isMemoModalOpenRef = useRef(isMemoModalOpen);
+  const isOverlayActiveRef = useRef(isOverlayActive);
 
   windowWidthRef.current = windowWidth;
   isMemoModalOpenRef.current = isMemoModalOpen;
+  isOverlayActiveRef.current = isOverlayActive;
 
   const clearPendingAdjust = () => {
     if (pendingTimeoutRef.current !== null) {
@@ -91,7 +95,7 @@ export function useWindowSizeAdjustment(
   };
 
   const applyWindowSize = (container: HTMLElement) => {
-    if (isMemoModalOpenRef.current) {
+    if (isMemoModalOpenRef.current || isOverlayActiveRef.current) {
       return;
     }
 
@@ -137,7 +141,7 @@ export function useWindowSizeAdjustment(
 
   // 用 ResizeObserver 跟踪内容卡片真实高度，避免结果变少后窗口仍保持过大
   useEffect(() => {
-    if (isMemoModalOpen || isPluginListModalOpen) {
+    if (isMemoModalOpen || isPluginListModalOpen || isOverlayActive) {
       return;
     }
 
@@ -159,11 +163,11 @@ export function useWindowSizeAdjustment(
       observer.disconnect();
     };
     // containerRef / getMainContainer 是稳定引用或闭包读取最新值；只在模态态切换时重绑
-  }, [isMemoModalOpen, isPluginListModalOpen]);
+  }, [isMemoModalOpen, isPluginListModalOpen, isOverlayActive]);
 
   // 结果数量变化时强制再测一次（分组折叠等不一定触发 ResizeObserver 同元素尺寸变化时的兜底）
   useEffect(() => {
-    if (isMemoModalOpen || isPluginListModalOpen) {
+    if (isMemoModalOpen || isPluginListModalOpen || isOverlayActive) {
       return;
     }
     const whiteContainer = containerRef?.current ?? getMainContainer();
@@ -171,7 +175,7 @@ export function useWindowSizeAdjustment(
       lastAppliedHeightRef.current = null;
       adjustWindowSizeInternal(50);
     }
-  }, [results.length, debouncedCombinedResults.length]);
+  }, [results.length, debouncedCombinedResults.length, isOverlayActive]);
 
   // 保存滚动位置并调整窗口大小（当 debouncedCombinedResults 变化时）
   useEffect(() => {
@@ -210,7 +214,7 @@ export function useWindowSizeAdjustment(
     }
 
     // 如果备忘录模态框打开，不在这里调整窗口大小（由专门的 useEffect 处理）
-    if (isMemoModalOpen) {
+    if (isMemoModalOpen || isOverlayActive) {
       return;
     }
 
@@ -220,11 +224,11 @@ export function useWindowSizeAdjustment(
     return () => {
       clearPendingAdjust();
     };
-  }, [debouncedCombinedResults, isMemoModalOpen, windowWidth]);
+  }, [debouncedCombinedResults, isMemoModalOpen, isOverlayActive, windowWidth]);
 
   // 调整窗口大小（当 results 状态更新时）
   useEffect(() => {
-    if (isMemoModalOpen) {
+    if (isMemoModalOpen || isOverlayActive) {
       return;
     }
 
@@ -233,11 +237,11 @@ export function useWindowSizeAdjustment(
     return () => {
       clearPendingAdjust();
     };
-  }, [results, isMemoModalOpen, windowWidth]);
+  }, [results, isMemoModalOpen, isOverlayActive, windowWidth]);
 
   // 当 windowWidth 变化时更新窗口大小（但不包括调整大小过程中）
   useEffect(() => {
-    if (isMemoModalOpen || isPluginListModalOpen || isResizing) {
+    if (isMemoModalOpen || isPluginListModalOpen || isResizing || isOverlayActive) {
       return;
     }
 
@@ -253,7 +257,7 @@ export function useWindowSizeAdjustment(
     return () => {
       clearTimeout(timer);
     };
-  }, [windowWidth, isMemoModalOpen, isPluginListModalOpen, isResizing]);
+  }, [windowWidth, isMemoModalOpen, isPluginListModalOpen, isResizing, isOverlayActive]);
 
   // 处理窗口宽度调整（鼠标拖拽）
   useEffect(() => {

@@ -64,48 +64,67 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
   const queryRef = useRef(query);
   queryRef.current = query;
   const combineTimerRef = useRef<number | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const [combinedResults, setCombinedResults] = useState<SearchResult[]>([]);
   const [combinedResultsQuery, setCombinedResultsQuery] = useState("");
   const debouncedResultsQueryRef = useRef<string>("");
 
+  const applyCombinedResults = (queryForCombine: string, useTransition: boolean) => {
+    const opts = optionsRef.current;
+    const everythingForCombine =
+      queryForCombine.trim().length <= 1
+        ? []
+        : opts.everythingResults.slice(0, 40);
+    const results = computeCombinedResults({
+      query: queryForCombine,
+      aiAnswer: opts.aiAnswer,
+      filteredApps: opts.filteredApps,
+      filteredFiles: opts.filteredFiles,
+      filteredMemos: opts.filteredMemos,
+      systemFolders: opts.systemFolders,
+      everythingResults: everythingForCombine,
+      filteredPlugins: opts.filteredPlugins,
+      detectedUrls: opts.detectedUrls,
+      detectedEmails: opts.detectedEmails,
+      detectedJson: opts.detectedJson,
+      directPathResult: opts.directPathResult,
+      openHistory: opts.openHistory,
+      urlRemarks: opts.urlRemarks,
+      searchEngines: opts.searchEngines,
+      browserRules: opts.browserRules,
+      apps: opts.apps,
+      extractedFileIconsRef: opts.extractedFileIconsRef,
+      suppressedBrokenPathsRef: opts.suppressedBrokenPathsRef,
+    });
+
+    const commit = () => {
+      setCombinedResults(results);
+      setCombinedResultsQuery(queryForCombine);
+      debouncedResultsQueryRef.current = queryForCombine;
+    };
+
+    if (useTransition) {
+      startTransition(commit);
+    } else {
+      commit();
+    }
+  };
+
+  // 备注 / 打开历史变化：立即重算，保证保存备注后标题马上更新
+  useEffect(() => {
+    applyCombinedResults(queryRef.current, false);
+  }, [urlRemarks, openHistory]);
+
+  // 搜索源变化：短防抖，避免输入卡顿
   useEffect(() => {
     if (combineTimerRef.current !== null) {
       clearTimeout(combineTimerRef.current);
     }
     combineTimerRef.current = window.setTimeout(() => {
       combineTimerRef.current = null;
-      const queryForCombine = queryRef.current;
-      const everythingForCombine =
-        queryForCombine.trim().length <= 1
-          ? []
-          : everythingResults.slice(0, 40);
-      startTransition(() => {
-        const results = computeCombinedResults({
-          query: queryForCombine,
-          aiAnswer,
-          filteredApps,
-          filteredFiles,
-          filteredMemos,
-          systemFolders,
-          everythingResults: everythingForCombine,
-          filteredPlugins,
-          detectedUrls,
-          detectedEmails,
-          detectedJson,
-          directPathResult,
-          openHistory,
-          urlRemarks,
-          searchEngines,
-          browserRules,
-          apps,
-          extractedFileIconsRef,
-          suppressedBrokenPathsRef,
-        });
-        setCombinedResults(results);
-        setCombinedResultsQuery(queryForCombine);
-        debouncedResultsQueryRef.current = queryForCombine;
-      });
+      applyCombinedResults(queryRef.current, true);
     }, 32);
     return () => {
       if (combineTimerRef.current !== null) {
@@ -122,8 +141,6 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     detectedUrls,
     detectedEmails,
     detectedJson,
-    openHistory,
-    urlRemarks,
     aiAnswer,
     searchEngines,
     browserRules,

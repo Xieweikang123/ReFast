@@ -9,6 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
 import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule, PluginContext } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
+import { getUrlHistoryDisplay } from "../utils/urlDisplayUtils";
 
 // 全局标志，确保整个应用只有一个插件快捷键监听器
 let globalPluginHotkeyListenerSetup = false;
@@ -243,7 +244,13 @@ export function useLauncherInitialization(
             try {
               const item = await tauriApi.getOpenHistoryItem(key);
               if (item?.name) {
-                remarks[key] = item.name;
+                const { remark } = getUrlHistoryDisplay({
+                  path: key,
+                  name: item.name,
+                });
+                if (remark) {
+                  remarks[key] = remark;
+                }
               }
             } catch (error) {
               // 忽略单个项加载失败

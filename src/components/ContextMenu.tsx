@@ -1,5 +1,6 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useLayoutEffect, useState } from "react";
 import type { SearchResult } from "../utils/resultUtils";
+import { clampContextMenuPosition } from "../utils/contextMenuUtils";
 
 function getAppIndexSearchQueryFromResult(result: SearchResult): string {
   const raw =
@@ -13,6 +14,8 @@ function getAppIndexSearchQueryFromResult(result: SearchResult): string {
 interface ContextMenuProps {
   menu: { x: number; y: number; result: SearchResult } | null;
   onClose: () => void;
+  /** 菜单布局完成后回调，用于临时撑高启动器窗口 */
+  onMenuLayout?: (info: { bottom: number }) => void;
   onRevealInFolder: () => Promise<void>;
   /** 应用类型：请求从索引删除（由父级展示确认框后再执行） */
   onRequestRemoveFromAppIndex?: (info: {
@@ -41,6 +44,7 @@ interface ContextMenuProps {
 export function ContextMenu({
   menu,
   onClose,
+  onMenuLayout,
   onRevealInFolder,
   onRequestRemoveFromAppIndex,
   onRequestOpenAppIndexSameName,
@@ -59,6 +63,35 @@ export function ContextMenu({
   onCloseMemoModal,
 }: ContextMenuProps) {
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
+  const onMenuLayoutRef = useRef(onMenuLayout);
+
+  onMenuLayoutRef.current = onMenuLayout;
+
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportHeight(window.innerHeight);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!menu || !contextMenuRef.current) {
+      setPosition(null);
+      return;
+    }
+
+    const rect = contextMenuRef.current.getBoundingClientRect();
+    const clamped = clampContextMenuPosition(menu.x, menu.y, {
+      width: rect.width,
+      height: rect.height,
+    });
+    setPosition(clamped);
+    onMenuLayoutRef.current?.({ bottom: clamped.y + rect.height });
+  }, [menu, viewportHeight]);
 
   // Close context menu when clicking outside
   useEffect(() => {
@@ -146,8 +179,8 @@ export function ContextMenu({
       ref={contextMenuRef}
       className="fixed bg-white border border-gray-200 text-gray-800 rounded-lg shadow-xl py-1 min-w-[160px] z-50"
       style={{
-        left: `${menu.x}px`,
-        top: `${menu.y}px`,
+        left: `${(position ?? menu).x}px`,
+        top: `${(position ?? menu).y}px`,
       }}
     >
       {canRevealInFolder && (
