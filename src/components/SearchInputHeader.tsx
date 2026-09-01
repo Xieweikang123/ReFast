@@ -1,5 +1,7 @@
 import React, { startTransition, useEffect, useMemo, useRef, useState } from "react";
 import { parseSearchFilter } from "../utils/searchFilterUtils";
+import { getSearchEngineIntent } from "../utils/searchHintUtils";
+import type { SearchEngineConfig } from "../types";
 
 interface LayoutConfig {
   header: string;
@@ -23,6 +25,7 @@ interface SearchInputHeaderProps {
   onStartWindowDragging: () => void;
   contextMenu: any; // Using any for simplicity as it's just checking for null
   setContextMenu: (menu: any) => void;
+  searchEngines?: SearchEngineConfig[];
 }
 
 export const SearchInputHeader = React.memo(function SearchInputHeader({
@@ -39,6 +42,7 @@ export const SearchInputHeader = React.memo(function SearchInputHeader({
   onStartWindowDragging,
   contextMenu,
   setContextMenu,
+  searchEngines = [],
 }: SearchInputHeaderProps) {
   const [localQuery, setLocalQuery] = useState(query);
   const lastEmittedRef = useRef(query);
@@ -73,6 +77,11 @@ export const SearchInputHeader = React.memo(function SearchInputHeader({
     const parsed = parseSearchFilter(localQuery);
     return parsed.hasFilter ? parsed.prefixLabel : undefined;
   }, [localQuery]);
+
+  const searchEngineHint = useMemo(() => {
+    if (filterHint) return undefined;
+    return getSearchEngineIntent(localQuery, searchEngines)?.engine.name;
+  }, [filterHint, localQuery, searchEngines]);
 
   useEffect(() => {
     const el = inputRef.current;
@@ -169,6 +178,14 @@ export const SearchInputHeader = React.memo(function SearchInputHeader({
               title={`过滤器：${filterHint}（前缀 a/f/p/m/e + 空格）`}
             >
               {filterHint}
+            </span>
+          )}
+          {!filterHint && searchEngineHint && (
+            <span
+              className="flex-shrink-0 text-xs font-medium px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 border border-indigo-100"
+              title={`网页搜索：${searchEngineHint}（此前缀默认只搜网页）`}
+            >
+              {searchEngineHint}
             </span>
           )}
           <input

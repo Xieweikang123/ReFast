@@ -96,3 +96,38 @@ describe("computeCombinedResults 同名去重", () => {
     expect(paths).not.toContain("d:\\docs\\gitlite");
   });
 });
+
+describe("computeCombinedResults 搜索引擎前缀", () => {
+  const engines = [
+    { prefix: "g ", url: "https://google.com/search?q={query}", name: "Google" },
+  ];
+
+  it("默认只保留网页搜索结果", () => {
+    const results = computeCombinedResults(
+      baseOptions({
+        query: "g chrome",
+        searchEngines: engines,
+        filteredApps: [
+          { name: "Chrome", path: "C:\\Chrome\\chrome.exe" },
+        ],
+      })
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0].type).toBe("search");
+  });
+
+  it("仍搜本地时保留网页搜索并合并应用", () => {
+    const results = computeCombinedResults(
+      baseOptions({
+        query: "g chrome",
+        searchEngines: engines,
+        includeLocalWithSearchEngine: true,
+        filteredApps: [
+          { name: "Chrome", path: "C:\\Chrome\\chrome.exe" },
+        ],
+      })
+    );
+    expect(results[0].type).toBe("search");
+    expect(results.some((r) => r.type === "app")).toBe(true);
+  });
+});

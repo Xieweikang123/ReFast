@@ -146,3 +146,42 @@ export function resultMatchesScope(
       return true;
   }
 }
+
+/** Everything 自动搜索的最短关键词长度（JS string length，中文一字为 1） */
+export const EVERYTHING_AUTO_MIN_KEYWORD_LENGTH = 2;
+
+export function isShortEverythingKeyword(keyword: string): boolean {
+  const trimmed = keyword.trim();
+  return (
+    trimmed.length > 0 &&
+    trimmed.length < EVERYTHING_AUTO_MIN_KEYWORD_LENGTH
+  );
+}
+
+/** 是否应自动/强制走 Everything：达到最短长度，或用户已对当前关键词点过手动搜索 */
+export function shouldAutoSearchEverything(
+  keyword: string,
+  forceKeyword?: string | null
+): boolean {
+  const trimmed = keyword.trim();
+  if (!trimmed) return false;
+  if (trimmed.length >= EVERYTHING_AUTO_MIN_KEYWORD_LENGTH) return true;
+  return forceKeyword === trimmed;
+}
+
+/** 单字跳过磁盘搜索时，是否显示「点一下走 Everything」提示 */
+export function shouldShowEverythingSkippedHint(options: {
+  query: string;
+  isEverythingAvailable: boolean;
+  isSearchingEverything: boolean;
+  forceKeyword?: string | null;
+}): boolean {
+  if (!options.isEverythingAvailable) return false;
+  if (options.isSearchingEverything) return false;
+  const parsed = parseSearchFilter(options.query);
+  if (!hasSearchKeyword(parsed)) return false;
+  if (!shouldSearchSource(parsed.scope, "everything")) return false;
+  if (!isShortEverythingKeyword(parsed.keyword)) return false;
+  if (options.forceKeyword === parsed.keyword) return false;
+  return true;
+}

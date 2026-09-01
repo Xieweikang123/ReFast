@@ -5,6 +5,11 @@
 
 import { startTransition, useEffect, useRef, useState } from "react";
 import { computeCombinedResults } from "../utils/combineResultsUtils";
+import { shouldAutoSearchEverything } from "../utils/searchFilterUtils";
+import {
+  EVERYTHING_LAUNCHER_MERGE_LIMIT,
+  getEffectiveSearchKeyword,
+} from "../utils/searchHintUtils";
 import type { SearchResult } from "../utils/resultUtils";
 import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule } from "../types";
 import type { EverythingResult } from "../types";
@@ -31,6 +36,10 @@ export interface UseCombinedResultsOptions {
   /** Incremented when extractedFileIconsRef contents change (forces recombine) */
   extractedIconsVersion?: number;
   suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
+  /** 用户对当前短关键词手动点过 Everything 时，允许把磁盘结果并入列表 */
+  forceEverythingKeyword?: string | null;
+  /** 搜索引擎前缀命中时仍合并本地/磁盘结果 */
+  includeLocalWithSearchEngine?: boolean;
 }
 
 /**
@@ -59,6 +68,8 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     extractedFileIconsRef,
     extractedIconsVersion = 0,
     suppressedBrokenPathsRef,
+    forceEverythingKeyword = null,
+    includeLocalWithSearchEngine = false,
   } = options;
 
   const queryRef = useRef(query);
@@ -73,10 +84,12 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
 
   const applyCombinedResults = (queryForCombine: string, useTransition: boolean) => {
     const opts = optionsRef.current;
-    const everythingForCombine =
-      queryForCombine.trim().length <= 1
-        ? []
-        : opts.everythingResults.slice(0, 40);
+    const everythingForCombine = shouldAutoSearchEverything(
+      getEffectiveSearchKeyword(queryForCombine, opts.searchEngines),
+      opts.forceEverythingKeyword
+    )
+      ? opts.everythingResults.slice(0, EVERYTHING_LAUNCHER_MERGE_LIMIT)
+      : [];
     const results = computeCombinedResults({
       query: queryForCombine,
       aiAnswer: opts.aiAnswer,
@@ -97,6 +110,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
       apps: opts.apps,
       extractedFileIconsRef: opts.extractedFileIconsRef,
       suppressedBrokenPathsRef: opts.suppressedBrokenPathsRef,
+      includeLocalWithSearchEngine: opts.includeLocalWithSearchEngine,
     });
 
     const commit = () => {
@@ -150,6 +164,8 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     extractedFileIconsRef,
     extractedIconsVersion,
     suppressedBrokenPathsRef,
+    forceEverythingKeyword,
+    includeLocalWithSearchEngine,
   ]);
 
   const isStable = combinedResultsQuery === query;

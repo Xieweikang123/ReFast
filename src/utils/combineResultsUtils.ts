@@ -79,6 +79,8 @@ export interface CombineResultsOptions {
   extractedFileIconsRef: React.MutableRefObject<Map<string, string>>;
   /** 本次会话内已确认失效的快捷方式，合并结果时排除 */
   suppressedBrokenPathsRef?: React.MutableRefObject<Set<string>>;
+  /** 搜索引擎前缀命中时仍合并本地/磁盘结果 */
+  includeLocalWithSearchEngine?: boolean;
 }
 
 /** 历史/Everything 结果是否为文件夹：同名应用去重时不应丢掉项目目录 */
@@ -113,8 +115,25 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   } = options;
 
   const parsed = parseSearchFilter(rawQuery);
-  const query = parsed.keyword;
   const scope = parsed.scope;
+  const searchIntent =
+    !parsed.hasFilter && shouldSearchSource(scope, "searchEngine")
+      ? detectSearchIntent(rawQuery, searchEngines)
+      : null;
+  const searchEngineResult: SearchResult | null = searchIntent
+    ? {
+        ...getSearchResultItem(searchIntent.engine, searchIntent.keyword),
+        type: "search" as const,
+      }
+    : null;
+
+  // 默认：搜索引擎前缀只保留网页搜索。用户点「仍搜本地」后继续合并其它源
+  if (searchEngineResult && !options.includeLocalWithSearchEngine) {
+    return [searchEngineResult];
+  }
+
+  const query =
+    searchIntent?.keyword || parsed.keyword;
 
   // 纯前缀或空查询：无关键词时不显示结果（AI 回答除外）
   if (!hasSearchKeyword(parsed) && !aiAnswer) {
@@ -431,23 +450,6 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       const normalizedPath = normalizePathForHistory(folder.path);
       fileHistoryMap.get(normalizedPath);
     });
-  }
-
-  // 检测搜索意图：过滤器前缀优先，已命中过滤器时不再走搜索引擎
-  // 搜索引擎前缀基于原始输入匹配（如 "g keyword"）
-  const searchIntent =
-    !parsed.hasFilter && shouldSearchSource(scope, "searchEngine")
-      ? detectSearchIntent(rawQuery, searchEngines)
-      : null;
-
-  // 如果检测到搜索引擎前缀，只返回搜索引擎结果，屏蔽其他所有搜索
-  if (searchIntent) {
-    const searchResultItem = getSearchResultItem(searchIntent.engine, searchIntent.keyword);
-    const searchResult: SearchResult = {
-      ...searchResultItem,
-      type: "search" as const,
-    };
-    return [searchResult];
   }
 
   let otherResults: SearchResult[] = [
@@ -1043,6 +1045,13 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   );
 
   allResultsToSort.sort((a, b) => compareSearchResults(a, b, sortOptions));
+
+  if (searchEngineResult) {
+    return [
+      searchEngineResult,
+      ...allResultsToSort.filter((result) => result.type !== "search"),
+    ];
+  }
 
   return allResultsToSort;
 }

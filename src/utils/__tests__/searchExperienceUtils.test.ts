@@ -4,7 +4,17 @@ import {
   hasSearchKeyword,
   shouldSearchSource,
   resultMatchesScope,
+  isShortEverythingKeyword,
+  shouldAutoSearchEverything,
+  shouldShowEverythingSkippedHint,
 } from "../searchFilterUtils";
+import {
+  getEffectiveSearchKeyword,
+  resolveSearchHintKind,
+  shouldShowEverythingTruncatedHint,
+  shouldShowEverythingUnavailableHint,
+  shouldShowSearchEngineLocalHiddenHint,
+} from "../searchHintUtils";
 import {
   pushQueryHistory,
   getQueryHistory,
@@ -57,6 +67,147 @@ describe("searchFilterUtils", () => {
     expect(resultMatchesScope("app", "app")).toBe(true);
     expect(resultMatchesScope("everything", "app")).toBe(false);
     expect(resultMatchesScope("everything", "file")).toBe(true);
+  });
+});
+
+describe("Everything 短词门槛", () => {
+  it("中文单字视为短词，两字不是", () => {
+    expect(isShortEverythingKeyword("虚")).toBe(true);
+    expect(isShortEverythingKeyword("虚拟")).toBe(false);
+    expect(isShortEverythingKeyword("a")).toBe(true);
+    expect(isShortEverythingKeyword("ab")).toBe(false);
+  });
+
+  it("未点过时单字不自动搜 Everything，点过后放行", () => {
+    expect(shouldAutoSearchEverything("虚")).toBe(false);
+    expect(shouldAutoSearchEverything("虚", "虚")).toBe(true);
+    expect(shouldAutoSearchEverything("虚拟")).toBe(true);
+    expect(shouldAutoSearchEverything("虚", "虚拟")).toBe(false);
+  });
+
+  it("Everything 可用且为单字时显示提示", () => {
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "虚",
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "虚拟",
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "虚",
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+        forceKeyword: "虚",
+      })
+    ).toBe(false);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "a chrome",
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "e 虚",
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "虚",
+        isEverythingAvailable: false,
+        isSearchingEverything: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldShowEverythingSkippedHint({
+        query: "虚",
+        isEverythingAvailable: true,
+        isSearchingEverything: true,
+      })
+    ).toBe(false);
+  });
+});
+
+describe("搜索提示优先级", () => {
+  const engines = [
+    { prefix: "g ", url: "https://google.com/search?q={query}", name: "Google" },
+  ];
+
+  it("搜索引擎前缀优先于其它提示", () => {
+    expect(
+      resolveSearchHintKind({
+        query: "g chrome",
+        searchEngines: engines,
+        includeLocalWithSearchEngine: false,
+        isEverythingAvailable: false,
+        isSearchingEverything: false,
+        everythingTotalCount: 9000,
+      })
+    ).toBe("engine-local-hidden");
+  });
+
+  it("点过仍搜本地后不再提示网页搜索", () => {
+    expect(
+      shouldShowSearchEngineLocalHiddenHint({
+        query: "g chrome",
+        searchEngines: engines,
+        includeLocalWithSearchEngine: true,
+      })
+    ).toBe(false);
+  });
+
+  it("Everything 未运行且关键词够长时提示", () => {
+    expect(
+      resolveSearchHintKind({
+        query: "虚拟",
+        searchEngines: [],
+        includeLocalWithSearchEngine: false,
+        isEverythingAvailable: false,
+        isSearchingEverything: false,
+        everythingTotalCount: null,
+      })
+    ).toBe("everything-unavailable");
+    expect(
+      shouldShowEverythingUnavailableHint({
+        query: "虚",
+        isEverythingAvailable: false,
+      })
+    ).toBe(false);
+  });
+
+  it("磁盘命中超过合并上限时提示截断", () => {
+    expect(
+      shouldShowEverythingTruncatedHint({ everythingTotalCount: 40 })
+    ).toBe(false);
+    expect(
+      shouldShowEverythingTruncatedHint({ everythingTotalCount: 41 })
+    ).toBe(true);
+    expect(
+      resolveSearchHintKind({
+        query: "虚拟",
+        searchEngines: [],
+        includeLocalWithSearchEngine: false,
+        isEverythingAvailable: true,
+        isSearchingEverything: false,
+        everythingTotalCount: 8000,
+      })
+    ).toBe("everything-truncated");
+  });
+
+  it("有效搜索关键词去掉搜索引擎前缀", () => {
+    expect(getEffectiveSearchKeyword("g chrome", engines)).toBe("chrome");
+    expect(getEffectiveSearchKeyword("虚拟", engines)).toBe("虚拟");
   });
 });
 

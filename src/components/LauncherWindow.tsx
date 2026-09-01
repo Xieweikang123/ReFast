@@ -39,6 +39,11 @@ import { useScrollbarStyle } from "../hooks/useScrollbarStyle";
 import { searchApplicationsFrontend } from "../utils/searchUtils";
 import { pathNeedsExtractedIcon } from "../utils/launcherUtils";
 import {
+  EVERYTHING_LAUNCHER_MERGE_LIMIT,
+  getEffectiveSearchKeyword,
+  resolveSearchHintKind,
+} from "../utils/searchHintUtils";
+import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
   saveImageToDownloads,
@@ -80,6 +85,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [everythingVersion, setEverythingVersion] = useState<string | null>(null);
   const [everythingError, setEverythingError] = useState<string | null>(null);
   const [isSearchingEverything, setIsSearchingEverything] = useState(false);
+  const [forceEverythingKeyword, setForceEverythingKeyword] = useState<string | null>(null);
+  const [includeLocalWithSearchEngine, setIncludeLocalWithSearchEngine] = useState(false);
   const [isDownloadingEverything, setIsDownloadingEverything] = useState(false);
   const [everythingDownloadProgress, setEverythingDownloadProgress] = useState(0);
   const downloadButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -394,6 +401,17 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     }
   }, [resetMemoState]);
 
+  useEffect(() => {
+    setIncludeLocalWithSearchEngine(false);
+  }, [query]);
+
+  useEffect(() => {
+    const keyword = getEffectiveSearchKeyword(query, searchEngines);
+    setForceEverythingKeyword((prev) =>
+      prev !== null && prev !== keyword ? null : prev
+    );
+  }, [query, searchEngines]);
+
   // 插件列表已从 plugins/index.ts 导入
 
   // Adjust window size when memo modal is shown
@@ -660,6 +678,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     extractedFileIconsRef,
     extractedIconsVersion,
     suppressedBrokenPathsRef,
+    forceEverythingKeyword,
+    includeLocalWithSearchEngine,
   });
   
   const everythingLabel =
@@ -1315,6 +1335,26 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     ]
   );
 
+  const handleSearchEverythingNow = useCallback(() => {
+    const keyword = getEffectiveSearchKeyword(query, searchEngines);
+    if (!keyword || !isEverythingAvailable) return;
+    setForceEverythingKeyword(keyword);
+    startSearchSession(keyword).catch(() => {});
+  }, [query, searchEngines, isEverythingAvailable, startSearchSession]);
+
+  const handleIncludeLocalWithSearchEngine = useCallback(() => {
+    setIncludeLocalWithSearchEngine(true);
+  }, []);
+
+  const handleOpenEverythingWindow = useCallback(async () => {
+    try {
+      await tauriApi.showEverythingSearchWindow();
+      await hideLauncherAndResetState();
+    } catch (error) {
+      console.error("打开文件搜索窗口失败:", error);
+    }
+  }, [hideLauncherAndResetState]);
+
   // 组件卸载时清理 Everything 搜索会话
   useEffect(() => {
     return () => {
@@ -1332,6 +1372,9 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     query,
     isEverythingAvailable,
     pastedImagePath,
+    forceEverythingKeyword,
+    searchEngines,
+    includeLocalWithSearchEngine,
     setFilteredApps,
     setFilteredFiles,
     setFilteredMemos,
@@ -1391,6 +1434,73 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       tauriApi,
     });
   }, [setIsDownloadingEverything, setEverythingDownloadProgress, tauriApi]);
+
+  const searchHint = useMemo(() => {
+    const kind = resolveSearchHintKind({
+      query,
+      searchEngines,
+      includeLocalWithSearchEngine,
+      isEverythingAvailable,
+      isSearchingEverything,
+      forceEverythingKeyword,
+      everythingTotalCount,
+    });
+    if (!kind) return null;
+    switch (kind) {
+      case "engine-local-hidden":
+        return {
+          message: "已进入网页搜索，本地结果已隐藏",
+          actionLabel: "仍搜本地",
+          testId: "include-local-with-search-engine-button",
+          onAction: handleIncludeLocalWithSearchEngine,
+        };
+      case "everything-skipped":
+        return {
+          message: "单字未搜索磁盘文件，避免结果过多",
+          actionLabel: `搜索 ${everythingLabel}`,
+          testId: "search-everything-now-button",
+          onAction: handleSearchEverythingNow,
+        };
+      case "everything-unavailable": {
+        const canStart = everythingError?.startsWith("SERVICE_NOT_RUNNING");
+        return {
+          message: `未搜索磁盘文件（${everythingLabel} 未运行）`,
+          actionLabel: canStart ? "启动" : "下载",
+          testId: "everything-unavailable-action-button",
+          onAction: () => {
+            void (canStart ? handleStartEverything() : handleDownloadEverything());
+          },
+        };
+      }
+      case "everything-truncated":
+        return {
+          message: `磁盘共 ${(everythingTotalCount ?? 0).toLocaleString()} 条，启动器只展示前 ${EVERYTHING_LAUNCHER_MERGE_LIMIT}`,
+          actionLabel: "打开完整搜索",
+          testId: "open-everything-window-button",
+          placement: "bottom" as const,
+          onAction: () => {
+            void handleOpenEverythingWindow();
+          },
+        };
+      default:
+        return null;
+    }
+  }, [
+    query,
+    searchEngines,
+    includeLocalWithSearchEngine,
+    isEverythingAvailable,
+    isSearchingEverything,
+    forceEverythingKeyword,
+    everythingTotalCount,
+    everythingLabel,
+    everythingError,
+    handleIncludeLocalWithSearchEngine,
+    handleSearchEverythingNow,
+    handleStartEverything,
+    handleDownloadEverything,
+    handleOpenEverythingWindow,
+  ]);
 
   const handleLaunch = useCallback(
     async (result: SearchResult) => {
@@ -1832,6 +1942,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             onStartWindowDragging={startWindowDragging}
             contextMenu={contextMenu}
             setContextMenu={setContextMenu}
+            searchEngines={searchEngines}
           />
 
           {/* Results List or AI Answer */}
@@ -1870,6 +1981,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
             onExpandEverything={handleExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
             pinnedKey={pinnedResult ? getResultKey(pinnedResult) : null}
+            searchHint={searchHint}
           />
 
           {/* Footer */}

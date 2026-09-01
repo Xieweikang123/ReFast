@@ -62,6 +62,8 @@ export interface ResultListProps {
   visibleVerticalItems: VisibleVerticalItem[];
   /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
   pinnedKey?: string | null;
+  /** 列表末尾附加内容（如磁盘截断提示） */
+  footer?: React.ReactNode;
 }
 
 /**
@@ -517,6 +519,7 @@ export const ResultList = React.memo<ResultListProps>(({
   onExpandEverything,
   visibleVerticalItems,
   pinnedKey = null,
+  footer = null,
 }) => {
   const theme = React.useMemo(() => getThemeConfig(resultStyle), [resultStyle]);
   const [isMac, setIsMac] = useState(false);
@@ -615,6 +618,7 @@ export const ResultList = React.memo<ResultListProps>(({
             />
           );
         })}
+        {footer}
       </>
     </div>
   );

@@ -44,6 +44,14 @@ interface SearchResultAreaProps {
   visibleVerticalItems: VisibleVerticalItem[];
   /** 选中锁定的结果标识：非交互期该行仍可点击启动 */
   pinnedKey?: string | null;
+  searchHint?: {
+    message: string;
+    actionLabel: string;
+    testId: string;
+    onAction: () => void;
+    /** 截断提示放列表末尾，其余默认在结果上方 */
+    placement?: "top" | "bottom";
+  } | null;
 }
 
 export function SearchResultArea({
@@ -81,6 +89,7 @@ export function SearchResultArea({
   onExpandEverything,
   visibleVerticalItems,
   pinnedKey,
+  searchHint = null,
 }: SearchResultAreaProps) {
   const renderSearchStatusBanner = () => (
     <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
@@ -100,6 +109,34 @@ export function SearchResultArea({
           ))}
         </div>
       )}
+    </div>
+  );
+
+  const topHint = searchHint?.placement === "bottom" ? null : searchHint;
+  const bottomHint = searchHint?.placement === "bottom" ? searchHint : null;
+
+  const renderSearchHint = (
+    hint: NonNullable<SearchResultAreaProps["searchHint"]>,
+    className: string
+  ) => (
+    <div className={`mx-4 flex items-center justify-between gap-2 rounded-lg border border-amber-100 bg-amber-50/90 px-3 py-1.5 text-xs text-amber-800 ${className}`}>
+      <span>{hint.message}</span>
+      <button
+        type="button"
+        data-testid={hint.testId}
+        className="shrink-0 rounded-md bg-amber-100 px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-200"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          hint.onAction();
+        }}
+      >
+        {hint.actionLabel}
+      </button>
     </div>
   );
 
@@ -253,7 +290,10 @@ export function SearchResultArea({
             )}
           </div>
         </div>
-      ) : (isSearchingEverything && results.length === 0 && query.trim()) ? (
+      ) : (
+        <>
+      {topHint ? renderSearchHint(topHint, "mt-2 mb-0") : null}
+      {(isSearchingEverything && results.length === 0 && query.trim()) ? (
         // 骨架屏：搜索中时显示，模拟结果列表样式
         <div
           ref={listRef}
@@ -318,6 +358,7 @@ export function SearchResultArea({
             onExpandEverything={onExpandEverything}
             visibleVerticalItems={visibleVerticalItems}
             pinnedKey={pinnedKey}
+            footer={bottomHint ? renderSearchHint(bottomHint, "mt-1 mb-2") : null}
           />
         </div>
       ) : null}
@@ -386,6 +427,8 @@ export function SearchResultArea({
         <div className="flex-1 flex items-center justify-center px-6 py-6 text-center text-gray-400 text-sm">
           输入关键词搜索应用，或粘贴文件路径
         </div>
+      )}
+        </>
       )}
     </div>
   );

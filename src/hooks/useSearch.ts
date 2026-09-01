@@ -16,8 +16,13 @@ import {
   parseSearchFilter,
   hasSearchKeyword,
   shouldSearchSource,
+  shouldAutoSearchEverything,
 } from "../utils/searchFilterUtils";
-import type { AppInfo, FileHistoryItem, MemoItem, EverythingResult } from "../types";
+import {
+  getEffectiveSearchKeyword,
+  getSearchEngineIntent,
+} from "../utils/searchHintUtils";
+import type { AppInfo, FileHistoryItem, MemoItem, EverythingResult, SearchEngineConfig } from "../types";
 
 /** 本地源（应用/历史/插件等）短防抖，保证打字后尽快出首屏 */
 const LOCAL_DEBOUNCE_MS = 80;
@@ -38,6 +43,12 @@ export interface UseSearchOptions {
   isEverythingAvailable: boolean;
   /** 粘贴图片的临时路径；与 query 相同时跳过 Everything */
   pastedImagePath?: string | null;
+  /** 用户对当前短关键词手动点过 Everything 时，与 keyword 相同则放行 */
+  forceEverythingKeyword?: string | null;
+  /** 搜索引擎配置，用于识别 g / bd 等前缀 */
+  searchEngines?: SearchEngineConfig[];
+  /** 搜索引擎前缀命中后用户选择仍搜本地 */
+  includeLocalWithSearchEngine?: boolean;
   
   // 状态设置函数
   setFilteredApps: React.Dispatch<React.SetStateAction<AppInfo[]>>;
@@ -82,12 +93,15 @@ export interface UseSearchOptions {
   closeSessionSafe: (id?: string | null) => Promise<void>;
 }
 
-function buildSearchIdentity(query: string): string {
+function buildSearchIdentity(
+  query: string,
+  includeLocalWithSearchEngine: boolean
+): string {
   const parsed = parseSearchFilter(query);
-  if (parsed.hasFilter) {
-    return `${parsed.matchedPrefix ?? ""}${parsed.keyword}`;
-  }
-  return parsed.keyword;
+  const base = parsed.hasFilter
+    ? `${parsed.matchedPrefix ?? ""}${parsed.keyword}`
+    : parsed.keyword;
+  return includeLocalWithSearchEngine ? `${base}::with-local` : base;
 }
 
 function clearTimer(ref: React.MutableRefObject<number | null>): void {
@@ -106,6 +120,9 @@ export function useSearch(options: UseSearchOptions): void {
     query,
     isEverythingAvailable,
     pastedImagePath = null,
+    forceEverythingKeyword = null,
+    searchEngines = [],
+    includeLocalWithSearchEngine = false,
     setFilteredApps,
     setFilteredFiles,
     setFilteredMemos,
@@ -143,11 +160,17 @@ export function useSearch(options: UseSearchOptions): void {
   } = options;
 
   const everythingDebounceTimeoutRef = useRef<number | null>(null);
+  const forceEverythingKeywordRef = useRef(forceEverythingKeyword);
+  forceEverythingKeywordRef.current = forceEverythingKeyword;
+  const searchEnginesRef = useRef(searchEngines);
+  searchEnginesRef.current = searchEngines;
+  const includeLocalWithSearchEngineRef = useRef(includeLocalWithSearchEngine);
+  includeLocalWithSearchEngineRef.current = includeLocalWithSearchEngine;
 
   useEffect(() => {
     const parsed = parseSearchFilter(query);
-    const searchIdentity = buildSearchIdentity(query);
-    const keyword = parsed.keyword;
+    const searchIdentity = buildSearchIdentity(query, includeLocalWithSearchEngine);
+    const keyword = getEffectiveSearchKeyword(query, searchEngines);
     
     if (searchIdentity === lastSearchQueryRef.current) {
       if (searchIdentity === "") {
@@ -219,14 +242,38 @@ export function useSearch(options: UseSearchOptions): void {
       setIsDebouncePending?.(false);
 
       const currentParsed = parseSearchFilter(query);
-      const currentIdentity = buildSearchIdentity(query);
+      const currentIdentity = buildSearchIdentity(
+        query,
+        includeLocalWithSearchEngineRef.current
+      );
       if (!hasSearchKeyword(currentParsed) || currentIdentity !== searchIdentity) {
         setIsLocalSearchPending?.(false);
         return;
       }
 
-      const currentKeyword = currentParsed.keyword;
+      const currentKeyword = getEffectiveSearchKeyword(
+        query,
+        searchEnginesRef.current
+      );
       const currentScope = currentParsed.scope;
+      const engineIntent = getSearchEngineIntent(query, searchEnginesRef.current);
+      const engineOnly = !!engineIntent && !includeLocalWithSearchEngineRef.current;
+
+      if (engineOnly) {
+        lastSearchQueryRef.current = searchIdentity;
+        startTransition(() => {
+          setFilteredApps([]);
+          setFilteredFiles([]);
+          setFilteredMemos([]);
+          setFilteredPlugins([]);
+          setDirectPathResult(null);
+          setDetectedUrls([]);
+          setDetectedEmails([]);
+          setDetectedJson(null);
+        });
+        setIsLocalSearchPending?.(false);
+        return;
+      }
       
       setIsLocalSearchPending?.(true);
 
@@ -346,20 +393,41 @@ export function useSearch(options: UseSearchOptions): void {
 
     const everythingTimeoutId = window.setTimeout(() => {
       const currentParsed = parseSearchFilter(query);
-      const currentIdentity = buildSearchIdentity(query);
+      const currentIdentity = buildSearchIdentity(
+        query,
+        includeLocalWithSearchEngineRef.current
+      );
       if (!hasSearchKeyword(currentParsed) || currentIdentity !== searchIdentity) {
         return;
       }
 
-      const currentKeyword = currentParsed.keyword;
+      const currentKeyword = getEffectiveSearchKeyword(
+        query,
+        searchEnginesRef.current
+      );
       const currentScope = currentParsed.scope;
+      const engineIntent = getSearchEngineIntent(query, searchEnginesRef.current);
+      const engineOnly = !!engineIntent && !includeLocalWithSearchEngineRef.current;
       const isPastedImageQuery =
         !!pastedImagePath && currentKeyword === pastedImagePath.trim();
       const isPathQuery =
         shouldSearchSource(currentScope, "path") &&
         (isLikelyAbsolutePath(currentKeyword) || isPastedImageQuery);
 
-      if (isPathQuery) {
+      if (isPathQuery || engineOnly) {
+        if (engineOnly) {
+          setEverythingResults([]);
+          setEverythingTotalCount(null);
+          setEverythingCurrentCount(0);
+          setIsSearchingEverything(false);
+          const oldSessionId = pendingSessionIdRef.current;
+          if (oldSessionId) {
+            closeSessionSafe(oldSessionId).catch(() => {});
+          }
+          pendingSessionIdRef.current = null;
+          currentSearchQueryRef.current = "";
+          displayedSearchQueryRef.current = "";
+        }
         return;
       }
 
@@ -395,7 +463,10 @@ export function useSearch(options: UseSearchOptions): void {
       if (
         isEverythingAvailable &&
         shouldSearchSource(currentScope, "everything") &&
-        currentKeyword.length >= 2
+        shouldAutoSearchEverything(
+          currentKeyword,
+          forceEverythingKeywordRef.current
+        )
       ) {
         startSearchSession(currentKeyword).catch(() => {});
       } else {
@@ -421,5 +492,5 @@ export function useSearch(options: UseSearchOptions): void {
       clearTimer(everythingDebounceTimeoutRef);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, isEverythingAvailable, pastedImagePath]);
+  }, [query, isEverythingAvailable, pastedImagePath, includeLocalWithSearchEngine, searchEngines]);
 }
