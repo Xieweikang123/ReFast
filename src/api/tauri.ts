@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  perfMarkStart,
+  perfMarkEnd,
+  isSearchPerfEnabled,
+} from "../utils/searchPerf";
 import type {
   RecordingMeta,
   AppInfo,
@@ -20,7 +25,21 @@ import type {
   SearchEngineConfig,
   BrowserRule,
   DetectedBrowser,
+  FileOpenRules,
 } from "../types";
+
+/** 搜索链路专用：带耗时打点的 invoke（仅打点开启时生效） */
+async function timedInvoke<T>(phase: string, command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isSearchPerfEnabled()) {
+    return invoke(command, args);
+  }
+  perfMarkStart(phase);
+  try {
+    return await invoke<T>(command, args);
+  } finally {
+    perfMarkEnd(phase);
+  }
+}
 
 export const tauriApi = {
   async getRecordingStatus(): Promise<boolean> {
@@ -77,11 +96,11 @@ export const tauriApi = {
   },
 
   async searchApplications(query: string): Promise<AppInfo[]> {
-    return invoke("search_applications", { query });
+    return timedInvoke("IPC:search_applications", "search_applications", { query });
   },
 
   async searchSystemFolders(query: string): Promise<Array<{ name: string; path: string; display_name: string; is_folder: boolean }>> {
-    return invoke("search_system_folders", { query });
+    return timedInvoke("IPC:search_system_folders", "search_system_folders", { query });
   },
 
   async launchApplication(app: AppInfo): Promise<void> {
@@ -125,7 +144,7 @@ export const tauriApi = {
   },
 
   async searchFileHistory(query: string): Promise<FileHistoryItem[]> {
-    return invoke("search_file_history", { query });
+    return timedInvoke("IPC:search_file_history", "search_file_history", { query });
   },
 
   async getAllFileHistory(): Promise<FileHistoryItem[]> {
@@ -201,10 +220,12 @@ export const tauriApi = {
       sortOrder?: "asc" | "desc";
       matchWholeWord?: boolean;
       matchFolderNameOnly?: boolean;
+      onlyFiles?: boolean;
+      onlyFolders?: boolean;
       chunkSize?: number;
     }
   ): Promise<{ sessionId: string; totalCount: number; truncated?: boolean }> {
-    return invoke("start_everything_search_session", {
+    return timedInvoke("IPC:start_everything_session", "start_everything_search_session", {
       searchQuery,
       options: opts,
     });
@@ -222,7 +243,7 @@ export const tauriApi = {
       matchFolderNameOnly?: boolean;
     }
   ): Promise<{ offset: number; items: EverythingResult[]; totalCount?: number }> {
-    return invoke("get_everything_search_range", {
+    return timedInvoke("IPC:get_everything_range", "get_everything_search_range", {
       sessionId,
       offset,
       limit,
@@ -434,8 +455,14 @@ export const tauriApi = {
     return invoke("remove_json_formatter_recent_entry", { id });
   },
 
-  async showMarkdownEditorWindow(): Promise<void> {
-    return invoke("show_markdown_editor_window");
+  async showMarkdownEditorWindow(filePath?: string): Promise<void> {
+    return invoke("show_markdown_editor_window", {
+      filePath: filePath ?? null,
+    });
+  },
+
+  async takeMarkdownEditorFilePath(): Promise<string | null> {
+    return invoke("take_markdown_editor_file_path");
   },
 
   async watchMarkdownFile(windowLabel: string, filePath: string): Promise<void> {
@@ -585,11 +612,11 @@ export const tauriApi = {
 
 
   // Settings APIs
-  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[] }> {
+  async getSettings(): Promise<{ ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; auto_check_update?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[]; file_open_rules?: FileOpenRules }> {
     return invoke("get_settings");
   },
 
-  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[] }): Promise<void> {
+  async saveSettings(settings: { ollama: { model: string; base_url: string }; startup_enabled?: boolean; result_style?: "compact" | "soft" | "skeuomorphic"; close_on_blur?: boolean; clipboard_max_items?: number; translation_tab_order?: string[]; search_engines?: SearchEngineConfig[]; browser_rules?: BrowserRule[]; file_open_rules?: FileOpenRules }): Promise<void> {
     return invoke("save_settings", { settings });
   },
 

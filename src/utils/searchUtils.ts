@@ -281,6 +281,39 @@ export async function searchMemos(
 /**
  * 搜索系统文件夹
  */
+/**
+ * 系统文件夹列表的共享加载 Promise：
+ * 预热与首次搜索并发时只发一次 IPC，避免重复等待冷启动开销
+ */
+let systemFoldersLoadPromise: Promise<SystemFolder[]> | null = null;
+
+function loadSystemFoldersOnce(): Promise<SystemFolder[]> {
+  if (!systemFoldersLoadPromise) {
+    systemFoldersLoadPromise = tauriApi.searchSystemFolders("");
+  }
+  return systemFoldersLoadPromise;
+}
+
+/**
+ * 供启动预热调用：触发后台加载，完成后填充缓存 refs。
+ * 与 searchSystemFolders 共享同一 Promise，首次搜索不会再重复等待。
+ */
+export async function prefetchSystemFolders(
+  systemFoldersListRef?: { current: SystemFolder[] },
+  systemFoldersListLoadedRef?: { current: boolean }
+): Promise<void> {
+  try {
+    const folders = await loadSystemFoldersOnce();
+    if (systemFoldersListRef && systemFoldersListLoadedRef) {
+      systemFoldersListRef.current = folders;
+      systemFoldersListLoadedRef.current = true;
+    }
+  } catch (error) {
+    systemFoldersLoadPromise = null; // 失败允许重试
+    console.error("Failed to load system folders:", error);
+  }
+}
+
 export async function searchSystemFolders(
   searchQuery: string,
   deps: Pick<SearchDependencies, 'currentQuery' | 'updateSearchResults' | 'setSystemFolders' | 'systemFoldersListRef' | 'systemFoldersListLoadedRef'>
@@ -290,10 +323,10 @@ export async function searchSystemFolders(
       deps.updateSearchResults(deps.setSystemFolders, []);
       return;
     }
-    
-    // 如果列表未加载，先加载
+
+    // 如果列表未加载，先加载（并发调用共享同一 Promise）
     if (!deps.systemFoldersListLoadedRef.current) {
-      const folders = await tauriApi.searchSystemFolders("");
+      const folders = await loadSystemFoldersOnce();
       deps.systemFoldersListRef.current = folders;
       deps.systemFoldersListLoadedRef.current = true;
     }

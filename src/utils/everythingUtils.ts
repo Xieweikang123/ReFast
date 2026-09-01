@@ -8,6 +8,7 @@ import { startTransition } from "react";
 import type { EverythingResult } from "../types";
 import { tauriApi } from "../api/tauri";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { perfMarkStart, perfMarkEnd } from "./searchPerf";
 
 /**
  * Everything 搜索会话的选项接口
@@ -169,6 +170,8 @@ export async function startEverythingSearchSession(
       }, hardTimeoutMs);
     });
 
+    perfMarkStart("everything:会话创建");
+
     const pageSize = Math.min(LAUNCHER_PAGE_SIZE, maxResultsToUse);
     const sessionPromise = tauriApi.startEverythingSearchSession(trimmed, {
       maxResults: maxResultsToUse,
@@ -177,6 +180,7 @@ export async function startEverythingSearchSession(
 
     const session = await Promise.race([sessionPromise, sessionTimeoutPromise]);
     clearSoftTimer();
+    perfMarkEnd("everything:会话创建");
 
     // 检查查询是否仍然有效
     if (currentSearchQueryRef.current !== trimmed) {
@@ -204,6 +208,8 @@ export async function startEverythingSearchSession(
       }, rangeTimeoutMs);
     });
 
+    perfMarkStart("everything:首包获取");
+
     Promise.race([
       tauriApi.getEverythingSearchRange(
         currentSessionId,
@@ -214,6 +220,7 @@ export async function startEverythingSearchSession(
       timeoutPromise,
     ])
       .then((res) => {
+        perfMarkEnd("everything:首包获取");
         // 检查会话和查询是否仍然有效
         const currentPendingSessionId = pendingSessionIdRef.current;
         const isSessionStillValid =

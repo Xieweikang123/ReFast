@@ -8,6 +8,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { adjustWindowSize } from "../utils/windowUtils";
 import type { SearchResult } from "../utils/resultUtils";
+import { perfIncrement } from "../utils/searchPerf";
 
 /**
  * 窗口大小调整 Hook 的选项接口
@@ -113,7 +114,12 @@ export function useWindowSizeAdjustment(
       return;
     }
 
+    const prevHeight = lastAppliedHeightRef.current;
     lastAppliedHeightRef.current = targetHeight;
+    perfIncrement("窗口resize次数");
+    if (prevHeight !== null && Math.abs(prevHeight - targetHeight) > 40) {
+      perfIncrement("窗口高度突变(>40px)");
+    }
     getCurrentWindow()
       .setSize(new LogicalSize(targetWidth, targetHeight))
       .catch(console.error);

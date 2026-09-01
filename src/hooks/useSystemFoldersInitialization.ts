@@ -4,7 +4,7 @@
  */
 
 import { useEffect, type MutableRefObject } from "react";
-import { tauriApi } from "../api/tauri";
+import { prefetchSystemFolders } from "../utils/searchUtils";
 
 /**
  * 系统文件夹类型
@@ -35,18 +35,13 @@ export function useSystemFoldersInitialization(
 ): void {
   const { systemFoldersListRef, systemFoldersListLoadedRef } = options;
 
-  // 初始化系统文件夹列表（只加载一次）
+  // 初始化系统文件夹列表（只加载一次；与首次搜索共享同一 Promise）
   useEffect(() => {
     if (!systemFoldersListLoadedRef.current) {
-      tauriApi
-        .searchSystemFolders("")
-        .then((folders) => {
-          systemFoldersListRef.current = folders;
-          systemFoldersListLoadedRef.current = true;
-        })
-        .catch((error) => {
-          console.error("Failed to load system folders:", error);
-        });
+      void prefetchSystemFolders(
+        systemFoldersListRef,
+        systemFoldersListLoadedRef
+      );
     }
   }, [systemFoldersListRef, systemFoldersListLoadedRef]);
 }

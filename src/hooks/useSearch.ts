@@ -23,6 +23,12 @@ import {
   getSearchEngineIntent,
 } from "../utils/searchHintUtils";
 import type { AppInfo, FileHistoryItem, MemoItem, EverythingResult, SearchEngineConfig } from "../types";
+import {
+  perfBeginSession,
+  perfMarkStart,
+  perfMarkEnd,
+  perfMeasureAsync,
+} from "../utils/searchPerf";
 
 /** 本地源（应用/历史/插件等）短防抖，保证打字后尽快出首屏 */
 const LOCAL_DEBOUNCE_MS = 80;
@@ -171,7 +177,10 @@ export function useSearch(options: UseSearchOptions): void {
     const parsed = parseSearchFilter(query);
     const searchIdentity = buildSearchIdentity(query, includeLocalWithSearchEngine);
     const keyword = getEffectiveSearchKeyword(query, searchEngines);
-    
+
+    // 打点：每个新输入开启一个测量会话
+    perfBeginSession(query);
+
     if (searchIdentity === lastSearchQueryRef.current) {
       if (searchIdentity === "") {
         return;
@@ -240,6 +249,7 @@ export function useSearch(options: UseSearchOptions): void {
 
     const localTimeoutId = window.setTimeout(() => {
       setIsDebouncePending?.(false);
+      perfMarkEnd("本地防抖等待");
 
       const currentParsed = parseSearchFilter(query);
       const currentIdentity = buildSearchIdentity(
@@ -346,24 +356,29 @@ export function useSearch(options: UseSearchOptions): void {
       const localSearchGeneration = searchIdentity;
       const tasks: Promise<void>[] = [];
 
+      const timedTask = (name: string, p: Promise<void>): Promise<void> =>
+        perfMeasureAsync(name, () => p);
+
+      perfMarkStart("本地搜索执行");
+
       if (shouldSearchSource(currentScope, "systemFolder")) {
-        tasks.push(searchSystemFoldersWrapper(currentKeyword));
+        tasks.push(timedTask("本地:系统目录", searchSystemFoldersWrapper(currentKeyword)));
       }
 
       if (shouldSearchSource(currentScope, "file")) {
-        tasks.push(searchFileHistoryWrapper(currentKeyword));
+        tasks.push(timedTask("本地:文件历史", searchFileHistoryWrapper(currentKeyword)));
       } else {
         startTransition(() => setFilteredFiles([]));
       }
 
       if (shouldSearchSource(currentScope, "app")) {
-        tasks.push(searchApplicationsWrapper(currentKeyword));
+        tasks.push(timedTask("本地:应用", searchApplicationsWrapper(currentKeyword)));
       } else {
         startTransition(() => setFilteredApps([]));
       }
 
       if (shouldSearchSource(currentScope, "memo")) {
-        tasks.push(searchMemosWrapper(currentKeyword));
+        tasks.push(timedTask("本地:备忘录", searchMemosWrapper(currentKeyword)));
       } else {
         startTransition(() => setFilteredMemos([]));
       }
@@ -385,8 +400,12 @@ export function useSearch(options: UseSearchOptions): void {
           .catch((error) => {
             console.error("[搜索错误] 并行搜索失败:", error);
           })
-          .finally(finishLocal);
+          .finally(() => {
+            perfMarkEnd("本地搜索执行");
+            finishLocal();
+          });
       } else {
+        perfMarkEnd("本地搜索执行");
         finishLocal();
       }
     }, LOCAL_DEBOUNCE_MS);
@@ -468,6 +487,7 @@ export function useSearch(options: UseSearchOptions): void {
           forceEverythingKeywordRef.current
         )
       ) {
+        perfMarkEnd("everything防抖等待");
         startSearchSession(currentKeyword).catch(() => {});
       } else {
         setEverythingResults([]);
@@ -483,10 +503,11 @@ export function useSearch(options: UseSearchOptions): void {
         displayedSearchQueryRef.current = "";
       }
     }, everythingDebounceMs(keyword.length));
-    
+    perfMarkStart("everything防抖等待");
+
     debounceTimeoutRef.current = localTimeoutId;
     everythingDebounceTimeoutRef.current = everythingTimeoutId;
-    
+
     return () => {
       clearTimer(debounceTimeoutRef);
       clearTimer(everythingDebounceTimeoutRef);

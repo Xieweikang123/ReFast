@@ -13,6 +13,7 @@ import {
 import type { SearchResult } from "../utils/resultUtils";
 import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule } from "../types";
 import type { EverythingResult } from "../types";
+import { perfMarkStart, perfMarkEnd, perfReport } from "../utils/searchPerf";
 
 export interface UseCombinedResultsOptions {
   query: string;
@@ -84,6 +85,7 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
 
   const applyCombinedResults = (queryForCombine: string, useTransition: boolean) => {
     const opts = optionsRef.current;
+    perfMarkStart("合并:computeCombinedResults");
     const everythingForCombine = shouldAutoSearchEverything(
       getEffectiveSearchKeyword(queryForCombine, opts.searchEngines),
       opts.forceEverythingKeyword
@@ -114,9 +116,13 @@ export function useCombinedResults(options: UseCombinedResultsOptions) {
     });
 
     const commit = () => {
+      perfMarkEnd("合并:computeCombinedResults");
       setCombinedResults(results);
       setCombinedResultsQuery(queryForCombine);
       debouncedResultsQueryRef.current = queryForCombine;
+      // 结果与当前输入一致 → 本地首帧呈现；延迟输出汇总，等 Everything 阶段闭合
+      perfMarkEnd("本地首帧呈现");
+      window.setTimeout(() => perfReport(), 1500);
     };
 
     if (useTransition) {

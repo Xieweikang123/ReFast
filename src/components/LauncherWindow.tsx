@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, startTransition } from "react";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig, BrowserRule } from "../types";
+import type { AppInfo, FileHistoryItem, EverythingResult, MemoItem, PluginContext, UpdateCheckResult, SearchEngineConfig, BrowserRule, FileOpenHandler, FileOpenRules } from "../types";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/window";
 import { plugins, executePlugin } from "../plugins";
@@ -56,6 +56,7 @@ import {
   editRemark as editRemarkUtil,
   saveRemark as saveRemarkUtil,
 } from "../utils/contextMenuUtils";
+import { syncRelatedFileOpenRules } from "../utils/fileOpenUtils";
 import { handleKeyDown as handleKeyDownUtil } from "../utils/keyboardUtils";
 import {
   buildVisibleVerticalItems,
@@ -63,12 +64,26 @@ import {
   SHOW_MORE_EVERYTHING_PATH,
   type VisibleVerticalItem,
 } from "../utils/resultGroupUtils";
+import { perfNoteLongFrame } from "../utils/searchPerf";
 
 interface LauncherWindowProps {
   updateInfo?: UpdateCheckResult | null;
 }
 
 export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
+  // 长帧检测：主线程单帧 >50ms 记入打点会话（输入卡顿的直观证据）
+  useEffect(() => {
+    let last = performance.now();
+    let rafId = 0;
+    const loop = (t: number) => {
+      const delta = t - last;
+      last = t;
+      if (delta > 50) perfNoteLongFrame(delta);
+      rafId = requestAnimationFrame(loop);
+    };
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
   const [query, setQuery] = useState("");
   const [apps, setApps] = useState<AppInfo[]>([]);
   const [filteredApps, setFilteredApps] = useState<AppInfo[]>([]);
@@ -145,6 +160,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [editingRemarkUrl, setEditingRemarkUrl] = useState<string | null>(null);
   const [searchEngines, setSearchEngines] = useState<SearchEngineConfig[]>([]);
   const [browserRules, setBrowserRules] = useState<BrowserRule[]>([]);
+  const [fileOpenRules, setFileOpenRules] = useState<FileOpenRules>({});
   const [remarkText, setRemarkText] = useState<string>("");
   const [urlRemarks, setUrlRemarks] = useState<Record<string, string>>({});
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
@@ -1192,6 +1208,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     setCloseOnBlur,
     setSearchEngines,
     setBrowserRules,
+    setFileOpenRules,
     setIsEverythingAvailable,
     setEverythingError,
     setEverythingPath,
@@ -1502,6 +1519,23 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     handleOpenEverythingWindow,
   ]);
 
+  const handleSetFileOpenHandler = useCallback(
+    async (ext: string, handler: FileOpenHandler) => {
+      const settings = await tauriApi.getSettings();
+      const file_open_rules = syncRelatedFileOpenRules(
+        settings.file_open_rules ?? {},
+        ext,
+        handler
+      );
+      await tauriApi.saveSettings({
+        ...settings,
+        file_open_rules,
+      });
+      setFileOpenRules(file_open_rules);
+    },
+    []
+  );
+
   const handleLaunch = useCallback(
     async (result: SearchResult) => {
       await handleLaunchUtil({
@@ -1538,6 +1572,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         errorMessage,
           tauriApi,
         browserRules,
+        fileOpenRules,
       });
     },
     [
@@ -1558,6 +1593,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       suppressedBrokenPathsRef,
       tauriApi,
       browserRules,
+      fileOpenRules,
     ]
   );
 
@@ -2028,6 +2064,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         onClose={() => setContextMenu(null)}
         onMenuLayout={expandToMenuBottom}
         onRevealInFolder={handleRevealInFolder}
+        fileOpenRules={fileOpenRules}
+        onSetFileOpenHandler={handleSetFileOpenHandler}
         onRequestRemoveFromAppIndex={handleRequestRemoveFromAppIndex}
         onRequestOpenAppIndexSameName={handleRequestOpenAppIndexSameName}
         onEditMemo={() => {

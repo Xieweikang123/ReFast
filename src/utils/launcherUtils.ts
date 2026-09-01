@@ -775,19 +775,37 @@ export function shouldShowInHorizontal(
  * @param openHistory - 打开历史记录（key: 路径, value: 时间戳（秒））
  * @returns 使用信息对象，包含 useCount 和 lastUsed（毫秒）
  */
+/** openHistory 的规范化路径缓存：排序时逐对比较，避免每次都 Object.entries 全量扫描 */
+let usageMapCacheKey: Record<string, number> | null = null;
+let usageMapCache: Map<string, number> = new Map();
+
+function getNormalizedOpenHistoryMap(
+  openHistory: Record<string, number>
+): Map<string, number> {
+  if (usageMapCacheKey !== openHistory) {
+    const map = new Map<string, number>();
+    for (const key in openHistory) {
+      map.set(normalizePathForHistory(key), openHistory[key]);
+    }
+    usageMapCache = map;
+    usageMapCacheKey = openHistory;
+  }
+  return usageMapCache;
+}
+
 export function getResultUsageInfo(
   result: { path: string; file?: { use_count?: number; last_used?: number } },
   openHistory: Record<string, number>
 ): { useCount?: number; lastUsed: number } {
   const normalizedPath = normalizePathForHistory(result.path);
-  const lastUsedFromHistory = Object.entries(openHistory).find(
-    ([key]) => normalizePathForHistory(key) === normalizedPath
-  )?.[1];
-  
+  const lastUsedFromHistory = getNormalizedOpenHistoryMap(openHistory).get(
+    normalizedPath
+  );
+
   const useCount = result.file?.use_count;
   // openHistory 存储的是秒级时间戳，需要转换为毫秒；file.last_used 也是秒级时间戳
   const lastUsed = (lastUsedFromHistory || result.file?.last_used || 0) * 1000;
-  
+
   return { useCount, lastUsed };
 }
 
