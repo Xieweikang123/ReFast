@@ -91,26 +91,7 @@ export function SearchResultArea({
   pinnedKey,
   searchHint = null,
 }: SearchResultAreaProps) {
-  const renderSearchStatusBanner = () => (
-    <div className="mx-4 mt-2 mb-0 flex flex-col gap-1 rounded-lg border border-blue-100 bg-blue-50/90 px-3 py-1.5 text-xs text-blue-700">
-      <div className="flex items-center gap-2">
-        <div className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
-        <span className="font-medium">{searchStatus.primary}</span>
-      </div>
-      {searchStatus.items.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pl-5">
-          {searchStatus.items.map((item) => (
-            <span
-              key={item}
-              className="rounded-md bg-blue-100/80 px-1.5 py-0.5 text-[11px] text-blue-700"
-            >
-              {item}
-            </span>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  const renderSearchStatusBanner = () => null;
 
   const topHint = searchHint?.placement === "bottom" ? null : searchHint;
   const bottomHint = searchHint?.placement === "bottom" ? searchHint : null;
@@ -141,7 +122,7 @@ export function SearchResultArea({
   );
 
   return (
-    <div className="flex flex-col flex-1 min-h-0">
+    <div className="relative flex flex-col flex-1 min-h-0">
       {showAiAnswer ? (
         // AI 回答模式
         <div className="overflow-y-auto min-h-0" style={{ maxHeight: '500px' }}>
@@ -333,8 +314,8 @@ export function SearchResultArea({
           })}
         </div>
       ) : results.length > 0 ? (
-        <div className="relative flex flex-col">
-          {isSearching && renderSearchStatusBanner()}
+        <div className="flex flex-col">
+          {renderSearchStatusBanner()}
           <ResultList
             horizontalResults={horizontalResults}
             selectedHorizontalIndex={selectedHorizontalIndex}
@@ -391,36 +372,17 @@ export function SearchResultArea({
         </div>
       )}
 
-      {/* Everything 搜索中才显示进度，空闲状态由底部 Footer 统一展示，避免双状态栏 */}
+      {/* Everything 进度：2px 顶部细条，绝对定位不占布局空间，避免列表跳动 */}
       {!showAiAnswer && query.trim() && isEverythingAvailable && isSearchingEverything && (
-        <div className="px-6 py-2 border-t border-gray-200 bg-gray-50">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 text-xs text-gray-600">
-              <div className="inline-block animate-spin rounded-full h-3 w-3 border-b-2 border-blue-500"></div>
-              <span className="text-blue-600">Everything 搜索中...</span>
-            </div>
-            {everythingTotalCount !== null && everythingTotalCount > 0 && (
-              <div className="flex flex-col gap-1">
-                <div className="flex items-center justify-between text-xs text-gray-500">
-                  <span>
-                    已加载 {everythingCurrentCount.toLocaleString()} / {everythingTotalCount.toLocaleString()} 条
-                  </span>
-                  <span className="font-medium text-blue-600">
-                    {Math.round((everythingCurrentCount / everythingTotalCount) * 100)}%
-                  </span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
-                    style={{
-                      width: `${Math.min((everythingCurrentCount / everythingTotalCount) * 100, 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        <div
+          className="pointer-events-none absolute left-0 top-0 z-20 h-0.5 bg-blue-500 transition-all duration-300 ease-out"
+          style={{
+            width:
+              everythingTotalCount !== null && everythingTotalCount > 0
+                ? `${Math.min((everythingCurrentCount / everythingTotalCount) * 100, 100)}%`
+                : "30%",
+          }}
+        />
       )}
 
       {!showAiAnswer && results.length === 0 && !query && (

@@ -5,12 +5,15 @@
 
 import React, { useState, useEffect } from "react";
 import type { UpdateCheckResult } from "../types";
+import type { SearchStatusDetail } from "../hooks/useResultsInteractivity";
 import { tauriApi } from "../api/tauri";
 import { isMacOS } from "../utils/platformUtils";
 
 export interface LauncherStatusBarProps {
   resultsCount: number;
   showAiAnswer: boolean;
+  /** 搜索过程状态，非空时替换「X 个结果」展示，避免列表区域跳动 */
+  searchStatus?: SearchStatusDetail | null;
   isEverythingAvailable: boolean;
   everythingError: string | null;
   everythingPath: string | null;
@@ -27,6 +30,7 @@ export interface LauncherStatusBarProps {
 export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
   resultsCount,
   showAiAnswer,
+  searchStatus,
   isEverythingAvailable,
   everythingError,
   everythingPath,
@@ -78,8 +82,20 @@ export const LauncherStatusBar = React.memo<LauncherStatusBarProps>(({
       }}
     >
       <div className="flex items-center gap-3 min-w-0 flex-1">
-        {!showAiAnswer && resultsCount > 0 && <span className="whitespace-nowrap">{resultsCount} 个结果</span>}
-        {showAiAnswer && <span className="whitespace-nowrap">AI 回答模式</span>}
+        {searchStatus ? (
+          <div className="flex items-center gap-1.5 min-w-0 flex-1" title={searchStatus.items.join(" · ") || undefined}>
+            <div className="inline-block h-3 w-3 flex-shrink-0 animate-spin rounded-full border-2 border-gray-200 border-t-blue-500"></div>
+            <span className="whitespace-nowrap text-blue-600">{searchStatus.primary}</span>
+            {searchStatus.items.length > 0 && (
+              <span className="truncate text-gray-400">{searchStatus.items.join(" · ")}</span>
+            )}
+          </div>
+        ) : (
+          <>
+            {!showAiAnswer && resultsCount > 0 && <span className="whitespace-nowrap">{resultsCount} 个结果</span>}
+            {showAiAnswer && <span className="whitespace-nowrap">AI 回答模式</span>}
+          </>
+        )}
         <div className="flex items-center gap-2 min-w-0 flex-1">
           {/* Everything/Spotlight 状态 - macOS 上显示 Spotlight，Windows 上显示 Everything */}
           {isMac ? (

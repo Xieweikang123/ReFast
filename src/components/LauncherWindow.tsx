@@ -2024,6 +2024,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           <LauncherStatusBar
             resultsCount={results.length}
             showAiAnswer={showAiAnswer}
+            searchStatus={isSearching ? searchStatus : null}
             isEverythingAvailable={isEverythingAvailable}
             everythingError={everythingError}
             everythingPath={everythingPath}
