@@ -134,12 +134,44 @@ pub mod windows {
     const EVERYTHING_IPC_ROOT: u32 = 0x00000004;
 
     // 全局状态：存储每个窗口句柄对应的发送器
+    // 注意：该映射只允许在专用 IPC 线程上访问（创建/销毁/查询），且任何线程都
+    // 不得在持有此锁期间调用 SendMessage 类同步 API，否则会引入跨线程死锁风险
     use std::collections::HashMap;
+
+    /// 单个批次的 IPC 结果类型：(结果列表(路径, flags), 总条数, 当前批条数, 偏移量)
+    type IpcBatchResult = Result<(Vec<(String, u32)>, u32, u32, u32), EverythingError>;
+
+    /// 专用 IPC 线程的命令
+    /// 回复窗口的所有生命周期操作都由专用 IPC 线程串行执行，
+    /// 搜索线程只通过命令通道请求，绝不跨线程创建/销毁窗口或泵消息
+    enum IpcCommand {
+        /// 创建回复窗口并注册结果发送器
+        CreateReplyWindow {
+            result_sender: mpsc::Sender<IpcBatchResult>,
+            reply_tx: mpsc::Sender<Result<HWND, EverythingError>>,
+        },
+        /// 销毁回复窗口并清理发送器映射
+        DestroyReplyWindow { hwnd: HWND },
+    }
+
+    /// IPC 命令通道（静态持有 Sender 以保持 IPC 线程存活；线程退出时置 None 以便重建）
+    static IPC_COMMAND_CHANNEL: OnceLock<Mutex<Option<mpsc::Sender<IpcCommand>>>> = OnceLock::new();
+
+    /// IPC 线程 ID，用于向阻塞中的 IPC 线程投递唤醒消息
+    /// 使用 Mutex<Option<u32>> 以便线程退出时清除，支持异常退出后重建
+    static IPC_THREAD_ID: OnceLock<Mutex<Option<u32>>> = OnceLock::new();
+
+    fn get_ipc_thread_id_slot() -> &'static Mutex<Option<u32>> {
+        IPC_THREAD_ID.get_or_init(|| Mutex::new(None))
+    }
+
+    /// 自定义唤醒消息：命令通道有新命令时，唤醒阻塞在 GetMessageW 的 IPC 线程
+    const WM_APP_IPC_WAKE: u32 = WM_APP + 0x7A61;
 
     static WINDOW_SENDERS: OnceLock<
         Arc<
             Mutex<
-                HashMap<HWND, mpsc::Sender<Result<(Vec<(String, u32)>, u32, u32, u32), EverythingError>>>,
+                HashMap<HWND, mpsc::Sender<IpcBatchResult>>,
             >,
         >,
     > = OnceLock::new();
@@ -210,10 +242,210 @@ pub mod windows {
         };
     }
 
-    fn get_window_senders() -> &'static Arc<
-        Mutex<HashMap<HWND, mpsc::Sender<Result<(Vec<(String, u32)>, u32, u32, u32), EverythingError>>>>,
-    > {
+    fn get_window_senders() -> &'static Arc<Mutex<HashMap<HWND, mpsc::Sender<IpcBatchResult>>>> {
         WINDOW_SENDERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    /// 专用 IPC 线程入口
+    /// 该线程是进程中唯一创建/持有/销毁 Everything 回复窗口的线程。
+    /// 结构要点：
+    /// 1. 空闲时阻塞在 GetMessageW（内核等待，零 CPU），任何到达该线程窗口的
+    ///    sent message（包括 Everything 跨进程 SendMessage 的 WM_COPYDATA 回复）
+    ///    都会被立即分发，Everything 侧的同步发送不会悬挂；
+    /// 2. 搜索线程的命令通过 mpsc 通道投递，配合 PostThreadMessageW 唤醒，
+    ///    避免「线程阻塞在通道上导致 sent message 无法处理」的另一种死锁形态；
+    /// 3. 该线程绝不持有任何锁跨等待，也绝不调用 SendMessage 等待其他线程 ——
+    ///    经典的「SendMessage 同步等待 + 对方被锁卡住」循环等待被结构性消除。
+    fn ipc_thread_main(cmd_receiver: mpsc::Receiver<IpcCommand>) {
+        let thread_id =
+            unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() };
+        eprintln!("[IPC-DIAG] IPC 线程已启动 tid={}", thread_id);
+
+        // 先强制创建本线程消息队列，再发布线程 ID：
+        // 保证其他线程读到 IPC_THREAD_ID 后 PostThreadMessageW 必然成功
+        unsafe {
+            let mut msg: MSG = std::mem::zeroed();
+            PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE);
+        }
+        if let Ok(mut slot) = get_ipc_thread_id_slot().lock() {
+            *slot = Some(thread_id);
+        }
+
+        let mut msg: MSG = unsafe { std::mem::zeroed() };
+
+        loop {
+            // 1. 排空命令队列（唤醒消息可能已丢失或有积压）
+            loop {
+                match cmd_receiver.try_recv() {
+                    Ok(command) => match command {
+                        IpcCommand::CreateReplyWindow {
+                            result_sender,
+                            reply_tx,
+                        } => {
+                            eprintln!("[IPC-DIAG] 处理 CreateReplyWindow 命令");
+                            let hwnd = create_reply_window_on_ipc_thread(result_sender);
+                            eprintln!("[IPC-DIAG] CreateReplyWindow 完成 hwnd={:?}", hwnd);
+                            let _ = reply_tx.send(hwnd);
+                        }
+                        IpcCommand::DestroyReplyWindow { hwnd } => {
+                            eprintln!("[IPC-DIAG] 处理 DestroyReplyWindow 命令 hwnd={:?}", hwnd);
+                            destroy_reply_window_on_ipc_thread(hwnd);
+                        }
+                    },
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        // 所有 Sender 已 drop：进程准备退出，结束线程
+                        if let Ok(mut slot) = get_ipc_thread_id_slot().lock() {
+                            *slot = None;
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // 2. 阻塞等待消息：线程消息（WM_APP_IPC_WAKE 唤醒）、跨进程 sent message（WM_COPYDATA 回复）
+            let ret = unsafe { GetMessageW(&mut msg, 0, 0, 0) };
+            eprintln!("[IPC-DIAG] GetMessageW 返回 ret={} msg=0x{:X} hwnd=0x{:X}", ret, msg.message, msg.hwnd);
+            if ret <= 0 {
+                // WM_QUIT 或错误：退出线程（正常流程中不应发生）
+                if let Ok(mut slot) = get_ipc_thread_id_slot().lock() {
+                    *slot = None;
+                }
+                return;
+            }
+
+            match msg.message {
+                WM_APP_IPC_WAKE => {
+                    // 唤醒信号：回到循环顶部排空命令队列
+                    eprintln!("[IPC-DIAG] 收到唤醒消息，回顶排空命令队列");
+                    continue;
+                }
+                WM_COPYDATA => {
+                    eprintln!("[IPC-DIAG] 收到 WM_COPYDATA（跨进程回复到达 IPC 线程队列）");
+                }
+                _ => {}
+            }
+
+            // 其他消息（如果有）正常分发
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+
+    /// 在 IPC 线程上创建回复窗口（仅供 ipc_thread_main 调用）
+    fn create_reply_window_on_ipc_thread(result_sender: mpsc::Sender<IpcBatchResult>) -> Result<HWND, EverythingError> {
+        // 确保窗口类已注册（必须在拥有消息队列的线程上注册窗口类，避免竞态）
+        static INIT_ONCE: std::sync::Once = std::sync::Once::new();
+        INIT_ONCE.call_once(|| unsafe {
+            let class_name = wide_string("ReFastEverythingIPC");
+            let wc = WNDCLASSW {
+                style: 0,
+                lpfnWndProc: Some(window_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: 0,
+                hIcon: 0,
+                hCursor: 0,
+                hbrBackground: 0,
+                lpszMenuName: ptr::null(),
+                lpszClassName: class_name.as_ptr(),
+            };
+            let _atom = RegisterClassW(&wc);
+        });
+
+        unsafe {
+            let class_name = wide_string("ReFastEverythingIPC");
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                0,
+                0,
+                ptr::null_mut(),
+            );
+
+            if hwnd == 0 {
+                let last_error = windows_sys::Win32::Foundation::GetLastError();
+                return Err(EverythingError::IpcFailed(format!(
+                    "无法创建消息窗口, error: {}",
+                    last_error
+                )));
+            }
+
+            // 注册发送器（IPC 线程独占访问，锁竞争窗口极小）
+            let senders = get_window_senders();
+            if let Ok(mut senders_guard) = senders.lock() {
+                senders_guard.insert(hwnd, result_sender);
+            }
+
+            Ok(hwnd)
+        }
+    }
+
+    /// 在 IPC 线程上销毁回复窗口（仅供 ipc_thread_main 调用）
+    fn destroy_reply_window_on_ipc_thread(hwnd: HWND) {
+        unsafe {
+            let senders = get_window_senders();
+            if let Ok(mut senders_guard) = senders.lock() {
+                senders_guard.remove(&hwnd);
+            }
+            DestroyWindow(hwnd);
+        }
+    }
+
+    /// 向专用 IPC 线程发送命令
+    /// 注意：不在持有任何锁的状态下发送/唤醒，等待回执由调用方用 mpsc 完成（无死锁风险）
+    fn send_command_to_ipc_thread(command: IpcCommand) -> Result<(), EverythingError> {
+        // 获取（或启动）IPC 线程的命令发送器
+        // 仅在克隆 Sender 这个短操作期间持锁，绝不持锁等待
+        let sender = {
+            let mut channel_guard = IPC_COMMAND_CHANNEL
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .map_err(|_| EverythingError::IpcFailed("IPC 命令通道锁损坏".to_string()))?;
+
+            match channel_guard.as_ref() {
+                Some(s) => s.clone(),
+                None => {
+                    // IPC 线程尚未启动，启动它
+                    let (tx, rx) = mpsc::channel::<IpcCommand>();
+                    std::thread::Builder::new()
+                        .name("everything-ipc".to_string())
+                        .spawn(move || ipc_thread_main(rx))
+                        .map_err(|e| {
+                            EverythingError::IpcFailed(format!("无法启动 IPC 线程: {}", e))
+                        })?;
+
+                    *channel_guard = Some(tx.clone());
+                    tx
+                }
+            }
+        }; // channel_guard 在此释放
+
+        // 发送命令（非阻塞；通道容量足够大不会满）
+        sender
+            .send(command)
+            .map_err(|_| EverythingError::IpcFailed("IPC 线程已退出".to_string()))?;
+
+        // 唤醒可能阻塞在 GetMessageW 的 IPC 线程（PostThreadMessageW 对阻塞在
+        // GetMessage 的线程会使其立即返回，避免命令长时间滞留队列）
+        if let Ok(slot) = get_ipc_thread_id_slot().lock() {
+            if let Some(thread_id) = *slot {
+                unsafe {
+                    PostThreadMessageW(thread_id, WM_APP_IPC_WAKE, 0, 0);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // 缓存 Everything 窗口句柄，避免重复查找
@@ -295,108 +527,78 @@ pub mod windows {
             }
             WM_DESTROY => {
                 // 清理发送器
+                // 注意：不要 PostQuitMessage —— 本窗口由常驻 IPC 线程持有，
+                // 销毁单个批次窗口绝不能终止 IPC 线程的消息循环
                 let senders = get_window_senders();
                 if let Ok(mut senders_guard) = senders.lock() {
                     senders_guard.remove(&hwnd);
                 }
-                PostQuitMessage(0);
                 0
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
-    /// Everything IPC 查询句柄，用于管理消息循环和结果接收
+    /// Everything IPC 查询句柄，用于管理结果接收
+    /// 回复窗口由专用 IPC 线程持有；本句柄仅持有结果通道，
+    /// 创建/销毁通过命令通道请求 IPC 线程执行
     struct EverythingIpcHandle {
         reply_hwnd: HWND,
-        result_receiver: mpsc::Receiver<Result<(Vec<(String, u32)>, u32, u32, u32), EverythingError>>,
+        result_receiver: mpsc::Receiver<IpcBatchResult>,
+        /// 标记窗口是否仍需销毁（创建失败时为 false，避免重复销毁）
+        needs_destroy: bool,
     }
+
+    /// 命令执行回执等待上限（远大于 IPC 线程正常处理耗时，防御性兜底）
+    const IPC_COMMAND_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
     impl EverythingIpcHandle {
         fn new() -> Result<Self, EverythingError> {
-            // 日志输出已禁用
-
-            // 确保窗口类已注册
-            static INIT_ONCE: std::sync::Once = std::sync::Once::new();
-            INIT_ONCE.call_once(|| {
-                // 日志输出已禁用
-                unsafe {
-                    let class_name = wide_string("ReFastEverythingIPC");
-                    let wc = WNDCLASSW {
-                        style: 0,
-                        lpfnWndProc: Some(window_proc),
-                        cbClsExtra: 0,
-                        cbWndExtra: 0,
-                        hInstance: 0,
-                        hIcon: 0,
-                        hCursor: 0,
-                        hbrBackground: 0,
-                        lpszMenuName: ptr::null(),
-                        lpszClassName: class_name.as_ptr(),
-                    };
-                    let atom = RegisterClassW(&wc);
-                    // 日志输出已禁用
-                    let _ = atom;
-                }
-            });
-
+            eprintln!("[IPC-DIAG] EverythingIpcHandle::new 开始");
             // 创建通道用于接收搜索结果
             let (sender, receiver) = mpsc::channel();
-            // 日志输出已禁用
 
-            // 创建消息窗口
-            unsafe {
-                let class_name = wide_string("ReFastEverythingIPC");
-                // 日志输出已禁用
-                let hwnd = CreateWindowExW(
-                    0,
-                    class_name.as_ptr(),
-                    class_name.as_ptr(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    HWND_MESSAGE,
-                    0,
-                    0,
-                    ptr::null_mut(),
-                );
+            // 请求 IPC 线程创建回复窗口并登记发送器
+            let (reply_tx, reply_rx) = mpsc::channel();
+            send_command_to_ipc_thread(IpcCommand::CreateReplyWindow {
+                result_sender: sender,
+                reply_tx,
+            })?;
+            eprintln!("[IPC-DIAG] CreateReplyWindow 命令已发送，等待回执");
 
-                if hwnd == 0 {
-                    let last_error = windows_sys::Win32::Foundation::GetLastError();
-                    return Err(EverythingError::IpcFailed(format!(
-                        "无法创建消息窗口, error: {}",
-                        last_error
-                    )));
+            // 等待 IPC 线程执行完毕（mpsc 等待，非窗口消息等待，无死锁风险）
+            let reply_hwnd = match reply_rx.recv_timeout(IPC_COMMAND_REPLY_TIMEOUT) {
+                Ok(Ok(hwnd)) => {
+                    eprintln!("[IPC-DIAG] CreateReplyWindow 回执收到 hwnd=0x{:X}", hwnd);
+                    hwnd
                 }
-
-                // 日志输出已禁用
-
-                // 注册发送器
-                let senders = get_window_senders();
-                if let Ok(mut senders_guard) = senders.lock() {
-                    senders_guard.insert(hwnd, sender);
-                    // 日志输出已禁用
-                } else {
-                    // 日志输出已禁用
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    eprintln!("[IPC-DIAG] ERROR: 等待 CreateReplyWindow 回执超时（IPC 线程可能卡死）");
+                    return Err(EverythingError::IpcFailed(
+                        "等待 IPC 线程创建回复窗口超时".to_string(),
+                    ))
                 }
+            };
 
-                Ok(EverythingIpcHandle {
-                    reply_hwnd: hwnd,
-                    result_receiver: receiver,
-                })
-            }
+            Ok(EverythingIpcHandle {
+                reply_hwnd,
+                result_receiver: receiver,
+                needs_destroy: true,
+            })
         }
 
-        fn destroy(&self) {
-            unsafe {
-                let senders = get_window_senders();
-                if let Ok(mut senders_guard) = senders.lock() {
-                    senders_guard.remove(&self.reply_hwnd);
-                }
-                DestroyWindow(self.reply_hwnd);
+        fn destroy(&mut self) {
+            if !self.needs_destroy {
+                return;
             }
+            self.needs_destroy = false;
+
+            // 请求 IPC 线程销毁窗口（单向命令，无需等待回执：
+            // IPC 线程空闲时即会处理，窗口残留的最坏影响是多一条无效 sender 记录）
+            let _ = send_command_to_ipc_thread(IpcCommand::DestroyReplyWindow {
+                hwnd: self.reply_hwnd,
+            });
         }
     }
 
@@ -942,27 +1144,46 @@ pub mod windows {
                 )));
             }
 
+            eprintln!(
+                "[IPC-DIAG] send_search_query 开始 SendMessageTimeoutW（5s 上限）query_len={} offset={}",
+                query.len(),
+                offset
+            );
+
             // SendMessageW 是同步的，会阻塞直到 Everything 处理完消息
             // 如果 Everything 在 SendMessageW 期间调用 SendMessageW 发送回复到我们的窗口，
             // 我们的窗口过程会被 Everything 的线程调用，而不是在消息循环中
-            let result = SendMessageW(
+            // SendMessageTimeoutW 替代 SendMessageW：Everything 偶发挂起时不再无限阻塞，
+            // 超时后放弃本批（上层分页循环会带超时/取消逻辑退出）
+            const SMTO_BLOCK: u32 = 0x0001;
+            const SEND_TIMEOUT_MS: u32 = 5000;
+            let mut send_result: usize = 0;
+            let send_ok = SendMessageTimeoutW(
                 everything_hwnd,
                 WM_COPYDATA,
-                reply_hwnd as WPARAM,
-                &mut cds as *mut COPYDATASTRUCT as LPARAM,
+                reply_hwnd as usize,
+                &mut cds as *mut COPYDATASTRUCT as isize,
+                SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+                SEND_TIMEOUT_MS,
+                &mut send_result,
             );
 
-            if result == 0 {
+            if send_ok == 0 {
                 let last_error = windows_sys::Win32::Foundation::GetLastError();
+                eprintln!(
+                    "[IPC-DIAG] ERROR: SendMessageTimeout 失败/超时, last error: {}",
+                    last_error
+                );
                 log_debug!(
-                    "[DEBUG] ERROR: SendMessage returned FALSE, last error: {}",
+                    "[DEBUG] ERROR: SendMessageTimeout failed/timeout, last error: {}",
                     last_error
                 );
                 return Err(EverythingError::IpcFailed(format!(
-                    "SendMessage 返回 FALSE, error: {}",
+                    "SendMessage 超时或失败（Everything 可能未响应）, error: {}",
                     last_error
                 )));
             }
+            eprintln!("[IPC-DIAG] SendMessageTimeoutW 成功返回，Everything 已接受查询");
 
             // SendMessageW 返回后，Everything 可能已经发送了回复
             // 如果是通过 SendMessageW 发送的，窗口过程已经在 SendMessageW 期间被调用了
@@ -974,89 +1195,8 @@ pub mod windows {
         Ok(())
     }
 
-    /// 处理消息循环，等待回复
-    /// 如果提供了 cancel_flag，会在每次循环中检查是否已取消
-    fn pump_messages(timeout: Duration, cancel_flag: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>) -> bool {
-        let start = Instant::now();
-        let mut message_count = 0;
-        let mut wm_copydata_count = 0;
-
-        unsafe {
-            let mut msg = MSG {
-                hwnd: 0,
-                message: 0,
-                wParam: 0,
-                lParam: 0,
-                time: 0,
-                pt: POINT { x: 0, y: 0 },
-            };
-
-            while start.elapsed() < timeout {
-                // 检查是否被取消（在每次循环开始时检查，提高响应性）
-                if let Some(flag) = cancel_flag {
-                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        log_debug!("[DEBUG] pump_messages: Search cancelled, exiting message loop");
-                        return false;
-                    }
-                }
-
-                // 非阻塞检查消息 - 获取所有窗口的所有消息
-                let has_message = PeekMessageW(
-                    &mut msg, 0, // HWND_NULL - 获取所有窗口的消息
-                    0, // 0 - 所有消息
-                    0, // 0 - 所有消息
-                    PM_REMOVE,
-                );
-
-                if has_message != 0 {
-                    message_count += 1;
-
-                    // 记录重要消息
-                    if msg.message == WM_COPYDATA {
-                        wm_copydata_count += 1;
-                        // 日志输出已禁用
-                    }
-                    // 只记录重要消息，减少日志噪音
-                    // else if msg.message != WM_TIMER && msg.message != WM_PAINT {
-                    //     eprintln!("[DEBUG] pump_messages: Received message {} (0x{:X}), hwnd: {:?}",
-                    //         msg.message, msg.message, msg.hwnd);
-                    // }
-
-                    // WM_QUIT 是正常的退出消息，不应该导致搜索被取消
-                    // 我们应该忽略它，继续处理其他消息
-                    // 只有在 cancel_flag 为 true 时才应该返回 false
-                    if msg.message == WM_QUIT {
-                        log_debug!("[DEBUG] pump_messages: Received WM_QUIT (ignoring, this is normal)");
-                        // 不返回 false，继续处理消息
-                        // WM_QUIT 可能是来自其他窗口或线程的，不应该影响当前搜索
-                    }
-
-                    // 只在处理 WM_COPYDATA 时输出详细日志
-                    if msg.message == WM_COPYDATA {
-                        // 日志输出已禁用
-                    }
-                    TranslateMessage(&msg);
-                    let _result = DispatchMessageW(&msg);
-                    if msg.message == WM_COPYDATA {
-                        // 日志输出已禁用
-                    }
-                } else {
-                    // 没有消息，短暂休眠（减少休眠时间以提高响应性）
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-        }
-
-        // 只在收到 WM_COPYDATA 时才输出完成日志
-        if wm_copydata_count > 0 {
-            // 日志输出已禁用
-            let _ = (message_count, wm_copydata_count, start.elapsed());
-        }
-        true
-    }
-
     /// 搜索文件（使用 Everything IPC）
-    /// 
+    ///
     /// # Arguments
     /// * `query` - 搜索查询字符串
     /// * `max_results` - 最大结果数量
@@ -1168,13 +1308,10 @@ pub mod windows {
                 e
             })?;
 
-            // 等待回复
-            // 性能优化：使用自适应休眠时间减少CPU占用，同时保持响应性
+            // 等待回复（分段 recv_timeout：阻塞等待不占 CPU，且随时可检查取消标志）
             let start = Instant::now();
-            let mut batch_result: Option<
-                Result<(Vec<(String, u32)>, u32, u32, u32), EverythingError>,
-            > = None;
-            let mut consecutive_empty_count = 0u32; // 连续空轮询计数
+            let wait_slice = Duration::from_millis(50);
+            let mut batch_result: Option<IpcBatchResult> = None;
 
             loop {
                 // 取消检查
@@ -1185,44 +1322,18 @@ pub mod windows {
                     }
                 }
 
-                // 检查超时
-                if start.elapsed() > timeout {
-                    log_debug!(
-                        "[DEBUG] ERROR: Timeout waiting for batch reply after {:?}",
-                        start.elapsed()
-                    );
-                    return Err(EverythingError::Timeout);
-                }
-
-                // 尝试接收结果
-                match ipc_handle.result_receiver.try_recv() {
+                // 分段阻塞等待结果通道（窗口消息全部由专用 IPC 线程处理，
+                // 搜索线程不再泵消息，也不再 sleep 轮询）
+                match ipc_handle
+                    .result_receiver
+                    .recv_timeout(wait_slice)
+                {
                     Ok(result) => {
                         batch_result = Some(result);
                         break;
                     }
-                    Err(mpsc::TryRecvError::Empty) => {
-                        // 没有消息，使用自适应休眠时间
-                        // 连续空轮询次数越多，休眠时间越长（最多50ms），减少CPU占用
-                        consecutive_empty_count += 1;
-                        let sleep_ms = if consecutive_empty_count < 5 {
-                            1 // 前几次快速检查，保持响应性
-                        } else if consecutive_empty_count < 20 {
-                            5 // 中等休眠
-                        } else {
-                            20 // 较长休眠，减少CPU占用
-                        };
-
-                        std::thread::sleep(Duration::from_millis(sleep_ms));
-
-                        // 定期处理消息循环，确保窗口消息能被处理（但频率降低）
-                        if consecutive_empty_count % 10 == 0 {
-                            if !pump_messages(Duration::from_millis(10), cancelled) {
-                                log_debug!("[DEBUG] Search cancelled in pump_messages");
-                                return Err(EverythingError::Other("搜索已取消".to_string()));
-                            }
-                        }
-
-                        // 如果等待时间已经超过本批次超时阈值，则带着已获取的部分结果提前返回
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // 本批次超时：带着已获取的部分结果提前返回
                         if start.elapsed() > timeout {
                             if !all_results.is_empty() {
                                 log_debug!(
@@ -1241,7 +1352,7 @@ pub mod windows {
                             }
                         }
                     }
-                    Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
                         log_debug!("[DEBUG] ERROR: Result channel disconnected");
                         return Err(EverythingError::IpcFailed("通道已断开".to_string()));
                     }

@@ -1223,12 +1223,16 @@ fn set_launcher_window_position(window: &tauri::WebviewWindow, app_data_dir: &st
 #[tauri::command]
 pub fn toggle_launcher(app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    
+
     if let Some(window) = app.get_webview_window("launcher") {
         if window.is_visible().unwrap_or(false) {
-            // 在隐藏前保存当前位置
+            // 位置保存涉及 DB（可能被其他线程持锁），移到后台线程，
+            // 保证主线程立即 hide，避免热键切换时卡 UI
+            let app_data_dir_clone = app_data_dir.clone();
             if let Ok(position) = window.outer_position() {
-                let _ = window_config::save_launcher_position(&app_data_dir, position.x, position.y);
+                std::thread::spawn(move || {
+                    let _ = window_config::save_launcher_position(&app_data_dir_clone, position.x, position.y);
+                });
             }
             let _ = window.hide();
         } else {
@@ -1245,11 +1249,15 @@ pub fn toggle_launcher(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_launcher(app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    
+
     if let Some(window) = app.get_webview_window("launcher") {
-        // 在隐藏前保存当前位置
+        // 位置保存涉及 DB（可能被其他线程持锁），移到后台线程，
+        // 保证 Esc 隐藏窗口的路径不被 DB 锁阻塞（曾导致「未响应」卡死）
+        let app_data_dir_clone = app_data_dir.clone();
         if let Ok(position) = window.outer_position() {
-            let _ = window_config::save_launcher_position(&app_data_dir, position.x, position.y);
+            std::thread::spawn(move || {
+                let _ = window_config::save_launcher_position(&app_data_dir_clone, position.x, position.y);
+            });
         }
         let _ = window.hide();
     }
@@ -4074,13 +4082,21 @@ pub fn get_open_history_item(key: String, app: tauri::AppHandle) -> Result<Optio
 }
 
 #[tauri::command]
-pub fn record_plugin_usage(
+pub async fn record_plugin_usage(
     plugin_id: String,
     name: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<plugin_usage::PluginUsage, String> {
+    // ⚠️ 死锁修复（dump 实锤）：此命令原为 sync，在主线程（事件循环）执行，
+    // get_connection 抢 SHARED_CONNECTION 锁。一旦其他线程持锁（或锁竞争），
+    // 主线程事件循环被阻塞，所有 is_visible/show/set_focus 请求全部悬挂 → 全局死锁。
+    // 修复：DB 操作移到 spawn_blocking，主线程永不碰 DB 锁。
     let app_data_dir = get_app_data_dir(&app)?;
-    plugin_usage::record_plugin_open(plugin_id, name, &app_data_dir)
+    tauri::async_runtime::spawn_blocking(move || {
+        plugin_usage::record_plugin_open(plugin_id, name, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("record_plugin_usage join error: {}", e))?
 }
 
 #[tauri::command]

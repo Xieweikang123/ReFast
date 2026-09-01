@@ -283,17 +283,32 @@ fn main() {
                     } = event
                     {
                         // Left click - toggle launcher window
-                        if let Some(window) = tray.app_handle().get_webview_window("launcher") {
-                            let _ = window.is_visible().map(|visible| {
-                                if visible {
-                                    let _ = window.hide();
-                                } else {
-                                    set_launcher_window_position(&window, &app_data_dir_clone1);
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                            });
-                        }
+                        //
+                        // ⚠️ 死锁修复（dump 取证实锤）：
+                        // 此回调在 tao 事件循环线程上执行。回调里直接调用
+                        // window.is_visible()/show()/set_focus() 等 Tauri API 时，
+                        // 这些 API 会向事件循环发送 channel 请求并阻塞等待回复 ——
+                        // 而事件循环正是当前被回调阻塞的线程，回调不返回请求永远
+                        // 得不到处理 → 主线程自死锁（现场栈：
+                        //   is_visible → tauri_runtime_wry::is_visible
+                        //   → mpmc channel 等待；同时 get_connection 抢
+                        //   SHARED_CONNECTION 锁，形成双向阻塞）。
+                        // 修复：回调只投递请求，全部窗口操作移到独立线程执行。
+                        let app_handle = tray.app_handle().clone();
+                        let dir_for_tray = app_data_dir_clone1.clone();
+                        std::thread::spawn(move || {
+                            if let Some(window) = app_handle.get_webview_window("launcher") {
+                                let _ = window.is_visible().map(|visible| {
+                                    if visible {
+                                        let _ = window.hide();
+                                    } else {
+                                        set_launcher_window_position(&window, &dir_for_tray);
+                                        let _ = window.show();
+                                        let _ = window.set_focus();
+                                    }
+                                });
+                            }
+                        });
                     }
                 })
                 .on_menu_event(move |app, event| match event.id.as_ref() {

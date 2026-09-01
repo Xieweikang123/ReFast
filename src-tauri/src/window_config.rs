@@ -3,8 +3,15 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const MARKDOWN_EDITOR_WINDOW_KEY: &str = "markdown-editor-window";
+
+/// launcher 位置的进程内缓存。
+/// ⚠️ 死锁修复（dump 实锤）：托盘/热键唤起路径每次调用 get_launcher_position 都会
+/// 抢 SHARED_CONNECTION DB 锁；当锁被长时间持有时，唤起链整体悬挂。
+/// 位置是低频写、高频读的数据 —— 读路径走缓存，彻底移出唤起热路径。
+static LAUNCHER_POSITION_CACHE: Mutex<Option<Option<WindowPosition>>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct WindowPosition {
@@ -82,13 +89,32 @@ pub fn save_launcher_position(
 ) -> Result<(), String> {
     let mut configs = load_window_config(app_data_dir).unwrap_or_default();
     configs.launcher.position = Some(WindowPosition { x, y });
-    save_window_config(app_data_dir, &configs)
+    let result = save_window_config(app_data_dir, &configs);
+    if result.is_ok() {
+        // 写成功后同步缓存（读路径不再回源）
+        if let Ok(mut cache) = LAUNCHER_POSITION_CACHE.lock() {
+            *cache = Some(Some(WindowPosition { x, y }));
+        }
+    }
+    result
 }
 
 pub fn get_launcher_position(app_data_dir: &Path) -> Option<WindowPosition> {
-    load_window_config(app_data_dir)
+    // 快路径：缓存命中直接返回（不碰 DB 锁）
+    if let Ok(cache) = LAUNCHER_POSITION_CACHE.lock() {
+        if let Some(ref cached) = *cache {
+            return cached.clone();
+        }
+    }
+
+    // 慢路径：读 DB 并填充缓存
+    let loaded = load_window_config(app_data_dir)
         .ok()
-        .and_then(|configs| configs.launcher.position)
+        .and_then(|configs| configs.launcher.position);
+    if let Ok(mut cache) = LAUNCHER_POSITION_CACHE.lock() {
+        *cache = Some(loaded.clone());
+    }
+    loaded
 }
 
 #[derive(Debug, Clone, Default)]

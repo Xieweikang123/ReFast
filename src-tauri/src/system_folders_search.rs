@@ -129,7 +129,13 @@ pub mod windows {
 
             // 内置常用系统工具（与开始菜单索引无关，便于搜索「环境变量」等）
             let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
-            let builtin_tools: [(&str, &str, String, bool); 6] = [
+            let builtin_tools: [(&str, &str, String, bool); 7] = [
+                (
+                    "命令提示符",
+                    "Command Prompt",
+                    format!(r"{}\System32\cmd.exe", windir),
+                    false,
+                ),
                 (
                     "环境变量",
                     "Environment variables",

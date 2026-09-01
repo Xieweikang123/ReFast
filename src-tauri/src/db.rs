@@ -44,9 +44,18 @@ fn ensure_db_path(app_data_dir: &Path) -> Result<PathBuf, String> {
 /// 获取共享的读写连接（锁被持有的时长 = 调用方使用连接的时长）。
 /// 首次调用时打开连接并运行完整迁移；之后复用同一连接，不再重复迁移。
 pub fn get_connection(app_data_dir: &Path) -> Result<SharedConnectionGuard, String> {
+    // 慢锁监控：获取连接锁超过 100ms 记录日志，便于诊断「未响应」类卡死
+    let lock_start = std::time::Instant::now();
     let mut slot = SHARED_CONNECTION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_wait = lock_start.elapsed();
+    if lock_wait.as_millis() >= 100 {
+        eprintln!(
+            "[db] WARNING: SHARED_CONNECTION lock 获取耗时 {}ms（存在长时间持锁者，可能导致 UI 卡死）",
+            lock_wait.as_millis()
+        );
+    }
 
     if slot.is_none() {
         let db_path = ensure_db_path(app_data_dir)?;

@@ -558,26 +558,54 @@ pub mod monitor {
                     if msg.message == WM_CLIPBOARDUPDATE {
                         // 剪贴板内容已改变，现在可以安全地读取
                         // 因为这是系统通知，说明剪贴板操作已完成
-                        
-                        // 检查文本内容
-                        if let Ok(content) = get_clipboard_text() {
-                            if !content.is_empty() && content != last_text_content {
-                                if let Err(e) = add_clipboard_item(content.clone(), "text".to_string(), &app_data_dir) {
-                                    eprintln!("[Clipboard Monitor] Failed to add text clipboard item: {}", e);
-                                }
-                                last_text_content = content;
+                        //
+                        // ⚠️ 关键约束：监听线程绝不能在持有 OpenClipboard 状态时做耗时工作。
+                        // 剪贴板是全系统单例资源，打开期间其他进程（微信/资源管理器/webview）
+                        // 的剪贴板访问都会被阻塞；且本线程同时是 LL 键盘钩子链路的一部分，
+                        // 卡住会拖慢全局键盘响应（表现为「软件打不开」）。
+                        // 因此策略是：快速快照（拷贝字节）→ 立即 CloseClipboard → 再做重处理。
+
+                        // 检查文本内容（OpenClipboard 窗口极短：仅拷贝字符串）
+                        if let Ok((content, text_changed)) = snapshot_clipboard_text(&last_text_content) {
+                            if text_changed {
+                                last_text_content = content.clone();
+                                let dir = app_data_dir.clone();
+                                // 文本入库很快，但为绝对安全仍移到后台线程，不阻塞消息循环
+                                thread::spawn(move || {
+                                    if let Err(e) = add_clipboard_item(content, "text".to_string(), &dir) {
+                                        eprintln!("[Clipboard Monitor] Failed to add text clipboard item: {}", e);
+                                    }
+                                });
                             }
                         }
-                        
-                        // 检查图片内容
-                        if let Ok(image_path) = get_clipboard_image(&app_data_dir) {
-                            if !image_path.is_empty() {
-                                let image_hash = format!("{}", image_path);
-                                if image_hash != last_image_hash {
-                                    if let Err(e) = add_clipboard_item(image_path.clone(), "image".to_string(), &app_data_dir) {
-                                        eprintln!("[Clipboard Monitor] Failed to add image clipboard item: {}", e);
+
+                        // 检查图片内容：
+                        // OpenClipboard → GlobalLock → 拷贝 DIB 字节 → GlobalUnlock → CloseClipboard
+                        // 之后像素转换/哈希/PNG 编码全部在剪贴板关闭状态下进行
+                        match snapshot_clipboard_image() {
+                            SnapshotImage::None => {}
+                            SnapshotImage::NoImage => {
+                                // 剪贴板无图片，无操作
+                            }
+                            SnapshotImage::Data(dib_bytes) => {
+                                if let Some(hash16) = hash_dib_snapshot(&dib_bytes) {
+                                    if hash16 != last_image_hash {
+                                        last_image_hash = hash16.clone();
+                                        let dir = app_data_dir.clone();
+                                        // PNG 编码 + 文件 IO + DB 写入全部在后台线程
+                                        thread::spawn(move || {
+                                            match save_dib_snapshot_as_png(&dib_bytes, &hash16, &dir) {
+                                                Ok(image_path) => {
+                                                    if let Err(e) = add_clipboard_item(image_path.clone(), "image".to_string(), &dir) {
+                                                        eprintln!("[Clipboard Monitor] Failed to add image clipboard item: {}", e);
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    eprintln!("[Clipboard Monitor] Failed to save clipboard image: {}", e);
+                                                }
+                                            }
+                                        });
                                     }
-                                    last_image_hash = image_hash;
                                 }
                             }
                         }
@@ -595,6 +623,131 @@ pub mod monitor {
         });
         
         Ok(())
+    }
+
+    /// 文本快照结果
+    /// (文本内容, 是否为新增内容)
+    fn snapshot_clipboard_text(last_text_content: &str) -> Result<(String, bool), String> {
+        let content = get_clipboard_text()?;
+        let changed = !content.is_empty() && content != last_text_content;
+        Ok((content, changed))
+    }
+
+    /// 图片快照枚举
+    enum SnapshotImage {
+        /// 打不开剪贴板等瞬时错误（下次更新会重试）
+        None,
+        /// 剪贴板中没有图片
+        NoImage,
+        /// 成功快照的完整 DIB 字节（BITMAPINFOHEADER + 像素数据）
+        Data(Vec<u8>),
+    }
+
+    /// 快照剪贴板图片：仅在 OpenClipboard 状态内做「拷贝字节」这一件事，
+    /// 像素转换/哈希/PNG 编码等耗时工作留给调用方在 CloseClipboard 之后处理
+    fn snapshot_clipboard_image() -> SnapshotImage {
+        unsafe {
+            // 打不开就立即放弃（剪贴板被其他进程占用，等下一次更新通知再试）
+            if OpenClipboard(0 as HWND) == 0 {
+                return SnapshotImage::None;
+            }
+
+            let result = if IsClipboardFormatAvailable(CF_DIB) != 0 {
+                let h_data = GetClipboardData(CF_DIB);
+                if h_data == 0 {
+                    SnapshotImage::None
+                } else {
+                    let p_data = GlobalLock(h_data as *mut std::ffi::c_void);
+                    if p_data.is_null() {
+                        SnapshotImage::None
+                    } else {
+                        // 拷贝全部 DIB 字节后立即解锁关闭
+                        let size = GlobalSize(h_data as *mut std::ffi::c_void);
+                        let bytes = std::slice::from_raw_parts(p_data as *const u8, size).to_vec();
+                        GlobalUnlock(h_data as *mut std::ffi::c_void);
+                        SnapshotImage::Data(bytes)
+                    }
+                }
+            } else {
+                SnapshotImage::NoImage
+            };
+
+            CloseClipboard();
+            result
+        }
+    }
+
+    /// 对 DIB 快照计算内容哈希（用于去重判断，纯内存操作）
+    fn hash_dib_snapshot(dib_bytes: &[u8]) -> Option<String> {
+        let mut hasher = Sha256::new();
+        hasher.update(dib_bytes);
+        let hash_result = hasher.finalize();
+        let hash_str = format!("{:x}", hash_result);
+        Some(hash_str[..16].to_string())
+    }
+
+    /// 把 DIB 快照转换为 PNG 并保存到剪贴板图片目录（后台线程调用，无剪贴板依赖）
+    fn save_dib_snapshot_as_png(dib_bytes: &[u8], hash16: &str, app_data_dir: &PathBuf) -> Result<String, String> {
+        if dib_bytes.len() < std::mem::size_of::<BITMAPINFOHEADER>() {
+            return Err("DIB 数据过小".to_string());
+        }
+
+        // 解析 BITMAPINFOHEADER
+        let bmi = unsafe { &*(dib_bytes.as_ptr() as *const BITMAPINFOHEADER) };
+        let width = bmi.biWidth;
+        let height = bmi.biHeight.abs();
+        let bit_count = bmi.biBitCount;
+
+        if width <= 0 || height == 0 {
+            return Err(format!("无效的图片尺寸: {}x{}", width, height));
+        }
+
+        let bytes_per_pixel = (bit_count / 8) as usize;
+        if bytes_per_pixel < 3 {
+            // 8/16 位等低色深格式暂不支持（罕见），避免越界
+            return Err(format!("不支持的位深: {}", bit_count));
+        }
+
+        let row_size = ((width * bit_count as i32 + 31) / 32 * 4) as usize;
+        let header_size = std::mem::size_of::<BITMAPINFOHEADER>();
+        if dib_bytes.len() < header_size + row_size * height as usize {
+            return Err("DIB 数据不完整".to_string());
+        }
+
+        let image_data = &dib_bytes[header_size..];
+
+        // 转换 BGR 到 RGB
+        let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
+        for y in (0..height).rev() {
+            for x in 0..width {
+                let offset = (y as usize * row_size + x as usize * bytes_per_pixel) as usize;
+                if offset + 3 <= image_data.len() {
+                    let b = image_data[offset];
+                    let g = image_data[offset + 1];
+                    let r = image_data[offset + 2];
+                    rgba_data.push(r);
+                    rgba_data.push(g);
+                    rgba_data.push(b);
+                    rgba_data.push(255); // Alpha
+                }
+            }
+        }
+
+        // 保存目录
+        let clipboard_images_dir = app_data_dir.join("clipboard_images");
+        std::fs::create_dir_all(&clipboard_images_dir)
+            .map_err(|e| format!("Failed to create clipboard images directory: {}", e))?;
+
+        let filename = format!("clipboard_{}.png", hash16);
+        let file_path = clipboard_images_dir.join(&filename);
+
+        // 已存在说明是重复图片，直接复用
+        if file_path.exists() {
+            return Ok(file_path.to_string_lossy().to_string());
+        }
+
+        save_png(&file_path, &rgba_data, width as u32, height as u32)?;
+        Ok(file_path.to_string_lossy().to_string())
     }
 
     /// 创建隐藏的消息窗口
@@ -710,110 +863,6 @@ pub mod monitor {
 
             CloseClipboard();
             Ok(result)
-        }
-    }
-
-    /// 获取剪切板图片并保存到本地
-    pub fn get_clipboard_image(app_data_dir: &PathBuf) -> Result<String, String> {
-        unsafe {
-            // 尝试打开剪贴板，如果失败（可能被其他程序占用），立即返回错误
-            // 不重试，避免阻塞用户的复制操作
-            if OpenClipboard(0 as HWND) == 0 {
-                return Err("Clipboard is busy or unavailable".to_string());
-            }
-
-            let result = if IsClipboardFormatAvailable(CF_DIB) != 0 {
-                let h_data = GetClipboardData(CF_DIB);
-                if h_data == 0 {
-                    CloseClipboard();
-                    return Err("Failed to get clipboard DIB data".to_string());
-                }
-
-                let p_data = GlobalLock(h_data as *mut std::ffi::c_void);
-                if p_data.is_null() {
-                    CloseClipboard();
-                    return Err("Failed to lock clipboard data".to_string());
-                }
-
-                let data_size = GlobalSize(h_data as *mut std::ffi::c_void);
-                if data_size == 0 {
-                    GlobalUnlock(h_data as *mut std::ffi::c_void);
-                    CloseClipboard();
-                    return Err("Invalid clipboard data size".to_string());
-                }
-
-                // 读取 BITMAPINFOHEADER
-                let bmi = p_data as *const BITMAPINFOHEADER;
-                let width = (*bmi).biWidth;
-                let height = (*bmi).biHeight.abs();
-                let bit_count = (*bmi).biBitCount;
-
-                // 创建保存目录
-                let clipboard_images_dir = app_data_dir.join("clipboard_images");
-                if let Err(e) = std::fs::create_dir_all(&clipboard_images_dir) {
-                    GlobalUnlock(h_data as *mut std::ffi::c_void);
-                    CloseClipboard();
-                    return Err(format!("Failed to create clipboard images directory: {}", e));
-                }
-
-                // 计算图片数据大小
-                let bytes_per_pixel = (bit_count / 8) as usize;
-                let row_size = ((width * bit_count as i32 + 31) / 32 * 4) as usize;
-                let image_data_size = row_size * height as usize;
-
-                // 获取图片数据指针（跳过 BITMAPINFOHEADER）
-                let image_data_ptr = (p_data as *const u8).add(std::mem::size_of::<BITMAPINFOHEADER>());
-                let image_data = std::slice::from_raw_parts(image_data_ptr, image_data_size.min(data_size - std::mem::size_of::<BITMAPINFOHEADER>()));
-
-                // 转换 BGR 到 RGB 并保存为 PNG
-                let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
-                for y in (0..height).rev() {
-                    for x in 0..width {
-                        let offset = (y as usize * row_size + x as usize * bytes_per_pixel) as usize;
-                        if offset + bytes_per_pixel <= image_data.len() {
-                            let b = image_data[offset];
-                            let g = image_data[offset + 1];
-                            let r = image_data[offset + 2];
-                            rgba_data.push(r);
-                            rgba_data.push(g);
-                            rgba_data.push(b);
-                            rgba_data.push(255); // Alpha
-                        }
-                    }
-                }
-
-                // 计算图片内容的哈希值（用于去重）
-                let mut hasher = Sha256::new();
-                hasher.update(&rgba_data);
-                let hash_result = hasher.finalize();
-                let hash_str = format!("{:x}", hash_result);
-                
-                // 使用哈希值作为文件名（取前16个字符）
-                let filename = format!("clipboard_{}.png", &hash_str[..16]);
-                let file_path = clipboard_images_dir.join(&filename);
-
-                // 如果文件已存在（说明是重复的图片），直接返回路径
-                if file_path.exists() {
-                    GlobalUnlock(h_data as *mut std::ffi::c_void);
-                    CloseClipboard();
-                    return Ok(file_path.to_string_lossy().to_string());
-                }
-
-                // 保存为 PNG
-                let save_result = save_png(&file_path, &rgba_data, width as u32, height as u32);
-
-                GlobalUnlock(h_data as *mut std::ffi::c_void);
-                
-                match save_result {
-                    Ok(_) => Ok(file_path.to_string_lossy().to_string()),
-                    Err(e) => Err(format!("Failed to save PNG: {}", e)),
-                }
-            } else {
-                Err("No image in clipboard".to_string())
-            };
-
-            CloseClipboard();
-            result
         }
     }
 
