@@ -8,7 +8,6 @@ mod everything_search;
 mod everything_filters;
 mod file_history;
 mod hooks;
-mod hotkey;
 mod hotkey_handler;
 // mod keyboard_hook; // 已不再需要，hotkey_handler 已支持双击修饰键
 mod db;
@@ -782,6 +781,7 @@ fn main() {
             show_json_formatter_window,
             take_json_formatter_content,
             show_markdown_editor_window,
+            take_markdown_editor_file_path,
             show_translation_window,
             show_hex_converter_window,
             // show_color_picker_window,  // 暂时屏蔽，待优化
@@ -842,7 +842,7 @@ fn main() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
+        .run(|_app_handle, event| {
             match event {
                 // macOS: 点击 dock 图标时显示主窗口
                 #[cfg(target_os = "macos")]

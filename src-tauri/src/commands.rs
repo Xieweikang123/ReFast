@@ -5,7 +5,6 @@ pub mod memos;
 pub mod word_records;
 
 // 重新导出子模块中的所有命令
-pub use color_picker::{show_color_picker_window, pick_color_from_screen};
 pub use memos::{get_all_memos, add_memo, update_memo, delete_memo, search_memos};
 pub use word_records::{
     get_all_word_records,
@@ -54,6 +53,12 @@ static CALCULATOR_PAD_PENDING_EXPRESSION: LazyLock<Mutex<Option<String>>> =
 static JSON_FORMATTER_PENDING_CONTENT: LazyLock<Mutex<Option<String>>> =
     LazyLock::new(|| Mutex::new(None));
 
+static MARKDOWN_EDITOR_PENDING_FILE_PATH: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+static MARKDOWN_EDITOR_GEOMETRY: LazyLock<Mutex<Option<window_config::WindowGeometry>>> =
+    LazyLock::new(|| Mutex::new(None));
+
 // 搜索任务管理器：管理 Everything 搜索的取消标志
 // 每次新搜索会将旧搜索的取消标志设为 true，从而让旧任务尽快退出
 struct SearchTaskManager {
@@ -71,10 +76,8 @@ static SEARCH_TASK_MANAGER: LazyLock<Arc<Mutex<SearchTaskManager>>> = LazyLock::
 // 会话管理器：存储 Everything 搜索会话的结果
 #[derive(Debug, Clone)]
 struct SearchSession {
-    query: String,
     results: Vec<everything_search::EverythingResult>,
     total_count: u32,
-    created_at: std::time::Instant,
 }
 
 struct SearchSessionManager {
@@ -390,13 +393,12 @@ pub async fn search_applications(
     query: String,
     app: tauri::AppHandle,
 ) -> Result<Vec<app_search::AppInfo>, String> {
-    eprintln!("[搜索应用] 函数被调用: query={}", query);
     let cache = get_app_cache();
     let app_handle_clone = app.clone();
     let query_clone = query.clone();
     
     // 在后台线程执行搜索，避免阻塞 UI
-    let cache_for_search = cache.clone();
+    let _cache_for_search = cache.clone();
     let app_handle_for_scan = app_handle_clone.clone();
     
     let results = async_runtime::spawn_blocking(move || -> Result<Vec<app_search::AppInfo>, String> {
@@ -441,15 +443,15 @@ pub async fn search_applications(
             
             apps_arc
         }; // 锁在这里释放
-        let lock_total_time = std::time::Instant::now().duration_since(lock_start);
+        let _lock_total_time = std::time::Instant::now().duration_since(lock_start);
         
         // 步骤2: 先执行搜索（避免预先检查计算器，节省时间）
         let search_start = std::time::Instant::now();
         let mut results = app_search::windows::search_apps(&query_clone, apps.as_slice());
-        let search_time = search_start.elapsed();
+        let _search_time = search_start.elapsed();
         
         
-        let total_time = std::time::Instant::now().duration_since(total_start);
+        let _total_time = std::time::Instant::now().duration_since(total_start);
         
         // 步骤3: 如果查询非空，检查是否需要添加内置计算器
         if !query_clone.trim().is_empty() {
@@ -488,8 +490,6 @@ pub async fn search_applications(
     .await
     .map_err(|e| format!("搜索任务失败: {}", e))??;
     
-    eprintln!("[搜索应用] 搜索完成: 结果数量={}", results.len());
-    
     // 优化：先返回搜索结果，图标提取完全在后台异步执行，不阻塞搜索返回
     // 克隆需要的数据用于后台线程
     let results_clone = results.clone();
@@ -501,11 +501,6 @@ pub async fn search_applications(
     std::thread::spawn(move || {
         
         // 筛选出缺少图标的应用，并去重（在后台线程中执行，不阻塞搜索返回）
-        eprintln!("[图标提取] 开始筛选缺少图标的应用: 搜索结果总数={}", results_clone.len());
-        let results_with_icons = results_clone.iter().filter(|r| r.icon.is_some()).count();
-        let results_without_icons = results_clone.iter().filter(|r| r.icon.is_none()).count();
-        eprintln!("[图标提取] 搜索结果统计: 有图标={}, 缺少图标={}", results_with_icons, results_without_icons);
-        
         // 筛选出缺少图标的应用，同时检查缓存中是否已标记为失败
         let mut results_paths: Vec<String> = {
             let cache_guard_for_filter = cache_clone.lock().ok();
@@ -522,17 +517,14 @@ pub async fn search_applications(
                             if let Some(ref apps_arc) = **guard {
                                 if let Some(app) = apps_arc.iter().find(|a| a.path == r.path) {
                                     if app_search::windows::is_icon_extraction_failed(&app.icon) {
-                                        eprintln!("[图标提取] 搜索结果中缺少图标，但缓存中已标记为失败，跳过: name={}, path={}", r.name, r.path);
                                         return false; // 已标记为失败，跳过
                                     }
                                     if !app_search::windows::needs_icon_extraction(&app.icon) {
-                                        eprintln!("[图标提取] 搜索结果中缺少图标，但缓存中已有图标，跳过: name={}, path={}", r.name, r.path);
                                         return false; // 缓存中已有图标，跳过
                                     }
                                 }
                             }
                         }
-                        eprintln!("[图标提取] 搜索结果缺少图标: name={}, path={}", r.name, r.path);
                         true
                     } else {
                         false
@@ -542,8 +534,6 @@ pub async fn search_applications(
                 .collect()
             // cache_guard_for_filter 在这里自动释放
         };
-        
-        eprintln!("[图标提取] 筛选完成: 缺少图标的应用数量={}", results_paths.len());
         
         // 去重：移除重复的路径
         results_paths.sort();
@@ -561,18 +551,9 @@ pub async fn search_applications(
                             let need_extract: bool = apps_arc.iter()
                                 .find(|a| a.path == **path_str)
                                 .map(|a| {
-                                    let needs_extract = app_search::windows::needs_icon_extraction(&a.icon);
-                                    if needs_extract {
-                                        eprintln!("[图标提取] 缓存中缺少图标: path={}", path_str);
-                                    } else if app_search::windows::is_icon_extraction_failed(&a.icon) {
-                                        eprintln!("[图标提取] 缓存中已标记为提取失败，跳过: path={}", path_str);
-                                    } else {
-                                        eprintln!("[图标提取] 缓存中已有图标，跳过: path={}", path_str);
-                                    }
-                                    needs_extract
+                                    app_search::windows::needs_icon_extraction(&a.icon)
                                 })
                                 .unwrap_or_else(|| {
-                                    eprintln!("[图标提取] 缓存中未找到应用，需要提取: path={}", path_str);
                                     true // 如果找不到应用，需要提取
                                 });
                             need_extract
@@ -580,47 +561,32 @@ pub async fn search_applications(
                         .cloned()
                         .collect()
                 } else {
-                    eprintln!("[图标提取] 缓存为空，需要提取所有图标: paths_count={}", results_paths.len());
                     results_paths
                 }
             } else {
-                eprintln!("[图标提取] 无法获取缓存锁，需要提取所有图标: paths_count={}", results_paths.len());
                 results_paths
             }
         };
         
         // 再次去重，确保没有重复路径（防止并发情况下的重复提取）
-        let before_final_dedup = paths_to_extract.len();
         paths_to_extract.sort();
         paths_to_extract.dedup();
-        let after_final_dedup = paths_to_extract.len();
-        if before_final_dedup != after_final_dedup {
-            eprintln!("[图标提取] 最终去重：去重前: {}, 去重后: {}, 移除重复: {}", 
-                before_final_dedup, after_final_dedup, before_final_dedup - after_final_dedup);
-        }
         
         if paths_to_extract.is_empty() {
-            eprintln!("[图标提取] 所有应用的图标都在缓存中，无需提取");
             return;
         }
-        
-        eprintln!("[图标提取] 需要提取图标的应用数量: {}", paths_to_extract.len());
         
         // 先提取所有图标（不持有锁），避免阻塞搜索操作
         let mut icon_updates: Vec<(String, String)> = Vec::new(); // (path, icon_data)
         let mut failed_paths: Vec<String> = Vec::new(); // 记录提取失败的路径
         
-        for (idx, path_str) in paths_to_extract.iter().enumerate() {
-            eprintln!("[图标提取] 开始提取图标 [{}/{}]: path={}", idx + 1, paths_to_extract.len(), path_str);
-            
+        for path_str in paths_to_extract.iter() {
             let icon = app_search::windows::extract_icon_for_file_path(path_str);
 
             if let Some(icon_data) = icon {
                 icon_updates.push((path_str.clone(), icon_data));
-                eprintln!("[图标提取] 提取成功: path={}", path_str);
             } else {
                 failed_paths.push(path_str.clone());
-                eprintln!("[图标提取] 提取失败，将标记为失败: path={}", path_str);
             }
         }
 
@@ -646,7 +612,6 @@ pub async fn search_applications(
                         if let Some(app) = apps.iter_mut().find(|a| a.path == *path_str) {
                             app.icon = Some(app_search::windows::ICON_EXTRACTION_FAILED_MARKER.to_string());
                             updated = true;
-                            eprintln!("[图标提取] 已标记为提取失败: path={}", path_str);
                         }
                     }
 
@@ -716,8 +681,6 @@ pub async fn populate_app_icons(
             if !app_search::windows::needs_icon_extraction(&app_info.icon) {
                 processed += 1;
                 continue;
-            } else {
-                eprintln!("[图标提取] 应用无图标: name={}, path={}", app_info.name, app_info.path);
             }
 
             let icon = app_search::windows::extract_icon_for_file_path(&app_info.path);
@@ -731,7 +694,6 @@ pub async fn populate_app_icons(
                 // 提取失败，标记为失败以避免重复尝试
                 app_info.icon = Some(app_search::windows::ICON_EXTRACTION_FAILED_MARKER.to_string());
                 updated = true;
-                eprintln!("[图标提取] 已标记为提取失败: name={}, path={}", app_info.name, app_info.path);
             }
 
             processed += 1;
@@ -1023,7 +985,6 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
         // 检查应用是否已存在（通过路径比较）
         let existing_index = apps.iter().position(|a| a.path == file_path_for_add);
         
-        let mut updated = false;
         let mut icon_to_save: Option<String> = None;
         
         if let Some(index) = existing_index {
@@ -1037,7 +998,6 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
                 apps[index].icon = Some(app_search::windows::ICON_EXTRACTION_FAILED_MARKER.to_string());
                 eprintln!("[添加应用到列表] 标记已存在应用为提取失败: path={}", file_path_for_add);
             }
-            updated = true;
         } else {
             // 应用不存在，创建新的 AppInfo
             let path = Path::new(&file_path_for_add);
@@ -1124,11 +1084,9 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
             
             apps.push(new_app);
             eprintln!("[添加应用到列表] 添加新应用: path={}, icon_extracted={}", file_path_for_add, icon_result_clone.is_some());
-            updated = true;
         }
         
-        if updated {
-            // 更新缓存
+        // 更新缓存
             *cache_guard = Some(Arc::new(apps.clone()));
             
             // 保存到磁盘
@@ -1145,7 +1103,6 @@ pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) ->
                     eprintln!("[添加应用到列表] 发送事件失败: {}", e);
                 }
             }
-        }
     });
     
     Ok(icon_result)
@@ -1374,7 +1331,7 @@ pub async fn search_file_history(
 pub fn get_all_file_history(
     app: tauri::AppHandle,
 ) -> Result<Vec<file_history::FileHistoryItem>, String> {
-    let start_time = std::time::Instant::now();
+    let _start_time = std::time::Instant::now();
 
     let app_data_dir = match get_app_data_dir(&app) {
         Ok(dir) => {
@@ -1511,8 +1468,8 @@ pub struct EverythingSearchOptions {
 
 fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>) -> (String, usize) {
     let mut parts: Vec<String> = Vec::new();
-    let mut base_query = base.trim().to_string();
-    let mut use_regex = false;
+    let base_query = base.trim().to_string();
+    let _use_regex = false;
 
     let mut max_results = 50usize;
 
@@ -1818,11 +1775,15 @@ pub struct EverythingSearchSessionOptions {
     #[serde(rename = "maxResults")]
     pub max_results: Option<usize>,
     #[serde(rename = "sortKey")]
-    pub sort_key: Option<String>, // "size" | "type" | "name"
+    pub sort_key: Option<String>, // "modified" | "size" | "type" | "name"
     #[serde(rename = "sortOrder")]
     pub sort_order: Option<String>, // "asc" | "desc"
     #[serde(rename = "matchFolderNameOnly")]
     pub match_folder_name_only: Option<bool>,
+    #[serde(rename = "onlyFiles")]
+    pub only_files: Option<bool>,
+    #[serde(rename = "onlyFolders")]
+    pub only_folders: Option<bool>,
     #[serde(rename = "chunkSize")]
     pub chunk_size: Option<usize>,
 }
@@ -1865,6 +1826,11 @@ pub async fn start_everything_search_session(
         let match_folder_name_only = opts
             .and_then(|o| o.match_folder_name_only)
             .unwrap_or(false);
+        let only_files = opts.and_then(|o| o.only_files).unwrap_or(false);
+        let only_folders = opts
+            .and_then(|o| o.only_folders)
+            .unwrap_or(false)
+            || match_folder_name_only;
 
         // 构建查询字符串（复用现有逻辑）
         // 获取 chunk_size，如果未指定则使用默认值 5000
@@ -1875,8 +1841,8 @@ pub async fn start_everything_search_session(
         let search_opts = EverythingSearchOptions {
             extensions: ext_filter.cloned(),
             exclude_extensions: None,
-            only_files: None,
-            only_folders: if match_folder_name_only { Some(true) } else { None },
+            only_files: if only_files && !only_folders { Some(true) } else { None },
+            only_folders: if only_folders { Some(true) } else { None },
             max_results: Some(max_results),
             match_folder_name_only: Some(match_folder_name_only),
             chunk_size: Some(chunk_size),
@@ -1982,6 +1948,17 @@ pub async fn start_everything_search_session(
                         }
                     });
                 }
+                "modified" => {
+                    results.sort_by(|a, b| {
+                        let a_date = a.date_modified.as_deref().unwrap_or("");
+                        let b_date = b.date_modified.as_deref().unwrap_or("");
+                        if ascending {
+                            a_date.cmp(b_date)
+                        } else {
+                            b_date.cmp(a_date)
+                        }
+                    });
+                }
                 _ => {}
             }
         }
@@ -2008,10 +1985,8 @@ pub async fn start_everything_search_session(
 
         // 存储会话
         let session = SearchSession {
-            query: combined_query_for_session,
             results,
             total_count: search_response.total_count,
-            created_at: std::time::Instant::now(),
         };
 
         {
@@ -2547,6 +2522,9 @@ pub async fn restore_backup(app: tauri::AppHandle, path: String) -> Result<Strin
         fs::copy(&target, &db_path)
             .map_err(|e| format!("Failed to restore database: {}", e))?;
 
+        // 恢复后重置共享连接，让下次访问重新打开新恢复的数据库文件
+        db::reset_shared_connection();
+
         Ok(db_path
             .to_string_lossy()
             .to_string())
@@ -2916,29 +2894,6 @@ pub fn open_everything_download() -> Result<(), String> {
 }
 
 
-#[cfg(target_os = "windows")]
-fn find_everything_installation_dir() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-
-    let common_paths = [
-        r"C:\Program Files\Everything",
-        r"C:\Program Files (x86)\Everything",
-    ];
-
-    for path in &common_paths {
-        let dir_path = PathBuf::from(path);
-        if dir_path.exists() {
-            // Check if Everything.exe exists in this directory
-            let everything_exe = dir_path.join("Everything.exe");
-            if everything_exe.exists() {
-                return Some(dir_path);
-            }
-        }
-    }
-
-    None
-}
-
 #[tauri::command]
 pub async fn start_everything() -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -3303,7 +3258,7 @@ pub fn write_debug_log(message: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn paste_text_to_cursor(text: String) -> Result<(), String> {
+pub fn paste_text_to_cursor(_text: String) -> Result<(), String> {
     // 注意：text 参数现在不再使用，因为剪贴板已经通过 navigator.clipboard.writeText 在前端设置好了
     // 这个函数现在只负责模拟 Ctrl+V 按键
     #[cfg(target_os = "windows")]
@@ -3597,7 +3552,7 @@ pub fn copy_file_to_downloads(source_path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn launch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
+pub fn launch_file(path: String, _app: tauri::AppHandle) -> Result<(), String> {
     // 注意：历史记录更新已由统一更新逻辑处理（handleLaunch 开头），这里不再更新
     // Launch the file (keep using file_history::launch_file as it's just a utility function)
     file_history::launch_file(&path)
@@ -3875,10 +3830,6 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
         // Remove trailing backslash if present (explorer doesn't need it)
         parent_str = parent_str.trim_end_matches('\\').to_string();
 
-        // Normalize the original file path for use with /select
-        let mut file_path_str = trimmed.to_string();
-        file_path_str = file_path_str.replace("/", "\\");
-        
         // Check if the path is a directory
         let is_directory = absolute_path.exists() && absolute_path.is_dir();
         
@@ -4245,15 +4196,118 @@ pub fn take_json_formatter_content() -> Option<String> {
         .and_then(|mut pending| pending.take())
 }
 
+fn collect_monitor_rects(window: &tauri::WebviewWindow) -> Vec<window_config::MonitorRect> {
+    window
+        .available_monitors()
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|monitor| {
+            let pos = monitor.position();
+            let size = monitor.size();
+            window_config::MonitorRect {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+        .collect()
+}
+
+fn apply_markdown_window_geometry(
+    window: &tauri::WebviewWindow,
+    geometry: &window_config::WindowGeometry,
+) {
+    use tauri::{PhysicalPosition, PhysicalSize};
+
+    if geometry.width >= 400 && geometry.height >= 300 {
+        let _ = window.set_size(tauri::Size::Physical(PhysicalSize::new(
+            geometry.width,
+            geometry.height,
+        )));
+    }
+
+    let monitors = collect_monitor_rects(window);
+    if monitors.is_empty()
+        || window_config::is_window_position_visible(geometry.x, geometry.y, &monitors)
+    {
+        let _ = window.set_position(tauri::Position::Physical(PhysicalPosition::new(
+            geometry.x,
+            geometry.y,
+        )));
+    }
+
+    if geometry.fullscreen {
+        let _ = window.set_fullscreen(true);
+    } else if geometry.maximized {
+        let _ = window.maximize();
+    }
+}
+
+fn remember_markdown_window_geometry(window: &tauri::WebviewWindow) {
+    let maximized = window.is_maximized().unwrap_or(false);
+    let fullscreen = window.is_fullscreen().unwrap_or(false);
+    if let Ok(mut guard) = MARKDOWN_EDITOR_GEOMETRY.lock() {
+        let mut geometry = guard.clone().unwrap_or_default();
+        geometry.maximized = maximized;
+        geometry.fullscreen = fullscreen;
+        if !maximized && !fullscreen {
+            if let Ok(pos) = window.outer_position() {
+                geometry.x = pos.x;
+                geometry.y = pos.y;
+            }
+            if let Ok(size) = window.outer_size() {
+                geometry.width = size.width;
+                geometry.height = size.height;
+            }
+        }
+        *guard = Some(geometry);
+    }
+}
+
+fn persist_markdown_window_geometry(app_data_dir: &std::path::Path) {
+    if let Ok(guard) = MARKDOWN_EDITOR_GEOMETRY.lock() {
+        if let Some(geometry) = guard.as_ref() {
+            let _ = window_config::save_window_geometry(
+                app_data_dir,
+                window_config::MARKDOWN_EDITOR_WINDOW_KEY,
+                geometry,
+            );
+        }
+    }
+}
+
 #[tauri::command]
-pub async fn show_markdown_editor_window(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn show_markdown_editor_window(
+    app: tauri::AppHandle,
+    file_path: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
     use crate::file_watcher;
+
+    if let Some(path) = file_path {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            if let Ok(mut pending) = MARKDOWN_EDITOR_PENDING_FILE_PATH.lock() {
+                *pending = Some(trimmed.to_string());
+            }
+        }
+    }
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("markdown-editor-window") {
         show_and_focus_window(&window)?;
     } else {
+        let app_data_dir = get_app_data_dir(&app)?;
+        let saved_geometry = window_config::get_window_geometry(
+            &app_data_dir,
+            window_config::MARKDOWN_EDITOR_WINDOW_KEY,
+        );
+        if let Ok(mut guard) = MARKDOWN_EDITOR_GEOMETRY.lock() {
+            *guard = saved_geometry.clone();
+        }
+
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
             &app,
@@ -4264,24 +4318,53 @@ pub async fn show_markdown_editor_window(app: tauri::AppHandle) -> Result<(), St
         .inner_size(1000.0, 700.0)
         .resizable(true)
         .min_inner_size(800.0, 600.0)
-        .center()
         .build()
         .map_err(|e| format!("创建 Markdown 编辑器窗口失败: {}", e))?;
-        
+
+        if let Some(geometry) = saved_geometry.as_ref() {
+            apply_markdown_window_geometry(&window, geometry);
+        } else {
+            let _ = window.center();
+        }
+
         // 确保新创建的窗口显示并聚焦
         show_and_focus_window(&window)?;
-        
-        // 监听窗口关闭事件，清理文件监听
+
+        // 记住位置/大小，关闭时写回；同时清理文件监听
         let app_clone = app.clone();
+        let persist_dir = app_data_dir.clone();
         window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                // 停止该窗口的所有文件监听
-                let _ = file_watcher::unwatch_window("markdown-editor-window".to_string());
+            match event {
+                tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                    if let Some(window) = app_clone.get_webview_window("markdown-editor-window") {
+                        remember_markdown_window_geometry(&window);
+                    }
+                }
+                tauri::WindowEvent::CloseRequested { .. } => {
+                    if let Some(window) = app_clone.get_webview_window("markdown-editor-window") {
+                        remember_markdown_window_geometry(&window);
+                    }
+                    persist_markdown_window_geometry(&persist_dir);
+                    let _ = file_watcher::unwatch_window("markdown-editor-window".to_string());
+                }
+                tauri::WindowEvent::Destroyed => {
+                    persist_markdown_window_geometry(&persist_dir);
+                    let _ = file_watcher::unwatch_window("markdown-editor-window".to_string());
+                }
+                _ => {}
             }
         });
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn take_markdown_editor_file_path() -> Option<String> {
+    MARKDOWN_EDITOR_PENDING_FILE_PATH
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[tauri::command]
@@ -4435,9 +4518,9 @@ pub async fn show_everything_search_window(app: tauri::AppHandle) -> Result<(), 
             tauri::WebviewUrl::App("index.html".into()),
         )
         .title("Everything 文件搜索")
-        .inner_size(900.0, 700.0)
+        .inner_size(1100.0, 760.0)
         .resizable(true)
-        .min_inner_size(600.0, 500.0)
+        .min_inner_size(720.0, 560.0)
         .center()
         .build()
         .map_err(|e| format!("创建 Everything 搜索窗口失败: {}", e))?;
@@ -4570,17 +4653,15 @@ fn process_file_replace(
 
             if path.is_dir() {
                 // 处理文件夹名替换
-                let mut final_dir_path = path.clone();
-                let mut dir_name_matches = 0;
                 let mut content_dir_path = path.clone(); // 用于递归遍历的路径
                 
                 if replace_file_name {
                     if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
                         if pattern.is_match(dir_name) {
-                            dir_name_matches = 1;
+                            let dir_name_matches = 1;
                             let new_dir_name = pattern.replace_all(dir_name, replace_text).to_string();
                             let parent = path.parent().ok_or_else(|| "无法获取文件夹父目录".to_string())?;
-                            final_dir_path = parent.join(&new_dir_name);
+                            let final_dir_path = parent.join(&new_dir_name);
                             
                             if execute {
                                 // 执行模式：如果新文件夹名与旧文件夹名不同，执行重命名
@@ -4680,7 +4761,7 @@ fn process_file_replace(
                                 });
                             }
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             // 如果文件名被替换了，即使内容无法处理（如二进制文件），也显示为成功
                             // 因为文件名替换已经成功了
                             if file_name_matches > 0 {
@@ -4725,7 +4806,7 @@ fn process_file_replace(
 
 /// 备份文件夹到父目录，备份文件夹名称包含时间戳
 fn backup_folder(folder_path: &Path) -> Result<std::path::PathBuf, String> {
-    use std::fs;
+    
     use chrono::Local;
 
     let parent_dir = folder_path
@@ -5099,7 +5180,10 @@ pub fn get_settings(app: tauri::AppHandle) -> Result<settings::Settings, String>
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, settings: settings::Settings) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    settings::save_settings(&app_data_dir, &settings)
+    settings::save_settings(&app_data_dir, &settings)?;
+    // 剪贴板上限可能变化，让进程内缓存失效
+    crate::clipboard::invalidate_clipboard_max_items_cache();
+    Ok(())
 }
 
 // ===== Everything Filters commands =====
@@ -5169,7 +5253,7 @@ pub async fn show_hotkey_settings(app: tauri::AppHandle) -> Result<(), String> {
         println!("[后端] show_hotkey_settings: 窗口不存在，开始动态创建");
 
         // 2. 动态创建窗口
-        let window = tauri::WebviewWindowBuilder::new(
+        let _window = tauri::WebviewWindowBuilder::new(
             &app,
             "hotkey-settings",
             tauri::WebviewUrl::App("index.html".into()),
@@ -5475,8 +5559,7 @@ pub fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
         let _ = fs::remove_file(&lock_file_path);
     }
     
-    app.restart();
-    Ok(())
+    app.restart()
 }
 
 #[cfg(target_os = "windows")]

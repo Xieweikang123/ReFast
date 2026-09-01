@@ -16,7 +16,7 @@ function normalizePathForCompare(path: string): string {
   return path.toLowerCase().replace(/\//g, "\\");
 }
 
-const CONTEXT_MENU_MIN_WIDTH = 160;
+const CONTEXT_MENU_MIN_WIDTH = 212;
 const CONTEXT_MENU_VIEWPORT_PADDING = 8;
 
 /** 根据结果类型估算菜单高度，用于首次定位（渲染后会再按实际尺寸校正） */
@@ -31,8 +31,14 @@ export function estimateContextMenuHeight(result: SearchResult | null): number {
     case "app":
       return 120;
     case "file":
-    case "everything":
-      return 45;
+    case "everything": {
+      const path =
+        result.file?.path ?? result.everything?.path ?? result.path ?? "";
+      const ext = path.split(/[/\\]/).pop()?.split(".").pop()?.toLowerCase();
+      const isConfigurable =
+        ext === "md" || ext === "markdown";
+      return isConfigurable ? 120 : 45;
+    }
     default:
       return 50;
   }

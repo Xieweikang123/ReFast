@@ -7,7 +7,7 @@ import type React from "react";
 import { useEffect, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { tauriApi } from "../api/tauri";
-import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule, PluginContext } from "../types";
+import type { AppInfo, FileHistoryItem, MemoItem, SearchEngineConfig, BrowserRule, PluginContext, FileOpenRules } from "../types";
 import type { ResultStyle } from "../utils/themeConfig";
 import { getUrlHistoryDisplay } from "../utils/urlDisplayUtils";
 
@@ -32,6 +32,7 @@ export interface LauncherInitializationOptions {
   setCloseOnBlur: (close: boolean) => void;
   setSearchEngines: (engines: SearchEngineConfig[]) => void;
   setBrowserRules: (rules: BrowserRule[]) => void;
+  setFileOpenRules: (rules: FileOpenRules) => void;
   setIsEverythingAvailable: (available: boolean) => void;
   setEverythingError: (error: string | null) => void;
   setEverythingPath: (path: string | null) => void;
@@ -72,6 +73,7 @@ export function useLauncherInitialization(
     setCloseOnBlur,
     setSearchEngines,
     setBrowserRules,
+    setFileOpenRules,
     setIsEverythingAvailable,
     setEverythingError,
     setEverythingPath,
@@ -120,6 +122,9 @@ export function useLauncherInitialization(
         if (settings.browser_rules) {
           setBrowserRules(settings.browser_rules);
         }
+        if (settings.file_open_rules) {
+          setFileOpenRules(settings.file_open_rules);
+        }
       } catch (error) {
         console.error("Failed to load settings:", error);
       }
@@ -134,7 +139,7 @@ export function useLauncherInitialization(
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [setOllamaSettings, setResultStyle, setCloseOnBlur, setSearchEngines, setBrowserRules, closeOnBlurRef]);
+  }, [setOllamaSettings, setResultStyle, setCloseOnBlur, setSearchEngines, setBrowserRules, setFileOpenRules, closeOnBlurRef]);
 
   // Check if Everything is available on mount and periodically if not available
   useEffect(() => {

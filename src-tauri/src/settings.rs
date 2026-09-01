@@ -36,6 +36,9 @@ pub struct Settings {
     pub search_engines: Vec<SearchEngineConfig>,
     #[serde(default)]
     pub browser_rules: Vec<BrowserRule>,
+    /// 文件扩展名（不含点）-> 左键打开方式："default" | "markdown_editor"
+    #[serde(default)]
+    pub file_open_rules: HashMap<String, String>,
 }
 
 fn default_clipboard_max_items() -> u32 {
@@ -76,6 +79,7 @@ impl Default for Settings {
             translation_tab_order: default_translation_tab_order(),
             search_engines: default_search_engines(),
             browser_rules: Vec::new(),
+            file_open_rules: HashMap::new(),
         }
     }
 }

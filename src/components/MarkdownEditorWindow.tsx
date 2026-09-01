@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -11,6 +11,20 @@ import { useWindowClose } from "../hooks/useWindowClose";
 import { tauriApi } from "../api/tauri";
 import { getRecentFiles, addRecentFile, removeRecentFile, type RecentFile } from "../utils/markdownEditorHistory";
 
+type MarkdownViewMode = "preview" | "split";
+
+const MARKDOWN_VIEW_MODE_KEY = "markdown-editor:view-mode";
+
+function readSavedViewMode(): MarkdownViewMode {
+  try {
+    const saved = localStorage.getItem(MARKDOWN_VIEW_MODE_KEY);
+    if (saved === "preview" || saved === "split") return saved;
+  } catch {
+    // 忽略无 localStorage 的环境
+  }
+  return "split";
+}
+
 interface Heading {
   level: number;
   text: string;
@@ -22,7 +36,7 @@ export function MarkdownEditorWindow() {
   const [filePath, setFilePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"preview" | "edit" | "split">("preview");
+  const [viewMode, setViewMode] = useState<MarkdownViewMode>(readSavedViewMode);
   const [isWatching, setIsWatching] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [showRecentFiles, setShowRecentFiles] = useState(false);
@@ -32,6 +46,9 @@ export function MarkdownEditorWindow() {
   const isScrollingRef = useRef(false); // 标记是否正在进行程序化滚动
   const recentFilesRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const openFileByPathRef = useRef<
+    (newFilePath: string, fileName?: string) => Promise<boolean>
+  >(async () => false);
 
   // 深色模式样式配置
   const theme = {
@@ -71,7 +88,7 @@ export function MarkdownEditorWindow() {
   }, []);
 
   // 打开文件的通用函数
-  const openFileByPath = async (newFilePath: string, fileName?: string) => {
+  const openFileByPath = useCallback(async (newFilePath: string, fileName?: string) => {
     try {
       setIsLoading(true);
       setError(null);
@@ -151,21 +168,33 @@ export function MarkdownEditorWindow() {
       setIsWatching(false);
       return false;
     }
-  };
+  }, [filePath]);
 
-  // 组件加载时自动打开上次打开的文件
+  openFileByPathRef.current = openFileByPath;
+
+  // 组件加载时：优先打开外部传入的文件，否则自动打开上次文件
   useEffect(() => {
-    const autoLoadLastFile = async () => {
-      // 如果已经有文件打开，不自动加载
-      if (filePath) return;
+    const init = async () => {
+      try {
+        const pendingPath = await tauriApi.takeMarkdownEditorFilePath();
+        if (pendingPath?.trim()) {
+          await openFileByPathRef.current(pendingPath.trim());
+          return;
+        }
+      } catch (error) {
+        console.error("Failed to take markdown editor file path:", error);
+      }
 
       try {
         const files = await getRecentFiles();
         if (files.length > 0) {
           const lastFile = files[0]; // 第一个是最新的
           console.log("自动加载上次打开的文件:", lastFile.path);
-          const success = await openFileByPath(lastFile.path, lastFile.title || lastFile.name);
-          
+          const success = await openFileByPathRef.current(
+            lastFile.path,
+            lastFile.title || lastFile.name
+          );
+
           // 如果文件不存在，从列表中移除
           if (!success) {
             try {
@@ -185,49 +214,34 @@ export function MarkdownEditorWindow() {
 
     // 延迟一小段时间，确保组件完全加载
     const timer = setTimeout(() => {
-      autoLoadLastFile();
+      init();
     }, 100);
 
     return () => clearTimeout(timer);
-  }, []); // 只在组件挂载时执行一次
+  }, []);
 
-  // 监听文件变化事件
+  // 从启动器等处打开指定文件（编辑器已打开时通过事件送达，避免仅靠 focus 拉取 pending）
   useEffect(() => {
-    const autoLoadLastFile = async () => {
-      // 如果已经有文件打开，不自动加载
-      if (filePath) return;
+    let unlisten: (() => void) | null = null;
 
+    const setup = async () => {
       try {
-        const files = await getRecentFiles();
-        if (files.length > 0) {
-          const lastFile = files[0]; // 第一个是最新的
-          console.log("自动加载上次打开的文件:", lastFile.path);
-          const success = await openFileByPath(lastFile.path, lastFile.title || lastFile.name);
-          
-          // 如果文件不存在，从列表中移除
-          if (!success) {
-            try {
-              await removeRecentFile(lastFile.path);
-              const updatedFiles = await getRecentFiles();
-              setRecentFiles(updatedFiles);
-            } catch (e) {
-              console.warn("移除无效文件记录失败:", e);
-            }
-          }
-        }
+        unlisten = await listen<{ path: string }>("markdown-editor:open-file", async (event) => {
+          const path = event.payload?.path?.trim();
+          if (!path) return;
+          await openFileByPathRef.current(path);
+        });
       } catch (error) {
-        console.error("自动加载上次文件失败:", error);
-        // 静默失败，不影响用户体验
+        console.error("Failed to setup markdown editor open-file listener:", error);
       }
     };
 
-    // 延迟一小段时间，确保组件完全加载
-    const timer = setTimeout(() => {
-      autoLoadLastFile();
-    }, 100);
+    setup();
 
-    return () => clearTimeout(timer);
-  }, []); // 只在组件挂载时执行一次
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // 点击外部关闭最近文件菜单
   useEffect(() => {
@@ -301,7 +315,7 @@ export function MarkdownEditorWindow() {
 
   // 监听滚动，高亮当前标题
   useEffect(() => {
-    if (viewMode === "edit" || !previewRef.current || headings.length === 0) return;
+    if (!previewRef.current || headings.length === 0) return;
 
     const previewElement = previewRef.current;
     const handleScroll = () => {
@@ -546,6 +560,27 @@ export function MarkdownEditorWindow() {
     };
   }, [filePath]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(MARKDOWN_VIEW_MODE_KEY, viewMode);
+    } catch {
+      // 忽略写入失败
+    }
+  }, [viewMode]);
+
+  const toggleViewMode = () => {
+    setViewMode((prev) => (prev === "preview" ? "split" : "preview"));
+  };
+
+  const fileDisplayName = filePath
+    ? filePath.split(/[/\\]/).pop() ?? filePath
+    : null;
+
+  const paneScrollClass =
+    viewMode === "split"
+      ? "markdown-editor-scrollbar markdown-editor-split-scrollbar"
+      : "markdown-editor-scrollbar";
+
   return (
     <>
       {/* 自定义滚动条样式 */}
@@ -615,6 +650,72 @@ export function MarkdownEditorWindow() {
             scrollbar-width: thin;
             scrollbar-color: ${isDarkMode ? '#3e3e42 #252526' : '#d1d5db #f3f4f6'};
           }
+
+          /* 分屏模式：更细、overlay 风格滚动条，减少双栏视觉干扰 */
+          .markdown-editor-split-scrollbar {
+            scrollbar-gutter: stable;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar-thumb {
+            background: ${isDarkMode ? 'rgba(133, 133, 133, 0.45)' : 'rgba(0, 0, 0, 0.22)'};
+            border-radius: 999px;
+            border: 2px solid transparent;
+            background-clip: padding-box;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: ${isDarkMode ? 'rgba(180, 180, 180, 0.65)' : 'rgba(0, 0, 0, 0.38)'};
+            border: 2px solid transparent;
+            background-clip: padding-box;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar-thumb:active {
+            background: ${isDarkMode ? 'rgba(200, 200, 200, 0.75)' : 'rgba(0, 0, 0, 0.48)'};
+            border: 2px solid transparent;
+            background-clip: padding-box;
+          }
+
+          .markdown-editor-split-scrollbar::-webkit-scrollbar-corner {
+            background: transparent;
+          }
+
+          .markdown-editor-split-scrollbar {
+            scrollbar-width: thin;
+            scrollbar-color: ${isDarkMode ? 'rgba(133, 133, 133, 0.55) transparent' : 'rgba(0, 0, 0, 0.28) transparent'};
+          }
+
+          /* 分屏编辑区 textarea 滚动条 */
+          textarea.markdown-editor-split-scrollbar {
+            overflow: auto;
+          }
+
+          textarea.markdown-editor-split-scrollbar::-webkit-scrollbar {
+            width: 8px;
+          }
+
+          textarea.markdown-editor-split-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+          }
+
+          textarea.markdown-editor-split-scrollbar::-webkit-scrollbar-thumb {
+            background: ${isDarkMode ? 'rgba(133, 133, 133, 0.45)' : 'rgba(0, 0, 0, 0.22)'};
+            border-radius: 999px;
+            border: 2px solid transparent;
+            background-clip: padding-box;
+          }
+
+          textarea.markdown-editor-split-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: ${isDarkMode ? 'rgba(180, 180, 180, 0.65)' : 'rgba(0, 0, 0, 0.38)'};
+          }
         `}
       </style>
       <div
@@ -628,162 +729,97 @@ export function MarkdownEditorWindow() {
           color: theme.text,
         }}
       >
-      {/* 标题栏 */}
+      {/* 顶栏：标题 + 操作合并为一行 */}
       <div
         style={{
-          padding: "16px 20px",
+          padding: "10px 16px",
           backgroundColor: theme.bgTertiary,
           borderBottom: `1px solid ${theme.border}`,
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
-        }}
-      >
-        <h1
-          style={{
-            margin: 0,
-            fontSize: "18px",
-            fontWeight: 600,
-            color: theme.text,
-          }}
-        >
-          Markdown 编辑器
-        </h1>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          {filePath && (
-            <>
-              <span
-                style={{
-                  fontSize: "12px",
-                  color: theme.textSecondary,
-                  marginRight: "8px",
-                  maxWidth: "300px",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-                title={filePath}
-              >
-                {filePath.split(/[/\\]/).pop()}
-              </span>
-              {isWatching && (
-                <span
-                  style={{
-                    fontSize: "11px",
-                    color: "#10b981",
-                    marginRight: "8px",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "4px",
-                  }}
-                  title="正在监听文件变化"
-                >
-                  <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", backgroundColor: "#10b981" }}></span>
-                  监听中
-                </span>
-              )}
-            </>
-          )}
-          <button
-            onClick={() => setIsDarkMode(!isDarkMode)}
-            style={{
-              padding: "6px 12px",
-              backgroundColor: theme.buttonSecondary,
-              color: theme.text,
-              border: "none",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-              marginRight: "8px",
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = theme.buttonSecondaryHover;
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = theme.buttonSecondary;
-            }}
-            title={isDarkMode ? "切换到浅色模式" : "切换到深色模式"}
-          >
-            {isDarkMode ? "☀️" : "🌙"}
-          </button>
-          <button
-            onClick={handleClose}
-            style={{
-              padding: "6px 12px",
-              backgroundColor: "#ef4444",
-              color: "white",
-              border: "none",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = "#dc2626";
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = "#ef4444";
-            }}
-          >
-            关闭
-          </button>
-        </div>
-      </div>
-
-      {/* 工具栏 */}
-      <div
-        style={{
-          padding: "12px 20px",
-          backgroundColor: theme.bgSecondary,
-          borderBottom: `1px solid ${theme.border}`,
-          display: "flex",
-          gap: "8px",
-          alignItems: "center",
+          gap: "12px",
           flexWrap: "wrap",
         }}
       >
-        <div style={{ position: "relative", display: "inline-block" }} ref={recentFilesRef}>
-          <button
-            onClick={handleOpenFile}
-            disabled={isLoading}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0, flex: "1 1 200px" }}>
+          <span
             style={{
-              padding: "8px 16px",
-              backgroundColor: isLoading ? theme.textMuted : theme.buttonPrimary,
-              color: "white",
-              border: "none",
-              borderRadius: "6px",
-              cursor: isLoading ? "not-allowed" : "pointer",
-              fontSize: "14px",
-              fontWeight: 500,
-            }}
-            onMouseOver={(e) => {
-              if (!isLoading) {
-                e.currentTarget.style.backgroundColor = theme.buttonPrimaryHover;
-              }
-            }}
-            onMouseOut={(e) => {
-              if (!isLoading) {
-                e.currentTarget.style.backgroundColor = theme.buttonPrimary;
-              }
+              fontSize: "15px",
+              fontWeight: 600,
+              color: theme.text,
+              whiteSpace: "nowrap",
             }}
           >
-            {isLoading ? "打开中..." : "打开文件"}
-          </button>
-          {recentFiles.length > 0 && (
-            <>
+            Markdown 编辑器
+          </span>
+          {fileDisplayName && (
+            <span
+              style={{
+                fontSize: "12px",
+                color: theme.textSecondary,
+                padding: "2px 10px",
+                borderRadius: "999px",
+                backgroundColor: theme.bgSecondary,
+                border: `1px solid ${theme.border}`,
+                maxWidth: "280px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+              title={filePath ?? undefined}
+            >
+              {fileDisplayName}
+            </span>
+          )}
+          {isWatching && (
+            <span
+              style={{
+                fontSize: "11px",
+                color: "#34d399",
+                padding: "2px 8px",
+                borderRadius: "999px",
+                backgroundColor: isDarkMode ? "rgba(16, 185, 129, 0.12)" : "#ecfdf5",
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                whiteSpace: "nowrap",
+              }}
+              title="正在监听文件变化"
+            >
+              <span
+                style={{
+                  display: "inline-block",
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "50%",
+                  backgroundColor: "#34d399",
+                }}
+              />
+              监听中
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+          <div style={{ position: "relative", display: "inline-flex" }} ref={recentFilesRef}>
+            <div
+              style={{
+                display: "inline-flex",
+                borderRadius: "6px",
+                overflow: "hidden",
+                border: `1px solid ${isDarkMode ? theme.buttonPrimary : theme.buttonPrimary}`,
+              }}
+            >
               <button
-                onClick={() => setShowRecentFiles(!showRecentFiles)}
+                onClick={handleOpenFile}
                 disabled={isLoading}
                 style={{
-                  padding: "8px 12px",
-                  marginLeft: "4px",
-                  backgroundColor: showRecentFiles ? theme.buttonPrimaryHover : theme.buttonPrimary,
+                  padding: "6px 14px",
+                  backgroundColor: isLoading ? theme.textMuted : theme.buttonPrimary,
                   color: "white",
                   border: "none",
-                  borderRadius: "6px",
                   cursor: isLoading ? "not-allowed" : "pointer",
-                  fontSize: "14px",
+                  fontSize: "13px",
                   fontWeight: 500,
                 }}
                 onMouseOver={(e) => {
@@ -793,200 +829,267 @@ export function MarkdownEditorWindow() {
                 }}
                 onMouseOut={(e) => {
                   if (!isLoading) {
-                    e.currentTarget.style.backgroundColor = showRecentFiles ? theme.buttonPrimaryHover : theme.buttonPrimary;
+                    e.currentTarget.style.backgroundColor = theme.buttonPrimary;
                   }
                 }}
               >
-                ▼
+                {isLoading ? "打开中..." : "打开文件"}
               </button>
-              {showRecentFiles && (
-                <div
-                  className="markdown-editor-scrollbar"
+              {recentFiles.length > 0 && (
+                <button
+                  onClick={() => setShowRecentFiles(!showRecentFiles)}
+                  disabled={isLoading}
                   style={{
-                    position: "absolute",
-                    top: "100%",
-                    left: 0,
-                    marginTop: "4px",
-                    backgroundColor: theme.bg,
-                    border: `1px solid ${theme.border}`,
-                    borderRadius: "6px",
-                    boxShadow: isDarkMode 
-                      ? "0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2)"
-                      : "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
-                    minWidth: "250px",
-                    maxWidth: "400px",
-                    maxHeight: "300px",
-                    overflowY: "auto",
-                    zIndex: 1000,
+                    padding: "6px 10px",
+                    backgroundColor: showRecentFiles
+                      ? theme.buttonPrimaryHover
+                      : theme.buttonPrimary,
+                    color: "white",
+                    border: "none",
+                    borderLeft: `1px solid ${isDarkMode ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.25)"}`,
+                    cursor: isLoading ? "not-allowed" : "pointer",
+                    fontSize: "12px",
+                    fontWeight: 500,
+                  }}
+                  onMouseOver={(e) => {
+                    if (!isLoading) {
+                      e.currentTarget.style.backgroundColor = theme.buttonPrimaryHover;
+                    }
+                  }}
+                  onMouseOut={(e) => {
+                    if (!isLoading) {
+                      e.currentTarget.style.backgroundColor = showRecentFiles
+                        ? theme.buttonPrimaryHover
+                        : theme.buttonPrimary;
+                    }
+                  }}
+                  title="最近打开"
+                >
+                  ▾
+                </button>
+              )}
+            </div>
+            {showRecentFiles && recentFiles.length > 0 && (
+              <div
+                className="markdown-editor-scrollbar"
+                style={{
+                  position: "absolute",
+                  top: "100%",
+                  left: 0,
+                  marginTop: "6px",
+                  backgroundColor: theme.bg,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: "8px",
+                  boxShadow: isDarkMode
+                    ? "0 8px 24px rgba(0, 0, 0, 0.45)"
+                    : "0 8px 24px rgba(0, 0, 0, 0.12)",
+                  minWidth: "280px",
+                  maxWidth: "420px",
+                  maxHeight: "320px",
+                  overflowY: "auto",
+                  zIndex: 1000,
+                }}
+              >
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: theme.textSecondary,
+                    borderBottom: `1px solid ${theme.border}`,
+                    backgroundColor: theme.bgSecondary,
                   }}
                 >
+                  最近打开的文件
+                </div>
+                {recentFiles.map((file) => (
                   <div
+                    key={file.path}
+                    onClick={() => handleOpenRecentFile(file)}
                     style={{
-                      padding: "8px 12px",
-                      fontSize: "12px",
-                      fontWeight: 600,
-                      color: theme.textSecondary,
+                      padding: "10px 14px",
+                      cursor: "pointer",
                       borderBottom: `1px solid ${theme.border}`,
-                      backgroundColor: theme.bgSecondary,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      backgroundColor: theme.bg,
+                    }}
+                    onMouseOver={(e) => {
+                      e.currentTarget.style.backgroundColor = theme.hover;
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.backgroundColor = theme.bg;
                     }}
                   >
-                    最近打开的文件
-                  </div>
-                  {recentFiles.map((file) => (
-                    <div
-                      key={file.path}
-                      onClick={() => handleOpenRecentFile(file)}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          fontWeight: 500,
+                          color: theme.text,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={file.title || file.name}
+                      >
+                        {file.title || file.name}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: "11px",
+                          color: theme.textMuted,
+                          marginTop: "2px",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={file.path}
+                      >
+                        {file.title
+                          ? file.name
+                          : file.path.length > 50
+                            ? `...${file.path.slice(-47)}`
+                            : file.path}
+                      </div>
+                    </div>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          await removeRecentFile(file.path);
+                          const files = await getRecentFiles();
+                          setRecentFiles(files);
+                        } catch (err) {
+                          console.error("删除最近文件记录失败:", err);
+                        }
+                      }}
                       style={{
-                        padding: "10px 12px",
+                        padding: "4px 8px",
+                        marginLeft: "8px",
+                        backgroundColor: "transparent",
+                        color: theme.textMuted,
+                        border: "none",
+                        borderRadius: "4px",
                         cursor: "pointer",
-                        borderBottom: `1px solid ${theme.border}`,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        backgroundColor: theme.bg,
+                        fontSize: "12px",
+                        fontWeight: 500,
                       }}
                       onMouseOver={(e) => {
-                        e.currentTarget.style.backgroundColor = theme.hover;
+                        e.currentTarget.style.backgroundColor = isDarkMode ? "#5a1d1d" : "#fee2e2";
+                        e.currentTarget.style.color = isDarkMode ? "#f48771" : "#dc2626";
                       }}
                       onMouseOut={(e) => {
-                        e.currentTarget.style.backgroundColor = theme.bg;
+                        e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color = theme.textMuted;
                       }}
+                      title="从列表中移除"
                     >
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div
-                          style={{
-                            fontSize: "14px",
-                            fontWeight: 500,
-                            color: theme.text,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                          title={file.title || file.name}
-                        >
-                          {file.title || file.name}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: "11px",
-                            color: theme.textMuted,
-                            marginTop: "2px",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                          }}
-                          title={file.path}
-                        >
-                          {file.title ? file.name : (file.path.length > 50 ? `...${file.path.slice(-47)}` : file.path)}
-                        </div>
-                      </div>
-                      <button
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            await removeRecentFile(file.path);
-                            const files = await getRecentFiles();
-                            setRecentFiles(files);
-                          } catch (err) {
-                            console.error("删除最近文件记录失败:", err);
-                          }
-                        }}
-                        style={{
-                          padding: "4px 8px",
-                          marginLeft: "8px",
-                          backgroundColor: "transparent",
-                          color: theme.textMuted,
-                          border: "none",
-                          borderRadius: "4px",
-                          cursor: "pointer",
-                          fontSize: "12px",
-                          fontWeight: 500,
-                        }}
-                        onMouseOver={(e) => {
-                          e.currentTarget.style.backgroundColor = isDarkMode ? "#5a1d1d" : "#fee2e2";
-                          e.currentTarget.style.color = isDarkMode ? "#f48771" : "#dc2626";
-                        }}
-                        onMouseOut={(e) => {
-                          e.currentTarget.style.backgroundColor = "transparent";
-                          e.currentTarget.style.color = theme.textMuted;
-                        }}
-                        title="从列表中移除"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-        <button
-          onClick={handleClear}
-          style={{
-            padding: "8px 16px",
-            backgroundColor: theme.buttonSecondary,
-            color: "white",
-            border: "none",
-            borderRadius: "6px",
-            cursor: "pointer",
-            fontSize: "14px",
-            fontWeight: 500,
-          }}
-          onMouseOver={(e) => {
-            e.currentTarget.style.backgroundColor = theme.buttonSecondaryHover;
-          }}
-          onMouseOut={(e) => {
-            e.currentTarget.style.backgroundColor = theme.buttonSecondary;
-          }}
-        >
-          清空
-        </button>
-        <div style={{ marginLeft: "auto", display: "flex", gap: "8px" }}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           <button
-            onClick={() => setViewMode("preview")}
+            onClick={handleClear}
             style={{
-              padding: "6px 12px",
-              backgroundColor: viewMode === "preview" ? theme.buttonPrimary : theme.buttonSecondary,
-              color: "white",
-              border: "none",
+              padding: "6px 14px",
+              backgroundColor: theme.bg,
+              color: theme.textSecondary,
+              border: `1px solid ${theme.border}`,
               borderRadius: "6px",
               cursor: "pointer",
               fontSize: "13px",
               fontWeight: 500,
             }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = theme.hover;
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = theme.bg;
+            }}
           >
-            预览
+            清空
+          </button>
+
+          <button
+            onClick={toggleViewMode}
+            style={{
+              padding: "6px 12px",
+              backgroundColor: theme.buttonPrimary,
+              color: "#fff",
+              border: "none",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = theme.buttonPrimaryHover;
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = theme.buttonPrimary;
+            }}
+            title={viewMode === "preview" ? "当前为预览，点击进入编辑" : "当前为编辑，点击进入预览"}
+          >
+            <span aria-hidden style={{ opacity: 0.85, fontSize: "12px", lineHeight: 1 }}>
+              ⇄
+            </span>
+            {viewMode === "preview" ? "编辑" : "预览"}
+          </button>
+
+          <button
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            style={{
+              padding: "6px 10px",
+              backgroundColor: theme.bg,
+              color: theme.textSecondary,
+              border: `1px solid ${theme.border}`,
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "14px",
+              lineHeight: 1,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = theme.hover;
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = theme.bg;
+            }}
+            title={isDarkMode ? "切换到浅色模式" : "切换到深色模式"}
+          >
+            {isDarkMode ? "☀️" : "🌙"}
           </button>
           <button
-            onClick={() => setViewMode("edit")}
+            onClick={handleClose}
             style={{
               padding: "6px 12px",
-              backgroundColor: viewMode === "edit" ? theme.buttonPrimary : theme.buttonSecondary,
-              color: "white",
-              border: "none",
+              backgroundColor: theme.bg,
+              color: theme.textSecondary,
+              border: `1px solid ${theme.border}`,
               borderRadius: "6px",
               cursor: "pointer",
               fontSize: "13px",
               fontWeight: 500,
             }}
-          >
-            编辑
-          </button>
-          <button
-            onClick={() => setViewMode("split")}
-            style={{
-              padding: "6px 12px",
-              backgroundColor: viewMode === "split" ? theme.buttonPrimary : theme.buttonSecondary,
-              color: "white",
-              border: "none",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: 500,
+            onMouseOver={(e) => {
+              e.currentTarget.style.backgroundColor = theme.hover;
+              e.currentTarget.style.color = theme.text;
             }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = theme.bg;
+              e.currentTarget.style.color = theme.textSecondary;
+            }}
+            title="关闭 (Esc)"
           >
-            分屏
+            关闭
           </button>
         </div>
       </div>
@@ -1010,36 +1113,27 @@ export function MarkdownEditorWindow() {
       <div
         style={{
           flex: 1,
+          minHeight: 0,
           display: "flex",
           gap: viewMode === "split" ? "1px" : "0",
           overflow: "hidden",
         }}
       >
         {/* 编辑区域 */}
-        {(viewMode === "edit" || viewMode === "split") && (
+        {viewMode === "split" && (
           <div
             style={{
-              flex: viewMode === "split" ? 1 : "none",
-              width: viewMode === "split" ? "auto" : "100%",
+              flex: 1,
+              width: "auto",
+              minHeight: 0,
               display: "flex",
               flexDirection: "column",
               backgroundColor: theme.bg,
-              borderRight: viewMode === "split" ? `1px solid ${theme.border}` : "none",
+              borderRight: `1px solid ${theme.border}`,
             }}
           >
-            <div
-              style={{
-                padding: "8px 12px",
-                backgroundColor: theme.bgSecondary,
-                borderBottom: `1px solid ${theme.border}`,
-                fontSize: "13px",
-                fontWeight: 500,
-                color: theme.text,
-              }}
-            >
-              编辑
-            </div>
             <textarea
+              className={paneScrollClass}
               value={markdownContent}
               onChange={(e) => {
                 isEditingRef.current = true;
@@ -1058,6 +1152,7 @@ export function MarkdownEditorWindow() {
               placeholder='在此输入或粘贴 Markdown 内容，或点击上方"打开文件"按钮打开本地文件...'
               style={{
                 flex: 1,
+                minHeight: 0,
                 padding: "16px",
                 border: "none",
                 outline: "none",
@@ -1073,41 +1168,22 @@ export function MarkdownEditorWindow() {
           </div>
         )}
 
-        {/* 预览区域 */}
-        {(viewMode === "preview" || viewMode === "split") && (
-          <div
-            style={{
-              flex: viewMode === "split" ? 1 : "none",
-              width: viewMode === "split" ? "auto" : "100%",
-              display: "flex",
-              flexDirection: "column",
-              backgroundColor: theme.bg,
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                padding: "8px 12px",
-                backgroundColor: theme.bgSecondary,
-                borderBottom: `1px solid ${theme.border}`,
-                fontSize: "13px",
-                fontWeight: 500,
-                color: theme.text,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <span>预览</span>
-              {headings.length > 0 && (
-                <span style={{ fontSize: "11px", color: theme.textMuted, fontWeight: 400 }}>
-                  {headings.length} 个标题
-                </span>
-              )}
-            </div>
+        {/* 预览区域（纯预览 / 编辑模式右侧） */}
+        <div
+          style={{
+            flex: 1,
+            width: viewMode === "split" ? "auto" : "100%",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            backgroundColor: theme.bg,
+            overflow: "hidden",
+          }}
+        >
             <div
               style={{
                 flex: 1,
+                minHeight: 0,
                 display: "flex",
                 overflow: "hidden",
               }}
@@ -1115,13 +1191,14 @@ export function MarkdownEditorWindow() {
               {/* 侧边导航栏 */}
               {headings.length > 0 && (
                 <div
-                  className="markdown-editor-scrollbar"
+                  className={paneScrollClass}
                   style={{
-                    width: "200px",
+                    width: "220px",
+                    flexShrink: 0,
                     backgroundColor: theme.bgSecondary,
                     borderRight: `1px solid ${theme.border}`,
                     overflowY: "auto",
-                    padding: "12px",
+                    padding: "10px 8px",
                     fontSize: "12px",
                   }}
                 >
@@ -1130,31 +1207,50 @@ export function MarkdownEditorWindow() {
                       fontSize: "11px",
                       fontWeight: 600,
                       color: theme.textSecondary,
-                      marginBottom: "8px",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.5px",
+                      marginBottom: "10px",
+                      padding: "0 8px",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: "8px",
                     }}
                   >
-                    导航
+                    <span>目录</span>
+                    <span style={{ fontSize: "10px", color: theme.textMuted }}>
+                      {headings.length} 项
+                    </span>
                   </div>
                   {headings.map((heading) => (
                     <div
                       key={heading.id}
                       onClick={() => scrollToHeading(heading.id)}
                       style={{
-                        padding: "6px 8px",
-                        paddingLeft: `${(heading.level - 1) * 12 + 8}px`,
+                        padding: "5px 8px",
+                        paddingLeft: `${(heading.level - 1) * 10 + 8}px`,
                         cursor: "pointer",
                         borderRadius: "4px",
                         marginBottom: "2px",
-                        color: activeHeadingId === heading.id ? theme.activeHeadingText : theme.text,
-                        backgroundColor: activeHeadingId === heading.id ? theme.activeHeading : "transparent",
+                        color:
+                          activeHeadingId === heading.id
+                            ? theme.activeHeadingText
+                            : theme.text,
+                        backgroundColor:
+                          activeHeadingId === heading.id
+                            ? theme.activeHeading
+                            : "transparent",
                         fontWeight: activeHeadingId === heading.id ? 600 : 400,
-                        fontSize: heading.level === 1 ? "13px" : heading.level === 2 ? "12px" : "11px",
+                        fontSize:
+                          heading.level === 1
+                            ? "13px"
+                            : heading.level === 2
+                              ? "12px"
+                              : "11px",
+                        lineHeight: 1.45,
                         overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        transition: "all 0.2s",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        transition: "background-color 0.15s",
                       }}
                       onMouseOver={(e) => {
                         if (activeHeadingId !== heading.id) {
@@ -1176,10 +1272,10 @@ export function MarkdownEditorWindow() {
               {/* 预览内容 */}
               <div
                 ref={previewRef}
-                className="markdown-editor-scrollbar"
+                className={paneScrollClass}
                 style={{
                   flex: 1,
-                  padding: "16px",
+                  padding: "24px 28px",
                   overflow: "auto",
                   backgroundColor: theme.bg,
                 }}
@@ -1187,7 +1283,9 @@ export function MarkdownEditorWindow() {
               {markdownContent ? (
                 <div
                   style={{
-                    maxWidth: "100%",
+                    maxWidth: "900px",
+                    margin: "0 auto",
+                    width: "100%",
                     color: theme.text,
                   }}
                 >
@@ -1214,10 +1312,11 @@ export function MarkdownEditorWindow() {
                           <h1
                             id={id}
                             style={{
-                              fontSize: "2em",
+                              fontSize: "1.75em",
                               fontWeight: 700,
-                              marginTop: "0.67em",
-                              marginBottom: "0.67em",
+                              marginTop: "0",
+                              marginBottom: "0.75em",
+                              lineHeight: 1.3,
                               scrollMarginTop: "80px",
                             }}
                             {...props}
@@ -1458,15 +1557,16 @@ export function MarkdownEditorWindow() {
                         />
                       ),
                       table: ({ node, ...props }) => (
-                        <table
-                          style={{
-                            borderCollapse: "collapse",
-                            width: "100%",
-                            marginTop: "1em",
-                            marginBottom: "1em",
-                          }}
-                          {...props}
-                        />
+                        <div style={{ overflowX: "auto", marginTop: "1em", marginBottom: "1em" }}>
+                          <table
+                            style={{
+                              borderCollapse: "collapse",
+                              width: "100%",
+                              fontSize: "14px",
+                            }}
+                            {...props}
+                          />
+                        </div>
                       ),
                       th: ({ node, ...props }) => (
                         <th
@@ -1522,7 +1622,6 @@ export function MarkdownEditorWindow() {
               </div>
             </div>
           </div>
-        )}
       </div>
     </div>
     </>

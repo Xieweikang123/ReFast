@@ -12,6 +12,11 @@ import { trackEvent } from "../api/events";
 import { executePlugin } from "../plugins";
 import { pushQueryHistory } from "./queryHistoryUtils";
 import { resolveBrowserForUrl } from "./browserRules";
+import {
+  openFileWithHandler,
+  resolveFileOpenHandler,
+} from "./fileOpenUtils";
+import type { FileOpenRules } from "../types";
 
 /** 规范化路径用于比较（Windows 不区分大小写，统一反斜杠） */
 function normalizePathForCompare(path: string): string {
@@ -84,6 +89,8 @@ export interface LaunchOptions {
   tauriApi: typeof tauriApi;
   /** 浏览器路由规则，决定 URL 用哪个浏览器打开 */
   browserRules: BrowserRule[];
+  /** 文件扩展名左键打开方式 */
+  fileOpenRules: FileOpenRules;
 }
 
 /**
@@ -124,6 +131,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
     errorMessage,
     tauriApi,
     browserRules,
+    fileOpenRules,
   } = options;
 
   try {
@@ -511,8 +519,9 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
       }
     } else if (result.type === "file" && result.file) {
       try {
-        // 注意：历史记录的更新已在开头统一处理，launchFile 不再更新历史记录
-        await tauriApi.launchFile(result.file.path);
+        const filePath = result.file.path;
+        const handler = resolveFileOpenHandler(filePath, fileOpenRules);
+        await openFileWithHandler(filePath, handler, tauriApi);
 
         // 刷新文件历史缓存以同步后端更新后的数据（包括使用次数）
         void refreshFileHistoryCache()
@@ -575,7 +584,8 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
         }
 
         // 注意：历史记录的更新已在开头统一处理，launchFile 不再更新历史记录
-        await tauriApi.launchFile(everythingPath);
+        const handler = resolveFileOpenHandler(everythingPath, fileOpenRules);
+        await openFileWithHandler(everythingPath, handler, tauriApi);
 
         // 刷新文件历史缓存以确保与数据库同步
         void refreshFileHistoryCache()

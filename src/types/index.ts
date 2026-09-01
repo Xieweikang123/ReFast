@@ -266,6 +266,11 @@ export interface BrowserRule {
   enabled: boolean;
 }
 
+/** 文件左键打开方式：按扩展名（不含点）映射 */
+export type FileOpenHandler = "default" | "markdown_editor";
+
+export type FileOpenRules = Record<string, FileOpenHandler>;
+
 export interface DetectedBrowser {
   id: string;
   name: string;

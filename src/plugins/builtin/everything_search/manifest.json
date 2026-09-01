@@ -2,7 +2,7 @@
   "id": "everything_search",
   "name": "Everything 文件搜索",
   "version": "1.0.0",
-  "description": "使用 Everything 进行快速文件搜索",
+  "description": "用 Everything 实时索引搜索全盘文件，支持类型筛选、预览和语法查询",
   "keywords": [
     "everything",
     "文件搜索",

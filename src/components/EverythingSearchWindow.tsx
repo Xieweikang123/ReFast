@@ -1,11 +1,24 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { EverythingResult, FilePreview } from "../types";
 import { formatStandardDateTime } from "../utils/dateUtils";
 import { useWindowClose } from "../hooks/useWindowClose";
+import {
+  classifyFileKind,
+  composeEverythingQuery,
+  formatFileSize,
+  getFileKindLabel,
+  highlightSegments,
+  parseDate,
+  pushRecentQuery,
+  readRecentQueries,
+  type FileKind,
+  type ItemKindFilter,
+} from "../utils/everythingSearchWindowUtils";
 
-type SortKey = "size" | "type" | "name";
+type SortKey = "modified" | "size" | "type" | "name";
 type SortOrder = "asc" | "desc";
 
 type FilterItem = {
@@ -22,20 +35,42 @@ const FILTER_PREFERENCE_KEY = "everything_filter_pref";
 const CUSTOM_FILTER_PREFERENCE_KEY = "everything_custom_filters";
 const MAX_RESULTS_PREFERENCE_KEY = "everything_max_results_pref";
 const MATCH_FOLDER_NAME_ONLY_PREFERENCE_KEY = "everything_match_folder_name_only";
-const DEFAULT_MAX_RESULTS = 5000; // 会作为软性展示上限，后端仍可返回更多供分页
-const ABS_MAX_RESULTS = 2000000; // 单次会话展示硬上限，防止无限渲染
-const SAFE_DISPLAY_LIMIT = 2000000; // 仅作为防护兜底
-const PAGE_SIZE = 500; // 后端分段拉取尺寸
-const MAX_CACHED_PAGES = 8; // 前端缓存页数上限（LRU）
-const ITEM_HEIGHT = 96; // 预估单行高度，用于简单虚拟化
-const OVERSCAN = 6; // 额外渲染的行数，降低滚动抖动
+const ITEM_KIND_PREFERENCE_KEY = "everything_item_kind";
+const PATH_SCOPE_PREFERENCE_KEY = "everything_path_scope";
+const CASE_SENSITIVE_PREFERENCE_KEY = "everything_case_sensitive";
+const MATCH_WHOLE_WORD_PREFERENCE_KEY = "everything_match_whole_word";
+const PREVIEW_OPEN_PREFERENCE_KEY = "everything_preview_open";
+const RECENT_QUERIES_KEY = "everything_recent_queries";
+const DEFAULT_MAX_RESULTS = 5000;
+const ABS_MAX_RESULTS = 2000000;
+const SAFE_DISPLAY_LIMIT = 2000000;
+const PAGE_SIZE = 500;
+const MAX_CACHED_PAGES = 8;
+const ITEM_HEIGHT = 64;
+const OVERSCAN = 8;
+const MAX_RECENT_QUERIES = 8;
 
 const QUICK_FILTERS: FilterItem[] = [
-  { id: "all", label: "全部", extensions: [] },
+  { id: "all", label: "全部类型", extensions: [] },
   {
     id: "images",
     label: "图片",
-    extensions: ["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico"],
+    extensions: ["png", "jpg", "jpeg", "gif", "bmp", "webp", "svg", "ico", "tif", "heic"],
+  },
+  {
+    id: "documents",
+    label: "文档",
+    extensions: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "rtf", "odt", "csv", "md"],
+  },
+  {
+    id: "video",
+    label: "视频",
+    extensions: ["mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v"],
+  },
+  {
+    id: "audio",
+    label: "音频",
+    extensions: ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"],
   },
   {
     id: "code",
@@ -57,18 +92,14 @@ const QUICK_FILTERS: FilterItem[] = [
       "kt",
       "swift",
       "sh",
-      "bat",
       "html",
       "css",
       "scss",
-      "less",
       "json",
-      "jsonc",
       "md",
       "yml",
       "yaml",
       "toml",
-      "ini",
       "sql",
     ],
   },
@@ -77,6 +108,24 @@ const QUICK_FILTERS: FilterItem[] = [
     label: "压缩包",
     extensions: ["zip", "rar", "7z", "tar", "gz", "bz2"],
   },
+  {
+    id: "programs",
+    label: "程序",
+    extensions: ["exe", "msi", "bat", "cmd", "ps1", "lnk"],
+  },
+];
+
+const SORT_OPTIONS: { key: SortKey; label: string; defaultOrder: SortOrder }[] = [
+  { key: "modified", label: "修改时间", defaultOrder: "desc" },
+  { key: "name", label: "名称", defaultOrder: "asc" },
+  { key: "size", label: "大小", defaultOrder: "desc" },
+  { key: "type", label: "类型", defaultOrder: "asc" },
+];
+
+const ITEM_KIND_OPTIONS: { id: ItemKindFilter; label: string }[] = [
+  { id: "all", label: "全部" },
+  { id: "file", label: "文件" },
+  { id: "folder", label: "文件夹" },
 ];
 
 export function EverythingSearchWindow() {
@@ -86,7 +135,7 @@ export function EverythingSearchWindow() {
   const [isEverythingAvailable, setIsEverythingAvailable] = useState(false);
   const [everythingError, setEverythingError] = useState<string | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortKey, setSortKey] = useState<SortKey>("modified");
   const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
   const [activeFilterId, setActiveFilterId] = useState<string>("all");
   const [customFilters, setCustomFilters] = useState<CustomFilter[]>([]);
@@ -94,17 +143,27 @@ export function EverythingSearchWindow() {
   const [newFilterExts, setNewFilterExts] = useState("");
   const [previewData, setPreviewData] = useState<FilePreview | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+  const [selectedIcon, setSelectedIcon] = useState<string | null>(null);
   const [matchFolderNameOnly, setMatchFolderNameOnly] = useState(false);
+  const [itemKind, setItemKind] = useState<ItemKindFilter>("all");
+  const [pathScope, setPathScope] = useState("");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [matchWholeWord, setMatchWholeWord] = useState(false);
   const [maxResults, setMaxResults] = useState<number>(DEFAULT_MAX_RESULTS);
   const [showSyntaxHelp, setShowSyntaxHelp] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showPreview, setShowPreview] = useState(true);
+  const [showRecent, setShowRecent] = useState(false);
+  const [recentQueries, setRecentQueries] = useState<string[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionMode, setSessionMode] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [cacheVersion, setCacheVersion] = useState(0); // 仅用于触发渲染
+  const [cacheVersion, setCacheVersion] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [softLimitWarning, setSoftLimitWarning] = useState<string | null>(null);
-  const [currentLoadedCount, setCurrentLoadedCount] = useState(0); // 后端批次事件返回的当前已加载数量
+  const [currentLoadedCount, setCurrentLoadedCount] = useState(0);
 
   const debounceTimeoutRef = useRef<number | null>(null);
   const previewRequestIdRef = useRef(0);
@@ -113,10 +172,12 @@ export function EverythingSearchWindow() {
   const pageOrderRef = useRef<number[]>([]);
   const pendingSessionIdRef = useRef<string | null>(null);
   const listContainerRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const currentSearchQueryRef = useRef<string>("");
   const startSearchSessionRef = useRef<typeof startSearchSession | null>(null);
-  const creatingSessionQueryRef = useRef<string | null>(null); // 正在创建的会话的查询
-  // 保存当前活跃会话的搜索参数，用于判断是否需要重新创建会话
+  const creatingSessionQueryRef = useRef<string | null>(null);
+  const filtersReadyRef = useRef(false);
+  const toastTimerRef = useRef<number | null>(null);
   const activeSessionParamsRef = useRef<{
     query: string;
     extensions?: string[];
@@ -124,6 +185,10 @@ export function EverythingSearchWindow() {
     sortKey: SortKey;
     sortOrder: SortOrder;
     matchFolderNameOnly: boolean;
+    itemKind: ItemKindFilter;
+    pathScope: string;
+    caseSensitive: boolean;
+    matchWholeWord: boolean;
   } | null>(null);
 
   const activeFilter = useMemo<FilterItem | undefined>(() => {
@@ -134,55 +199,57 @@ export function EverythingSearchWindow() {
     return QUICK_FILTERS[0];
   }, [activeFilterId, customFilters]);
 
-  // 判断当前是否在编辑现有过滤器
   const isEditingExistingFilter = useMemo(() => {
     return customFilters.some((f) => f.id === activeFilterId);
   }, [activeFilterId, customFilters]);
 
-  // 会话 API 函数（直接使用 tauriApi）
   const startSessionFn = tauriApi.startEverythingSearchSession;
   const getRangeFn = tauriApi.getEverythingSearchRange;
   const closeSessionFn = tauriApi.closeEverythingSearchSession;
-  
-  // 使用 ref 保存 closeSessionFn，避免在组件卸载清理时依赖变化
+
   const closeSessionFnRef = useRef(closeSessionFn);
   useEffect(() => {
     closeSessionFnRef.current = closeSessionFn;
   }, [closeSessionFn]);
 
-  // 加载偏好
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 1800);
+  }, []);
+
   useEffect(() => {
     const loadPreferences = async () => {
       try {
         const savedSort = localStorage.getItem(SORT_PREFERENCE_KEY);
         if (savedSort) {
           const parsed = JSON.parse(savedSort) as { key?: SortKey; order?: SortOrder };
-          if (parsed.key) setSortKey(parsed.key);
-          if (parsed.order) setSortOrder(parsed.order);
+          if (parsed.key === "modified" || parsed.key === "size" || parsed.key === "type" || parsed.key === "name") {
+            setSortKey(parsed.key);
+          }
+          if (parsed.order === "asc" || parsed.order === "desc") {
+            setSortOrder(parsed.order);
+          }
         }
 
         const savedFilterId = localStorage.getItem(FILTER_PREFERENCE_KEY);
         if (savedFilterId) setActiveFilterId(savedFilterId);
 
-        // 从 SQLite 加载自定义过滤器
         try {
           const filters = await tauriApi.getEverythingCustomFilters();
           setCustomFilters(filters || []);
-          console.log("已从数据库加载自定义过滤器:", filters);
-          
-          // 如果数据库为空，尝试从 localStorage 迁移一次（仅迁移，不降级）
-          if ((!filters || filters.length === 0)) {
+
+          if (!filters || filters.length === 0) {
             const savedCustom = localStorage.getItem(CUSTOM_FILTER_PREFERENCE_KEY);
             if (savedCustom) {
               try {
                 const parsed = JSON.parse(savedCustom) as CustomFilter[];
                 if (Array.isArray(parsed) && parsed.length > 0) {
-                  // 迁移到数据库
                   await tauriApi.saveEverythingCustomFilters(parsed);
                   setCustomFilters(parsed);
-                  // 清除 localStorage 中的数据
                   localStorage.removeItem(CUSTOM_FILTER_PREFERENCE_KEY);
-                  console.log("已从 localStorage 迁移自定义过滤器到数据库:", parsed);
                 }
               } catch (error) {
                 console.error("迁移自定义过滤器失败:", error);
@@ -191,6 +258,8 @@ export function EverythingSearchWindow() {
           }
         } catch (error) {
           console.error("加载自定义过滤器失败:", error);
+        } finally {
+          filtersReadyRef.current = true;
         }
 
         const savedMaxResults = localStorage.getItem(MAX_RESULTS_PREFERENCE_KEY);
@@ -205,21 +274,37 @@ export function EverythingSearchWindow() {
         if (savedMatchFolderNameOnly !== null) {
           setMatchFolderNameOnly(savedMatchFolderNameOnly === "true");
         }
+
+        const savedItemKind = localStorage.getItem(ITEM_KIND_PREFERENCE_KEY);
+        if (savedItemKind === "file" || savedItemKind === "folder" || savedItemKind === "all") {
+          setItemKind(savedItemKind);
+        }
+
+        const savedPathScope = localStorage.getItem(PATH_SCOPE_PREFERENCE_KEY);
+        if (savedPathScope) setPathScope(savedPathScope);
+
+        const savedCase = localStorage.getItem(CASE_SENSITIVE_PREFERENCE_KEY);
+        if (savedCase !== null) setCaseSensitive(savedCase === "true");
+
+        const savedWholeWord = localStorage.getItem(MATCH_WHOLE_WORD_PREFERENCE_KEY);
+        if (savedWholeWord !== null) setMatchWholeWord(savedWholeWord === "true");
+
+        const savedPreview = localStorage.getItem(PREVIEW_OPEN_PREFERENCE_KEY);
+        if (savedPreview !== null) setShowPreview(savedPreview === "true");
+
+        setRecentQueries(readRecentQueries(localStorage.getItem(RECENT_QUERIES_KEY), MAX_RECENT_QUERIES));
       } catch (error) {
         console.warn("加载 Everything 偏好失败", error);
+        filtersReadyRef.current = true;
       }
     };
 
     loadPreferences();
   }, []);
 
-  // 持久化偏好
   useEffect(() => {
     try {
-      localStorage.setItem(
-        SORT_PREFERENCE_KEY,
-        JSON.stringify({ key: sortKey, order: sortOrder })
-      );
+      localStorage.setItem(SORT_PREFERENCE_KEY, JSON.stringify({ key: sortKey, order: sortOrder }));
     } catch {
       // ignore
     }
@@ -234,43 +319,41 @@ export function EverythingSearchWindow() {
   }, [activeFilterId]);
 
   useEffect(() => {
-    // 自动保存到 SQLite（仅在非初始加载时）
+    if (!filtersReadyRef.current) return;
     const saveFilters = async () => {
       try {
         await tauriApi.saveEverythingCustomFilters(customFilters);
-        console.log("自定义过滤器已自动保存到数据库:", customFilters);
-        // 清除 localStorage 中的旧数据（如果存在）
         localStorage.removeItem(CUSTOM_FILTER_PREFERENCE_KEY);
       } catch (error) {
         console.error("自动保存自定义过滤器到数据库失败:", error);
       }
     };
-
-    // 延迟保存，避免在初始加载时触发
-    const timer = setTimeout(() => {
-      saveFilters();
-    }, 100);
-
+    const timer = setTimeout(saveFilters, 200);
     return () => clearTimeout(timer);
   }, [customFilters]);
 
   useEffect(() => {
     try {
       localStorage.setItem(MATCH_FOLDER_NAME_ONLY_PREFERENCE_KEY, matchFolderNameOnly.toString());
-    } catch {
-      // ignore
-    }
-  }, [matchFolderNameOnly]);
-
-  useEffect(() => {
-    try {
+      localStorage.setItem(ITEM_KIND_PREFERENCE_KEY, itemKind);
+      localStorage.setItem(PATH_SCOPE_PREFERENCE_KEY, pathScope);
+      localStorage.setItem(CASE_SENSITIVE_PREFERENCE_KEY, caseSensitive.toString());
+      localStorage.setItem(MATCH_WHOLE_WORD_PREFERENCE_KEY, matchWholeWord.toString());
+      localStorage.setItem(PREVIEW_OPEN_PREFERENCE_KEY, showPreview.toString());
       localStorage.setItem(MAX_RESULTS_PREFERENCE_KEY, maxResults.toString());
     } catch {
       // ignore
     }
-  }, [maxResults]);
+  }, [
+    matchFolderNameOnly,
+    itemKind,
+    pathScope,
+    caseSensitive,
+    matchWholeWord,
+    showPreview,
+    maxResults,
+  ]);
 
-  // 检查 Everything 状态
   useEffect(() => {
     const checkStatus = async () => {
       try {
@@ -285,7 +368,6 @@ export function EverythingSearchWindow() {
     checkStatus();
   }, []);
 
-  // ---------- 会话 & 分页 ----------
   const resetCaches = useCallback(() => {
     pageCacheRef.current.clear();
     pageOrderRef.current = [];
@@ -315,8 +397,6 @@ export function EverythingSearchWindow() {
     [sessionId]
   );
 
-  // 判断是否应该忽略"搜索已取消"错误
-  // 如果错误是"搜索已取消"，且当前查询已经改变，说明是用户主动切换查询导致的，应该静默忽略
   const shouldIgnoreCancelError = useCallback((error: unknown, currentQuery: string): boolean => {
     const errorStr = typeof error === "string" ? error : String(error);
     return errorStr.includes("搜索已取消") && currentSearchQueryRef.current !== currentQuery;
@@ -336,14 +416,46 @@ export function EverythingSearchWindow() {
     [maxResults]
   );
 
+  const rememberQuery = useCallback((value: string) => {
+    setRecentQueries((prev) => {
+      const next = pushRecentQuery(prev, value, MAX_RECENT_QUERIES);
+      try {
+        localStorage.setItem(RECENT_QUERIES_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
+
   const startSearchSession = useCallback(
     async (searchQuery: string) => {
-      if (!searchQuery || searchQuery.trim() === "") {
+      const composed = composeEverythingQuery(searchQuery, {
+        pathScope,
+        caseSensitive,
+        matchWholeWord,
+      });
+      const extFilter =
+        activeFilter && activeFilter.extensions.length > 0 ? activeFilter.extensions : undefined;
+      const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
+      const currentParams = {
+        query: composed,
+        extensions: extFilter,
+        maxResults: maxResultsToUse,
+        sortKey,
+        sortOrder,
+        matchFolderNameOnly,
+        itemKind,
+        pathScope,
+        caseSensitive,
+        matchWholeWord,
+      };
+
+      if (!composed) {
         const oldSessionId = pendingSessionIdRef.current;
         if (oldSessionId) {
           await closeSessionSafe(oldSessionId);
         }
-        console.log("[pendingSessionIdRef] 设置为 null - 原因: 查询为空", { oldSessionId, searchQuery });
         pendingSessionIdRef.current = null;
         activeSessionParamsRef.current = null;
         resetCaches();
@@ -351,6 +463,7 @@ export function EverythingSearchWindow() {
         setSessionMode(false);
         setTotalCount(null);
         setIsSearching(false);
+        setCurrentLoadedCount(0);
         return;
       }
       if (!isEverythingAvailable) {
@@ -358,7 +471,6 @@ export function EverythingSearchWindow() {
         if (oldSessionId) {
           await closeSessionSafe(oldSessionId);
         }
-        console.log("[pendingSessionIdRef] 设置为 null - 原因: Everything不可用", { oldSessionId, isEverythingAvailable });
         pendingSessionIdRef.current = null;
         activeSessionParamsRef.current = null;
         setSessionMode(false);
@@ -368,133 +480,100 @@ export function EverythingSearchWindow() {
         return;
       }
 
-      const trimmed = searchQuery.trim();
-      const extFilter =
-        activeFilter && activeFilter.extensions.length > 0 ? activeFilter.extensions : undefined;
-      const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
+      currentSearchQueryRef.current = composed;
 
-      // 保存当前搜索的 query，用于错误处理时判断是否应该忽略取消错误
-      currentSearchQueryRef.current = trimmed;
-      
-      // 如果相同查询的会话正在创建中，或已经存在活跃/挂起的会话，则直接等待，避免重复创建
-      if (creatingSessionQueryRef.current === trimmed) {
-        console.log("相同查询的会话正在创建中，等待完成");
+      if (creatingSessionQueryRef.current === composed) {
         return;
       }
-      
-      // 检查是否已有相同参数的活跃会话（不仅检查查询，还要检查所有搜索参数）
-      const currentParams = {
-        query: trimmed,
-        extensions: extFilter,
-        maxResults: maxResultsToUse,
-        sortKey,
-        sortOrder,
-        matchFolderNameOnly,
-      };
-      
+
       if (
         pendingSessionIdRef.current &&
         sessionMode &&
         activeSessionParamsRef.current &&
-        // 比较所有参数是否相同
         activeSessionParamsRef.current.query === currentParams.query &&
-        JSON.stringify(activeSessionParamsRef.current.extensions || []) === JSON.stringify(currentParams.extensions || []) &&
+        JSON.stringify(activeSessionParamsRef.current.extensions || []) ===
+          JSON.stringify(currentParams.extensions || []) &&
         activeSessionParamsRef.current.maxResults === currentParams.maxResults &&
         activeSessionParamsRef.current.sortKey === currentParams.sortKey &&
         activeSessionParamsRef.current.sortOrder === currentParams.sortOrder &&
-        activeSessionParamsRef.current.matchFolderNameOnly === currentParams.matchFolderNameOnly
+        activeSessionParamsRef.current.matchFolderNameOnly === currentParams.matchFolderNameOnly &&
+        activeSessionParamsRef.current.itemKind === currentParams.itemKind &&
+        activeSessionParamsRef.current.pathScope === currentParams.pathScope &&
+        activeSessionParamsRef.current.caseSensitive === currentParams.caseSensitive &&
+        activeSessionParamsRef.current.matchWholeWord === currentParams.matchWholeWord
       ) {
-        console.log("相同参数已有活跃会话，等待完成", { 
-          sessionId: pendingSessionIdRef.current,
-          params: currentParams 
-        });
         return;
       }
 
-      // 标记正在创建会话
-      creatingSessionQueryRef.current = trimmed;
+      creatingSessionQueryRef.current = composed;
 
-      // 关闭旧会话
       const oldSessionId = pendingSessionIdRef.current;
       if (oldSessionId) {
         await closeSessionSafe(oldSessionId);
       }
-      // 在创建新会话前先清空 pendingSessionIdRef，防止旧的 fetchPage 使用已失效的会话
-      console.log("[pendingSessionIdRef] 设置为 null - 原因: 创建新会话前清空旧会话", { oldSessionId, newQuery: trimmed, currentQuery: currentSearchQueryRef.current });
       pendingSessionIdRef.current = null;
       activeSessionParamsRef.current = null;
       resetCaches();
       scrollToTop();
-      console.log("[currentLoadedCount] 重置为 0，开始新搜索，查询:", trimmed);
+      setSelectedIndex(0);
       setCurrentLoadedCount(0);
       setIsSearching(true);
       setSessionMode(true);
       setSessionError(null);
 
       try {
-        console.log("开始创建搜索会话，查询:", trimmed);
-        // 为会话创建添加超时机制
-        const sessionTimeoutMs = 60000; // 60秒超时
+        const sessionTimeoutMs = 60000;
         const sessionTimeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(() => {
             reject(new Error(`创建搜索会话超时（${sessionTimeoutMs}ms）`));
           }, sessionTimeoutMs);
         });
-        
+
         const session = await Promise.race([
-          startSessionFn(trimmed, {
+          startSessionFn(composed, {
             extensions: extFilter,
             maxResults: maxResultsToUse,
             sortKey,
             sortOrder,
             matchFolderNameOnly,
+            onlyFiles: itemKind === "file",
+            onlyFolders: itemKind === "folder" || matchFolderNameOnly,
           }),
           sessionTimeoutPromise,
         ]);
-        
-        console.log("搜索会话创建成功，会话ID:", session.sessionId, "总数:", session.totalCount);
-        
-        // 检查查询是否仍然有效（可能在异步等待期间用户切换了查询）
-        if (currentSearchQueryRef.current !== trimmed) {
-          console.log("查询已切换，忽略旧会话结果");
+
+        if (currentSearchQueryRef.current !== composed) {
           await closeSessionSafe(session.sessionId);
-          console.log("[pendingSessionIdRef] 设置为 null - 原因: 查询已切换，忽略旧会话", { sessionId: session.sessionId, oldQuery: trimmed, newQuery: currentSearchQueryRef.current });
           pendingSessionIdRef.current = null;
           activeSessionParamsRef.current = null;
-          creatingSessionQueryRef.current = null; // 清除创建标记
+          creatingSessionQueryRef.current = null;
           setIsSearching(false);
           return;
         }
-        
-        console.log("[pendingSessionIdRef] 设置为会话ID - 原因: 会话创建成功", { sessionId: session.sessionId, query: trimmed, totalCount: session.totalCount });
+
         pendingSessionIdRef.current = session.sessionId;
-        creatingSessionQueryRef.current = null; // 会话创建成功，清除创建标记
-        // 保存当前会话的参数，用于后续判断是否需要重新创建
+        creatingSessionQueryRef.current = null;
         activeSessionParamsRef.current = currentParams;
         setSessionId(session.sessionId);
         setTotalCount(Math.min(session.totalCount ?? 0, SAFE_DISPLAY_LIMIT));
         applySoftLimitHint(session.totalCount ?? 0);
-        
-        // 预取首屏页
+        if (searchQuery.trim()) {
+          rememberQuery(searchQuery.trim());
+        }
+
         const pageIndex = 0;
         const offset = pageIndex * PAGE_SIZE;
         const currentSessionId = session.sessionId;
-        const currentQueryForPage = trimmed; // 保存当前查询，用于验证
-        // 保存创建会话时的 pendingSessionIdRef 值，用于验证首屏页返回时是否仍然是这个会话
-        const sessionIdAtCreation = pendingSessionIdRef.current;
+        const currentQueryForPage = composed;
         inflightPagesRef.current.add(pageIndex);
-        
-        console.log("开始获取首屏页，会话ID:", currentSessionId, "offset:", offset, "limit:", PAGE_SIZE, "创建时的pendingSessionIdRef:", sessionIdAtCreation);
-        
-        // 添加超时机制，防止 getRangeFn 卡住
-        const timeoutMs = 30000; // 30秒超时
+
+        const timeoutMs = 30000;
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(() => {
             reject(new Error(`获取首屏页超时（${timeoutMs}ms）`));
           }, timeoutMs);
         });
-        
-        // 确保无论成功还是失败，都会更新搜索状态
+
         Promise.race([
           getRangeFn(currentSessionId, offset, PAGE_SIZE, {
             extensions: extFilter,
@@ -505,20 +584,9 @@ export function EverythingSearchWindow() {
           timeoutPromise,
         ])
           .then((res) => {
-            console.log("首屏页获取成功，返回", res.items.length, "条结果");
-            // 检查会话和查询是否仍然有效（双重验证，避免误判）
-            // 检查当前 pendingSessionIdRef 是否匹配当前会话ID
-            const currentPendingSessionId = pendingSessionIdRef.current;
-            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isSessionStillValid = pendingSessionIdRef.current === currentSessionId;
             const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
-            
             if (!isSessionStillValid || !isQueryStillValid) {
-              console.log(
-                "会话或查询已切换，忽略旧会话的首屏页结果",
-                `会话有效: ${isSessionStillValid}, 查询有效: ${isQueryStillValid}, 当前会话ID: ${currentSessionId}, 当前pendingSessionIdRef: ${currentPendingSessionId}, 创建时的pendingSessionIdRef: ${sessionIdAtCreation}`
-              );
-              // 如果会话已切换且没有新的有效会话，清除搜索状态
-              // 如果有新会话，新会话会自己管理 isSearching 状态
               if (!pendingSessionIdRef.current) {
                 setIsSearching(false);
               }
@@ -527,32 +595,13 @@ export function EverythingSearchWindow() {
             pageCacheRef.current.set(pageIndex, res.items);
             pageOrderRef.current = [pageIndex];
             setCacheVersion((v) => v + 1);
-            // 如果批次事件还没有更新 currentLoadedCount，则根据实际加载的数据量更新
-            // 这样可以确保显示正确的已加载数量
-            setCurrentLoadedCount((prev) => {
-              // 如果批次事件已经更新过（prev > 0），则保持批次事件的值（更准确）
-              // 否则使用实际加载的数据量
-              const newValue = prev > 0 ? prev : res.items.length;
-              console.log(
-                `[currentLoadedCount] 首屏页加载成功，更新计数: ${prev} -> ${newValue} (批次事件已更新: ${prev > 0}, 实际加载: ${res.items.length} 条)`
-              );
-              return newValue;
-            });
+            setCurrentLoadedCount((prev) => (prev > 0 ? prev : res.items.length));
             setIsSearching(false);
           })
           .catch((error) => {
-            // 检查会话和查询是否仍然有效（双重验证）
-            const currentPendingSessionId = pendingSessionIdRef.current;
-            const isSessionStillValid = currentPendingSessionId === currentSessionId;
+            const isSessionStillValid = pendingSessionIdRef.current === currentSessionId;
             const isQueryStillValid = currentSearchQueryRef.current === currentQueryForPage;
-            
             if (!isSessionStillValid || !isQueryStillValid) {
-              console.log(
-                "会话或查询已切换，忽略旧会话的首屏页错误",
-                `会话有效: ${isSessionStillValid}, 查询有效: ${isQueryStillValid}, 当前会话ID: ${currentSessionId}, 当前pendingSessionIdRef: ${currentPendingSessionId}, 创建时的pendingSessionIdRef: ${sessionIdAtCreation}`
-              );
-              // 如果会话已切换且没有新的有效会话，清除搜索状态
-              // 如果有新会话，新会话会自己管理 isSearching 状态
               if (!pendingSessionIdRef.current) {
                 setIsSearching(false);
               }
@@ -560,7 +609,6 @@ export function EverythingSearchWindow() {
             }
             console.error("加载首屏页失败:", error);
             if (shouldIgnoreCancelError(error, currentQueryForPage)) {
-              console.log("搜索被取消（用户切换查询），忽略错误");
               setIsSearching(false);
               return;
             }
@@ -573,10 +621,8 @@ export function EverythingSearchWindow() {
           });
       } catch (error) {
         console.error("开启会话失败:", error);
-        creatingSessionQueryRef.current = null; // 会话创建失败，清除创建标记
-        if (shouldIgnoreCancelError(error, trimmed)) {
-          console.log("搜索被取消（用户切换查询），忽略错误");
-          // 如果会话已切换且没有新的有效会话，清除搜索状态
+        creatingSessionQueryRef.current = null;
+        if (shouldIgnoreCancelError(error, composed)) {
           if (!pendingSessionIdRef.current) {
             setIsSearching(false);
           }
@@ -584,7 +630,6 @@ export function EverythingSearchWindow() {
         }
         const errorStr = typeof error === "string" ? error : String(error);
         setSessionError(errorStr);
-        console.log("[pendingSessionIdRef] 设置为 null - 原因: 会话创建失败", { error: errorStr, query: trimmed });
         pendingSessionIdRef.current = null;
         activeSessionParamsRef.current = null;
         setSessionMode(false);
@@ -594,11 +639,16 @@ export function EverythingSearchWindow() {
     [
       activeFilter,
       applySoftLimitHint,
+      caseSensitive,
       closeSessionSafe,
       getRangeFn,
       isEverythingAvailable,
+      itemKind,
       matchFolderNameOnly,
+      matchWholeWord,
       maxResults,
+      pathScope,
+      rememberQuery,
       resetCaches,
       shouldIgnoreCancelError,
       sortKey,
@@ -627,14 +677,12 @@ export function EverythingSearchWindow() {
     async (pageIndex: number) => {
       if (!sessionMode) return;
       if (!sessionId || !getRangeFn) return;
-      
-      // 使用 ref 保存当前会话ID，避免闭包问题
+
       const currentSessionId = pendingSessionIdRef.current;
       if (!currentSessionId || currentSessionId !== sessionId) {
-        // 会话已切换或无效，忽略此请求
         return;
       }
-      
+
       if (pageCacheRef.current.has(pageIndex)) {
         touchPageOrder(pageIndex);
         return;
@@ -643,7 +691,6 @@ export function EverythingSearchWindow() {
       inflightPagesRef.current.add(pageIndex);
       const extFilter =
         activeFilter && activeFilter.extensions.length > 0 ? activeFilter.extensions : undefined;
-      // 使用 ref 获取当前查询，避免闭包问题
       const currentQuery = currentSearchQueryRef.current;
       try {
         const offset = pageIndex * PAGE_SIZE;
@@ -653,32 +700,24 @@ export function EverythingSearchWindow() {
           sortOrder,
           matchFolderNameOnly,
         });
-        
-        // 再次检查会话是否仍然有效
+
         if (pendingSessionIdRef.current !== currentSessionId) {
-          console.log("会话已切换，忽略分页结果");
           return;
         }
-        
+
         pageCacheRef.current.set(pageIndex, res.items);
         touchPageOrder(pageIndex);
         pruneLRU();
         setCacheVersion((v) => v + 1);
-        // 不在这里更新 totalCount，因为它在会话创建时已经确定了
-        // 如果后端返回了不同的 totalCount，可能是会话过期了，应该忽略
       } catch (error) {
-        // 检查会话是否仍然有效
         if (pendingSessionIdRef.current !== currentSessionId) {
-          console.log("会话已切换，忽略分页错误");
           return;
         }
         console.error("加载分页失败:", error);
         if (shouldIgnoreCancelError(error, currentQuery)) {
-          console.log("搜索被取消（用户切换查询），忽略分页错误");
           return;
         }
         const errorStr = typeof error === "string" ? error : String(error);
-        // 只有当前会话仍然有效时才设置错误
         if (pendingSessionIdRef.current === currentSessionId) {
           setSessionError(errorStr);
         }
@@ -710,46 +749,38 @@ export function EverythingSearchWindow() {
         touchPageOrder(pageIndex);
         return page[indexInPage];
       }
-      // 异步请求缺失页
       fetchPage(pageIndex);
       return null;
     },
-    [fetchPage, touchPageOrder    ]
+    [fetchPage, touchPageOrder]
   );
 
-  // 保持 startSearchSession 的 ref 始终是最新版本
   startSearchSessionRef.current = startSearchSession;
 
-  // 防抖触发搜索
   useEffect(() => {
     if (debounceTimeoutRef.current) {
       clearTimeout(debounceTimeoutRef.current);
     }
-    const trimmed = query.trim();
-    if (trimmed === "") {
-      debounceTimeoutRef.current = window.setTimeout(() => {
-        startSearchSessionRef.current?.("");
-      }, 150) as unknown as number;
-      return;
-    }
     debounceTimeoutRef.current = window.setTimeout(() => {
-      startSearchSessionRef.current?.(trimmed);
-    }, 320) as unknown as number;
+      startSearchSessionRef.current?.(query.trim());
+    }, query.trim() ? 320 : 160) as unknown as number;
     return () => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
     };
-  }, [query]); // 只依赖 query，不依赖 startSearchSession，避免函数重新创建时重复触发
+  }, [query]);
 
-  // 当过滤器、排序等参数变化时，如果有查询，重新触发搜索
-  // 使用 useRef 保存上一次的参数值，避免 query 变化时重复触发
   const prevParamsRef = useRef<{
     activeFilterId: string;
     sortKey: SortKey;
     sortOrder: SortOrder;
     matchFolderNameOnly: boolean;
     maxResults: number;
+    itemKind: ItemKindFilter;
+    pathScope: string;
+    caseSensitive: boolean;
+    matchWholeWord: boolean;
     query: string;
   } | null>(null);
 
@@ -761,65 +792,75 @@ export function EverythingSearchWindow() {
       sortOrder,
       matchFolderNameOnly,
       maxResults,
+      itemKind,
+      pathScope,
+      caseSensitive,
+      matchWholeWord,
       query: trimmed,
     };
 
-    // 如果查询为空，重置参数引用
-    if (trimmed === "") {
-      prevParamsRef.current = null;
-      return;
-    }
-
-    // 如果是第一次设置参数，只保存参数，不触发搜索（query 变化时由上面的 useEffect 处理）
     if (prevParamsRef.current === null) {
       prevParamsRef.current = currentParams;
       return;
     }
 
-    // 如果只是 query 变化，更新参数引用但不触发搜索（由上面的 useEffect 处理）
     if (prevParamsRef.current.query !== trimmed) {
       prevParamsRef.current = currentParams;
       return;
     }
 
-    // 检查参数是否真的变化了（query 相同的情况下）
     const paramsChanged =
       prevParamsRef.current.activeFilterId !== currentParams.activeFilterId ||
       prevParamsRef.current.sortKey !== currentParams.sortKey ||
       prevParamsRef.current.sortOrder !== currentParams.sortOrder ||
       prevParamsRef.current.matchFolderNameOnly !== currentParams.matchFolderNameOnly ||
-      prevParamsRef.current.maxResults !== currentParams.maxResults;
+      prevParamsRef.current.maxResults !== currentParams.maxResults ||
+      prevParamsRef.current.itemKind !== currentParams.itemKind ||
+      prevParamsRef.current.pathScope !== currentParams.pathScope ||
+      prevParamsRef.current.caseSensitive !== currentParams.caseSensitive ||
+      prevParamsRef.current.matchWholeWord !== currentParams.matchWholeWord;
 
     if (!paramsChanged) {
       return;
     }
 
-    // 参数变化时重新搜索（query 相同，但其他参数变化）
     prevParamsRef.current = currentParams;
     if (debounceTimeoutRef.current) {
       clearTimeout(debounceTimeoutRef.current);
     }
     debounceTimeoutRef.current = window.setTimeout(() => {
       startSearchSessionRef.current?.(trimmed);
-    }, 150) as unknown as number; // 参数变化时使用较短的防抖时间，响应更快
+    }, 150) as unknown as number;
     return () => {
       if (debounceTimeoutRef.current) {
         clearTimeout(debounceTimeoutRef.current);
       }
     };
-  }, [activeFilterId, sortKey, sortOrder, matchFolderNameOnly, maxResults, query]); // 监听所有影响搜索结果的参数
+  }, [
+    activeFilterId,
+    sortKey,
+    sortOrder,
+    matchFolderNameOnly,
+    maxResults,
+    itemKind,
+    pathScope,
+    caseSensitive,
+    matchWholeWord,
+    query,
+  ]);
 
-  // 选中项变化时触发预览
   useEffect(() => {
     const target = getItemByIndex(selectedIndex);
     if (!target) {
       setPreviewData(null);
       setIsPreviewLoading(false);
+      setSelectedIcon(null);
       return;
     }
     const requestId = ++previewRequestIdRef.current;
     setIsPreviewLoading(true);
     setPreviewData(null);
+    setSelectedIcon(null);
     tauriApi
       .getFilePreview(target.path)
       .then((res) => {
@@ -838,27 +879,37 @@ export function EverythingSearchWindow() {
           setIsPreviewLoading(false);
         }
       });
+    tauriApi
+      .extractIconFromPath(target.path)
+      .then((icon) => {
+        if (previewRequestIdRef.current !== requestId) return;
+        setSelectedIcon(icon);
+      })
+      .catch(() => {
+        if (previewRequestIdRef.current === requestId) {
+          setSelectedIcon(null);
+        }
+      });
   }, [getItemByIndex, selectedIndex, cacheVersion]);
 
   const handleChangeSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortOrder((prev) => (prev === "asc" ? "desc" : "asc"));
     } else {
+      const option = SORT_OPTIONS.find((item) => item.key === key);
       setSortKey(key);
-      setSortOrder("desc");
+      setSortOrder(option?.defaultOrder ?? "desc");
     }
   };
 
   const handleSelectFilter = (id: string) => {
     setActiveFilterId(id);
-    
-    // 如果选择的是自定义过滤器，将值回填到输入框以便编辑
     const customFilter = customFilters.find((f) => f.id === id);
     if (customFilter) {
       setNewFilterName(customFilter.label);
       setNewFilterExts(customFilter.extensions.join(", "));
+      setShowAdvanced(true);
     } else {
-      // 选择内置过滤器时，清空输入框
       setNewFilterName("");
       setNewFilterExts("");
     }
@@ -871,40 +922,32 @@ export function EverythingSearchWindow() {
       .map((e) => e.trim().toLowerCase())
       .filter(Boolean);
     if (!name || extList.length === 0) return;
-    
+
     let newFilters: CustomFilter[];
     let filterId: string;
-    
-    // 如果当前选择的是自定义过滤器，则更新它；否则创建新的
+
     const existingFilter = customFilters.find((f) => f.id === activeFilterId);
     if (existingFilter) {
-      // 更新现有过滤器
       filterId = existingFilter.id;
       newFilters = customFilters.map((f) =>
-        f.id === filterId
-          ? { id: filterId, label: name, extensions: extList }
-          : f
+        f.id === filterId ? { id: filterId, label: name, extensions: extList } : f
       );
-      console.log("更新自定义过滤器:", filterId);
     } else {
-      // 创建新过滤器
       filterId = `custom-${Date.now()}`;
       const filter: CustomFilter = { id: filterId, label: name, extensions: extList };
       newFilters = [...customFilters, filter];
-      console.log("创建新自定义过滤器:", filterId);
     }
-    
+
+    filtersReadyRef.current = true;
     setCustomFilters(newFilters);
     setActiveFilterId(filterId);
     setNewFilterName("");
     setNewFilterExts("");
-    
-    // 立即保存到 SQLite，确保持久化
+
     try {
       await tauriApi.saveEverythingCustomFilters(newFilters);
-      console.log("自定义过滤器已保存到数据库:", newFilters);
-      // 清除 localStorage 中的旧数据（如果存在）
       localStorage.removeItem(CUSTOM_FILTER_PREFERENCE_KEY);
+      showToast(existingFilter ? "已更新过滤器" : "已保存过滤器");
     } catch (error) {
       console.error("保存自定义过滤器到数据库失败:", error);
     }
@@ -915,23 +958,21 @@ export function EverythingSearchWindow() {
     setCustomFilters(newFilters);
     if (activeFilterId === id) {
       setActiveFilterId("all");
+      setNewFilterName("");
+      setNewFilterExts("");
     }
-    
-    // 立即保存到 SQLite，确保持久化
+
     try {
       await tauriApi.saveEverythingCustomFilters(newFilters);
-      console.log("自定义过滤器已删除并保存到数据库:", newFilters);
-      // 清除 localStorage 中的旧数据（如果存在）
       localStorage.removeItem(CUSTOM_FILTER_PREFERENCE_KEY);
+      showToast("已删除过滤器");
     } catch (error) {
       console.error("保存自定义过滤器到数据库失败:", error);
     }
   };
 
-  // 定义处理函数（必须在 useEffect 之前）
   const handleLaunch = useCallback(async (result: EverythingResult) => {
     try {
-      // 先更新历史记录，然后启动文件（launchFile 不再更新历史记录）
       await tauriApi.addFileToHistory(result.path);
       await tauriApi.launchFile(result.path);
     } catch (error) {
@@ -949,7 +990,49 @@ export function EverythingSearchWindow() {
     }
   }, []);
 
-  // 虚拟列表尺寸监听
+  const handleCopyText = useCallback(
+    async (text: string, successMessage: string) => {
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast(successMessage);
+      } catch (error) {
+        console.error("复制失败:", error);
+        showToast("复制失败");
+      }
+    },
+    [showToast]
+  );
+
+  const handleCopyToDownloads = useCallback(
+    async (result: EverythingResult) => {
+      try {
+        const dest = await tauriApi.copyFileToDownloads(result.path);
+        showToast(`已复制到下载目录`);
+        return dest;
+      } catch (error) {
+        console.error("复制到下载失败:", error);
+        showToast("复制到下载失败");
+      }
+    },
+    [showToast]
+  );
+
+  const handlePickPathScope = useCallback(async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择搜索目录",
+      });
+      if (selected && typeof selected === "string") {
+        setPathScope(selected);
+        setShowAdvanced(true);
+      }
+    } catch (error) {
+      console.error("选择目录失败:", error);
+    }
+  }, []);
+
   useEffect(() => {
     const node = listContainerRef.current;
     if (!node) return;
@@ -963,7 +1046,6 @@ export function EverythingSearchWindow() {
     return () => resizeObserver.disconnect();
   }, []);
 
-  // 监听后端批次事件，更新 currentLoadedCount
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
 
@@ -975,23 +1057,12 @@ export function EverythingSearchWindow() {
           current_count: number;
         }>("everything-search-batch", (event) => {
           const { current_count } = event.payload;
-
-          // 只有在会话模式下且当前有活跃会话时才更新
-          // 通过检查 pendingSessionIdRef 和 currentSearchQueryRef 来确保是当前搜索的事件
-          // 批次事件在搜索过程中发送，此时会话可能正在创建，所以也检查 creatingSessionQueryRef
           const hasActiveSession = pendingSessionIdRef.current !== null;
           const hasActiveQuery = currentSearchQueryRef.current !== "";
           const isCreatingSession = creatingSessionQueryRef.current !== null;
-          
+
           if (sessionMode && (hasActiveSession || isCreatingSession) && hasActiveQuery) {
-            console.log(
-              `[currentLoadedCount] 批次事件更新: ${current_count} (会话模式: ${sessionMode}, 活跃会话: ${hasActiveSession}, 创建中: ${isCreatingSession}, 查询: ${currentSearchQueryRef.current})`
-            );
             setCurrentLoadedCount(current_count);
-          } else {
-            console.log(
-              `[currentLoadedCount] 批次事件被忽略: current_count=${current_count}, sessionMode=${sessionMode}, hasActiveSession=${hasActiveSession}, isCreatingSession=${isCreatingSession}, hasActiveQuery=${hasActiveQuery}`
-            );
           }
         });
 
@@ -1010,22 +1081,18 @@ export function EverythingSearchWindow() {
     };
   }, [sessionMode]);
 
-  // 离开页面或窗口关闭时释放会话（只在组件真正卸载时执行）
   useEffect(() => {
     return () => {
       const oldSessionId = pendingSessionIdRef.current;
       if (oldSessionId && closeSessionFnRef.current) {
-        // 直接使用 ref 中的函数，避免依赖变化导致重复执行清理函数
         closeSessionFnRef.current(oldSessionId).catch((error) => {
           console.warn("组件卸载时关闭搜索会话失败", error);
         });
       }
-      console.log("[pendingSessionIdRef] 设置为 null - 原因: 组件卸载", { oldSessionId });
       pendingSessionIdRef.current = null;
       activeSessionParamsRef.current = null;
     };
-  }, []); // 空依赖数组，只在组件真正卸载时执行
-
+  }, []);
 
   const displayCount = useMemo(() => {
     if (!totalCount) return 0;
@@ -1053,49 +1120,96 @@ export function EverythingSearchWindow() {
   const paddingBottom = Math.max(0, (displayCount - visibleRange.end - 1) * ITEM_HEIGHT);
 
   const currentSelectedItem = getItemByIndex(selectedIndex);
-  // 使用 ref 缓存已加载数量，避免每次遍历所有页面
-  const cachedLoadedCountRef = useRef(0);
   const computedLoadedCount = useMemo(() => {
-    // 只在 cacheVersion 变化时重新计算，减少计算频率
     let count = 0;
-    const cache = pageCacheRef.current;
-    // 使用迭代器而不是 forEach，性能稍好
-    for (const page of cache.values()) {
+    for (const page of pageCacheRef.current.values()) {
       count += page.length;
     }
-    cachedLoadedCountRef.current = count;
     const maxResultsToUse = Math.min(maxResults, ABS_MAX_RESULTS);
     return Math.min(count, maxResultsToUse, SAFE_DISPLAY_LIMIT);
   }, [cacheVersion, maxResults]);
 
-  const isIndeterminateProgress = useMemo(
-    () => isSearching && computedLoadedCount === 0,
-    [computedLoadedCount, isSearching]
-  );
+  const loadedCount = Math.max(currentLoadedCount, computedLoadedCount);
+  const isIndeterminateProgress = isSearching && computedLoadedCount === 0;
 
-  // 键盘导航
+  useEffect(() => {
+    const node = listContainerRef.current;
+    if (!node || displayCount === 0) return;
+    const top = selectedIndex * ITEM_HEIGHT;
+    const bottom = top + ITEM_HEIGHT;
+    if (top < node.scrollTop) {
+      node.scrollTo({ top });
+    } else if (bottom > node.scrollTop + node.clientHeight) {
+      node.scrollTo({ top: bottom - node.clientHeight });
+    }
+  }, [selectedIndex, displayCount, viewportHeight]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isField =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable;
+      const isSearchInput = target === searchInputRef.current;
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L" || e.key === "f" || e.key === "F")) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
       if (e.key === "Escape") {
+        if (showSyntaxHelp) {
+          setShowSyntaxHelp(false);
+          return;
+        }
+        if (showRecent) {
+          setShowRecent(false);
+          return;
+        }
         handleClose();
         return;
       }
 
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setSelectedIndex((prev) => {
-          const limit = displayCount > 0 ? displayCount - 1 : 0;
-          return prev < limit ? prev + 1 : prev;
-        });
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setSelectedIndex((prev) => (prev > 0 ? prev - 1 : 0));
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        const target = getItemByIndex(selectedIndex);
-        if (target) {
-          handleLaunch(target);
+      if (!isField || isSearchInput) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSelectedIndex((prev) => {
+            const limit = displayCount > 0 ? displayCount - 1 : 0;
+            return prev < limit ? prev + 1 : prev;
+          });
+          return;
         }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSelectedIndex((prev) => (prev > 0 ? prev - 1 : 0));
+          return;
+        }
+      }
+
+      const targetItem = getItemByIndex(selectedIndex);
+      if (!targetItem) return;
+
+      if (e.key === "Enter" && e.altKey) {
+        e.preventDefault();
+        handleRevealInFolder(targetItem);
+        return;
+      }
+      if (e.key === "Enter" && (!isField || isSearchInput)) {
+        e.preventDefault();
+        handleLaunch(targetItem);
+        return;
+      }
+      if (!isField && (e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        handleCopyText(targetItem.name, "已复制文件名");
+        return;
+      }
+      if (!isField && (e.ctrlKey || e.metaKey) && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        handleCopyText(targetItem.path, "已复制路径");
       }
     };
 
@@ -1103,321 +1217,429 @@ export function EverythingSearchWindow() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [displayCount, getItemByIndex, handleClose, handleLaunch, selectedIndex]);
+  }, [
+    displayCount,
+    getItemByIndex,
+    handleClose,
+    handleCopyText,
+    handleLaunch,
+    handleRevealInFolder,
+    selectedIndex,
+    showRecent,
+    showSyntaxHelp,
+  ]);
 
-  // 当搜索重新开始时复位选中索引
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query, cacheVersion]);
+  const allFilters = useMemo(
+    () => [...QUICK_FILTERS, ...customFilters.map((f) => ({ ...f, isCustom: true as const }))],
+    [customFilters]
+  );
+
+  const emptyHint = !query.trim() && !pathScope.trim()
+    ? "输入关键词开始搜索"
+    : isSearching
+    ? "正在搜索..."
+    : "未找到结果";
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gray-50">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-        <h2 className="text-lg font-semibold text-gray-800">Everything 文件搜索</h2>
-        <button
-          onClick={handleClose}
-          className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
-        >
-          关闭
-        </button>
+    <div className="relative h-screen w-screen flex flex-col bg-gradient-to-br from-slate-50 via-white to-blue-50/40 text-slate-800">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200/70 bg-white/90 backdrop-blur-sm">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 text-white flex items-center justify-center shadow-md shadow-blue-500/30 shrink-0">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+          </div>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-slate-800 leading-tight">Everything 文件搜索</h2>
+            <p className="text-xs text-slate-400 truncate">
+              {isEverythingAvailable ? "实时索引 · 支持 * ? path: ext: regex:" : "等待 Everything 服务"}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowPreview((prev) => !prev)}
+            className={`px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+              showPreview
+                ? "bg-blue-50 border-blue-200 text-blue-700"
+                : "border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            {showPreview ? "隐藏预览" : "显示预览"}
+          </button>
+          <button
+            onClick={handleClose}
+            className="px-2.5 py-1.5 text-xs text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+          >
+            关闭
+          </button>
+        </div>
       </div>
 
-      {/* Search & Controls */}
-      <div className="p-4 border-b border-gray-200 bg-white space-y-3">
-        <div className="flex items-center gap-2">
+      <div className="px-4 pt-3 pb-2 border-b border-slate-200/70 bg-white/80 space-y-2.5">
+        <div className="relative">
+          <svg
+            className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
           <input
+            ref={searchInputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索文件或文件夹... (支持 Everything 语法: *, ?, path:, regex: 等)"
-            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onFocus={() => setShowRecent(true)}
+            onBlur={() => window.setTimeout(() => setShowRecent(false), 150)}
+            placeholder="搜索文件或文件夹，支持 Everything 语法"
+            className="w-full pl-10 pr-24 py-2.5 border border-slate-200 rounded-xl bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400 text-sm"
             autoFocus
           />
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 cursor-pointer hover:bg-gray-50 rounded-lg border border-gray-200 whitespace-nowrap">
-              <input
-                type="checkbox"
-                checked={matchFolderNameOnly}
-                onChange={(e) => setMatchFolderNameOnly(e.target.checked)}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span>仅文件夹名</span>
-            </label>
+          <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+            {query && (
+              <button
+                onClick={() => {
+                  setQuery("");
+                  searchInputRef.current?.focus();
+                }}
+                className="px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 rounded-md"
+              >
+                清空
+              </button>
+            )}
+            <button
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setShowRecent((prev) => !prev);
+              }}
+              className="px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 rounded-md"
+              title="最近搜索"
+            >
+              最近
+            </button>
           </div>
-        </div>
-        <div className="text-sm text-gray-500 flex flex-wrap items-center gap-3">
-          {isSearching && (
-            <div className="flex flex-col gap-1 text-blue-600">
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-                <span>
-                  {isIndeterminateProgress
-                    ? "搜索中... 正在获取首批结果"
-                    : totalCount
-                    ? `搜索中... ${Math.max(currentLoadedCount, computedLoadedCount)}/${totalCount}`
-                    : "搜索中..."}
-                </span>
-              </div>
-              <div className="w-full bg-gray-200 h-1 rounded">
-                <div
-                  className={`h-1 bg-blue-500 rounded transition-all ${
-                    isIndeterminateProgress ? "animate-pulse" : ""
-                  }`}
-                  style={{
-                    width: isIndeterminateProgress
-                      ? "35%"
-                      : `${Math.min(
-                          100,
-                          totalCount
-                            ? ((Math.max(currentLoadedCount, computedLoadedCount) /
-                                Math.max(totalCount, 1)) *
-                              100)
-                            : 20
-                        )}%`,
+          {showRecent && recentQueries.length > 0 && (
+            <div className="absolute z-20 left-0 right-0 top-[calc(100%+6px)] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+              {recentQueries.map((item) => (
+                <button
+                  key={item}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setQuery(item);
+                    setShowRecent(false);
+                    searchInputRef.current?.focus();
                   }}
-                />
-              </div>
+                  className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-blue-50 truncate"
+                >
+                  {item}
+                </button>
+              ))}
             </div>
           )}
-          {!isSearching && totalCount !== null && (
-            <span>
-              找到 {Math.max(currentLoadedCount, computedLoadedCount)} / {totalCount} 个结果，当前展示上限 {displayCount} 条
-            </span>
-          )}
-          {sessionError && (
-            <span className="text-red-600">会话错误：{sessionError}</span>
-          )}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5">
+          {ITEM_KIND_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              onClick={() => setItemKind(option.id)}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                itemKind === option.id
+                  ? "bg-slate-800 text-white border-slate-800"
+                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+          <span className="w-px h-4 bg-slate-200 mx-1" />
+          {allFilters.map((filter) => (
+            <button
+              key={filter.id}
+              onClick={() => handleSelectFilter(filter.id)}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                activeFilterId === filter.id
+                  ? "bg-blue-50 border-blue-200 text-blue-700"
+                  : "border-slate-200 text-slate-600 hover:bg-slate-50"
+              }`}
+              title={filter.extensions.join(", ")}
+            >
+              {filter.label}
+            </button>
+          ))}
           <button
-            onClick={() => setShowSyntaxHelp(!showSyntaxHelp)}
-            className="text-blue-600 hover:text-blue-800 underline text-xs"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+            className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+              showAdvanced || pathScope || caseSensitive || matchWholeWord
+                ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                : "border-slate-200 text-slate-600 hover:bg-slate-50"
+            }`}
           >
-            {showSyntaxHelp ? "隐藏" : "显示"} Everything 语法帮助
+            更多
           </button>
         </div>
 
-        {/* Everything 语法提示 */}
-        {showSyntaxHelp && (
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm">
-            <div className="font-semibold text-blue-900 mb-3">常用的 Everything 搜索语法：</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">*</span>
-                  <span className="ml-2 text-gray-700">匹配任意字符（通配符）</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">*.jpg</code> 搜索所有 jpg 文件</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">?</span>
-                  <span className="ml-2 text-gray-700">匹配单个字符</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">test?.txt</code> 匹配 test1.txt, test2.txt 等</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">path:</span>
-                  <span className="ml-2 text-gray-700">限制搜索路径</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">path:C:\Users\*</code> 只搜索 Users 目录</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">parent:</span>
-                  <span className="ml-2 text-gray-700">限制父目录</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">parent:Documents</code> 搜索 Documents 下的文件</div>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">file:</span>
-                  <span className="ml-2 text-gray-700">只搜索文件</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">file: test</code> 只搜索文件名包含 test 的文件</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">folder:</span>
-                  <span className="ml-2 text-gray-700">只搜索文件夹</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">folder: project</code> 只搜索文件夹名</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">ext:</span>
-                  <span className="ml-2 text-gray-700">按扩展名过滤</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">ext:jpg;png</code> 只搜索 jpg 和 png</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">regex:</span>
-                  <span className="ml-2 text-gray-700">使用正则表达式</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">regex:^test.*\.txt$</code> 正则匹配</div>
-                </div>
-                <div>
-                  <span className="font-mono text-blue-800 bg-blue-100 px-2 py-1 rounded">|</span>
-                  <span className="ml-2 text-gray-700">或运算符（空格表示与）</span>
-                  <div className="ml-6 text-xs text-gray-500 mt-1">示例: <code className="bg-gray-100 px-1 rounded">jpg | png</code> 搜索包含 jpg 或 png 的文件</div>
-                </div>
-              </div>
-            </div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {SORT_OPTIONS.map(({ key, label }) => {
+              const active = sortKey === key;
+              const arrow = active ? (sortOrder === "asc" ? "↑" : "↓") : "";
+              return (
+                <button
+                  key={key}
+                  onClick={() => handleChangeSort(key)}
+                  className={`px-2.5 py-1 text-xs rounded-lg border ${
+                    active
+                      ? "bg-blue-50 border-blue-200 text-blue-700"
+                      : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                  }`}
+                >
+                  {label} {arrow}
+                </button>
+              );
+            })}
+          </div>
+          <div className="text-xs text-slate-500 flex items-center gap-2 min-h-[20px]">
+            {isSearching && (
+              <span className="flex items-center gap-1.5 text-blue-600">
+                <span className="inline-block w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                {isIndeterminateProgress
+                  ? "正在获取首批结果"
+                  : totalCount
+                  ? `${loadedCount.toLocaleString()} / ${totalCount.toLocaleString()}`
+                  : "搜索中"}
+              </span>
+            )}
+            {!isSearching && totalCount !== null && (
+              <span>
+                {loadedCount.toLocaleString()} / {totalCount.toLocaleString()} 条
+                {displayCount < (totalCount || 0) ? ` · 展示 ${displayCount.toLocaleString()}` : ""}
+              </span>
+            )}
+            {sessionError && <span className="text-red-600">会话错误：{sessionError}</span>}
+            <button
+              onClick={() => setShowSyntaxHelp((prev) => !prev)}
+              className="text-blue-600 hover:text-blue-800"
+            >
+              语法
+            </button>
+          </div>
+        </div>
+
+        {isSearching && (
+          <div className="w-full bg-slate-100 h-1 rounded overflow-hidden">
+            <div
+              className={`h-1 bg-blue-500 rounded transition-all ${isIndeterminateProgress ? "animate-pulse" : ""}`}
+              style={{
+                width: isIndeterminateProgress
+                  ? "35%"
+                  : `${Math.min(
+                      100,
+                      totalCount ? (loadedCount / Math.max(totalCount, 1)) * 100 : 20
+                    )}%`,
+              }}
+            />
           </div>
         )}
 
-        <div className="flex items-center gap-2">
-          <label className="text-sm text-gray-700 whitespace-nowrap">
-            查询条数限制：
-          </label>
-          <input
-            type="number"
-            min="1"
-            value={maxResults}
-            onChange={(e) => {
-              const value = parseInt(e.target.value, 10);
-              if (!isNaN(value) && value > 0) {
-                setMaxResults(value);
-              }
-            }}
-            className="w-24 px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <span className="text-xs text-gray-500">条（最小值：1，最多自动截断至 {ABS_MAX_RESULTS}）</span>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {[
-            { key: "size" as SortKey, label: "大小" },
-            { key: "type" as SortKey, label: "类型" },
-            { key: "name" as SortKey, label: "名称" },
-          ].map(({ key, label }) => {
-            const active = sortKey === key;
-            const arrow = active ? (sortOrder === "asc" ? "↑" : "↓") : "";
-            return (
+        {showAdvanced && (
+          <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-slate-500 shrink-0">限定目录</span>
+              <input
+                value={pathScope}
+                onChange={(e) => setPathScope(e.target.value)}
+                placeholder="例如 D:\project"
+                className="flex-1 min-w-[220px] px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white"
+              />
               <button
-                key={key}
-                onClick={() => handleChangeSort(key)}
-                className={`px-3 py-1 text-sm rounded border ${
-                  active ? "bg-blue-50 border-blue-200 text-blue-700" : "border-gray-200 text-gray-700"
-                }`}
+                onClick={handlePickPathScope}
+                className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-white"
               >
-                {label} {arrow}
+                浏览
               </button>
-            );
-          })}
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {[...QUICK_FILTERS, ...customFilters.map((f) => ({ ...f, isCustom: true }))].map((filter) => (
+              {pathScope && (
+                <button
+                  onClick={() => setPathScope("")}
+                  className="px-2.5 py-1.5 text-xs text-slate-500 hover:bg-white rounded-lg"
+                >
+                  清除
+                </button>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={caseSensitive}
+                  onChange={(e) => setCaseSensitive(e.target.checked)}
+                />
+                区分大小写
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={matchWholeWord}
+                  onChange={(e) => setMatchWholeWord(e.target.checked)}
+                />
+                全词匹配
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={matchFolderNameOnly}
+                  onChange={(e) => setMatchFolderNameOnly(e.target.checked)}
+                />
+                仅文件夹名
+              </label>
+              <label className="flex items-center gap-1.5">
+                上限
+                <input
+                  type="number"
+                  min="1"
+                  value={maxResults}
+                  onChange={(e) => {
+                    const value = parseInt(e.target.value, 10);
+                    if (!isNaN(value) && value > 0) {
+                      setMaxResults(value);
+                    }
+                  }}
+                  className="w-24 px-2 py-1 border border-slate-200 rounded-lg bg-white"
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-2 items-center">
+              <input
+                value={newFilterName}
+                onChange={(e) => setNewFilterName(e.target.value)}
+                placeholder="自定义过滤名称"
+                className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white"
+              />
+              <input
+                value={newFilterExts}
+                onChange={(e) => setNewFilterExts(e.target.value)}
+                placeholder="扩展名，逗号分隔，例如 pdf,docx"
+                className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm flex-1 min-w-[200px] bg-white"
+              />
               <button
-                key={filter.id}
-                onClick={() => handleSelectFilter(filter.id)}
-                className={`px-3 py-1 text-sm rounded-full border ${
-                  activeFilterId === filter.id
-                    ? "bg-blue-50 border-blue-200 text-blue-700"
-                    : "border-gray-200 text-gray-700"
-                }`}
-                title={filter.extensions.join(", ")}
+                onClick={handleAddCustomFilter}
+                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               >
-                {filter.label}
-                {filter.isCustom && "（自定义）"}
+                {isEditingExistingFilter ? "更新" : "保存"}
               </button>
-            ))}
+              {activeFilter?.isCustom && (
+                <button
+                  onClick={() => handleRemoveCustomFilter(activeFilter.id)}
+                  className="px-3 py-1.5 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+                >
+                  删除
+                </button>
+              )}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2 items-center">
-            <input
-              value={newFilterName}
-              onChange={(e) => setNewFilterName(e.target.value)}
-              placeholder="自定义过滤名称"
-              className="px-3 py-1 border border-gray-200 rounded text-sm"
-            />
-            <input
-              value={newFilterExts}
-              onChange={(e) => setNewFilterExts(e.target.value)}
-              placeholder="扩展名，逗号分隔，例如: jpg,png"
-              className="px-3 py-1 border border-gray-200 rounded text-sm flex-1 min-w-[240px]"
-            />
-            <button
-              onClick={handleAddCustomFilter}
-              className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-              {isEditingExistingFilter ? "更新过滤器" : "保存过滤器"}
-            </button>
-            {activeFilter?.isCustom && (
-              <button
-                onClick={() => handleRemoveCustomFilter(activeFilter.id)}
-                className="px-3 py-1 text-sm text-red-600 border border-red-200 rounded hover:bg-red-50"
-              >
-                删除当前自定义过滤
-              </button>
-            )}
-          </div>
-        </div>
+        )}
       </div>
 
-      {/* Status Message */}
-      {!isEverythingAvailable && (
-        <div className="p-4 bg-yellow-50 border-b border-yellow-200">
-          <div className="text-sm text-yellow-800">
-            Everything 不可用: {everythingError || "未知错误"}
+      {showSyntaxHelp && (
+        <div className="px-4 py-3 border-b border-blue-100 bg-blue-50/80 text-sm">
+          <div className="font-medium text-blue-900 mb-2">常用语法</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-700">
+            <SyntaxTip code="*.jpg" text="通配符，匹配任意字符" />
+            <SyntaxTip code="path:D:\docs" text="限制搜索路径" />
+            <SyntaxTip code="ext:png;pdf" text="按扩展名过滤" />
+            <SyntaxTip code="file: / folder:" text="只搜文件或文件夹" />
+            <SyntaxTip code="regex:^test" text="正则表达式" />
+            <SyntaxTip code="jpg | png" text="或运算，空格表示与" />
           </div>
         </div>
       )}
 
-      {/* Body */}
+      {!isEverythingAvailable && (
+        <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-200 text-sm text-amber-800">
+          Everything 不可用：{everythingError || "请先启动 Everything 主程序"}
+        </div>
+      )}
+
+      {softLimitWarning && (
+        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-xs text-amber-800">
+          {softLimitWarning}
+        </div>
+      )}
+
       <div className="flex-1 flex min-h-0">
-        {/* Results List */}
         <div
-          className="flex-1 overflow-y-auto relative"
+          className="flex-1 overflow-y-auto relative bg-white/60"
           ref={listContainerRef}
           onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
         >
-          {displayCount === 0 && !isSearching && query.trim() !== "" && (
-            <div className="p-8 text-center text-gray-500">未找到结果</div>
-          )}
-          {displayCount === 0 && query.trim() === "" && (
-            <div className="p-8 text-center text-gray-500">输入关键词开始搜索</div>
-          )}
-          {softLimitWarning && (
-            <div className="p-3 bg-yellow-50 border-b border-yellow-200 text-xs text-yellow-800">
-              {softLimitWarning}
+          {displayCount === 0 && (
+            <div className="h-full min-h-[240px] flex flex-col items-center justify-center text-slate-400 px-6 text-center">
+              <div className="w-14 h-14 mb-3 rounded-2xl bg-slate-100 flex items-center justify-center">
+                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.6} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <div className="text-sm font-medium text-slate-500">{emptyHint}</div>
+              <div className="text-xs mt-1">试试 `*.pdf`、`path:D:\` 或点「更多」限定目录</div>
             </div>
           )}
           <div style={{ paddingTop, paddingBottom }}>
             {visibleItems.map(({ index, item }) => {
-              const ext = item ? getExtension(item.name) : null;
               const isSelected = index === selectedIndex;
+              const kind = item ? classifyFileKind(item.name, item.is_folder) : "file";
               return (
                 <div
-                  key={item ? item.path : `placeholder-${index}`}
+                  key={item ? `${item.path}-${index}` : `placeholder-${index}`}
                   onClick={() => setSelectedIndex(index)}
                   onDoubleClick={() => item && handleLaunch(item)}
-                  className={`p-3 border-b border-gray-100 cursor-pointer ${
-                    isSelected 
-                      ? "bg-blue-50 hover:bg-blue-100" 
-                      : "bg-white hover:bg-gray-50"
+                  className={`group px-3 border-b border-slate-100 cursor-pointer ${
+                    isSelected ? "bg-blue-50" : "bg-transparent hover:bg-slate-50"
                   }`}
-                  style={{ minHeight: ITEM_HEIGHT }}
+                  style={{ height: ITEM_HEIGHT }}
                 >
                   {!item && (
-                    <div className="text-sm text-gray-400">加载中... #{index + 1}</div>
+                    <div className="h-full flex items-center text-sm text-slate-400">加载中... #{index + 1}</div>
                   )}
                   {item && (
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="h-full flex items-center gap-3">
+                      <FileKindBadge kind={kind} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-400 w-10 shrink-0 text-right">
-                            #{index + 1}
+                          <div className="font-medium text-slate-900 truncate text-sm">
+                            {highlightSegments(item.name, query).map((segment, i) => (
+                              <span
+                                key={`${segment.text}-${i}`}
+                                className={segment.match ? "text-blue-700 bg-blue-100 rounded-sm px-0.5" : undefined}
+                              >
+                                {segment.text}
+                              </span>
+                            ))}
+                          </div>
+                          <span className="text-[10px] text-slate-400 shrink-0">
+                            {getFileKindLabel(kind)}
                           </span>
-                          <div className="font-medium text-gray-900 truncate">{item.name}</div>
                         </div>
-                        <div className="text-sm text-gray-500 truncate mt-1">{item.path}</div>
-                        <div className="text-xs text-gray-400 mt-1 flex flex-wrap gap-3">
-                          <span>类型：{ext || "未知"}</span>
-                          <span>修改：{formatStandardDateTime(item.date_modified, parseDate)}</span>
-                          {typeof item.size === "number" && (
-                            <span>大小：{formatFileSize(item.size)}</span>
-                          )}
+                        <div className="text-xs text-slate-500 truncate mt-0.5" title={item.path}>
+                          {item.path}
                         </div>
                       </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (item) handleRevealInFolder(item);
-                        }}
-                        className="ml-2 px-2 py-1 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded"
-                      >
-                        在文件夹中显示
-                      </button>
+                      <div className="hidden sm:flex flex-col items-end text-[11px] text-slate-400 shrink-0 w-28">
+                        <span>{typeof item.size === "number" ? formatFileSize(item.size) : kind === "folder" ? "文件夹" : "—"}</span>
+                        <span>{formatStandardDateTime(item.date_modified, parseDate)}</span>
+                      </div>
+                      <div className={`flex items-center gap-1 shrink-0 ${isSelected ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}>
+                        <IconActionButton label="打开" onClick={() => handleLaunch(item)}>
+                          打开
+                        </IconActionButton>
+                        <IconActionButton label="打开所在文件夹" onClick={() => handleRevealInFolder(item)}>
+                          位置
+                        </IconActionButton>
+                        <IconActionButton label="复制路径" onClick={() => handleCopyText(item.path, "已复制路径")}>
+                          复制
+                        </IconActionButton>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1426,103 +1648,203 @@ export function EverythingSearchWindow() {
           </div>
         </div>
 
-        {/* Preview Panel */}
-        <div className="w-96 border-l border-gray-200 bg-white p-4 overflow-y-auto">
-          <div className="text-base font-semibold text-gray-800 mb-2">快速预览</div>
-          {!currentSelectedItem && <div className="text-sm text-gray-500">选择结果查看预览</div>}
-          {currentSelectedItem && (
-            <div className="space-y-3">
-              <div>
-                <div className="text-sm text-gray-900 font-medium truncate">
-                  {currentSelectedItem.name}
+        {showPreview && (
+          <div className="w-[360px] border-l border-slate-200 bg-white p-4 overflow-y-auto shrink-0">
+            <div className="text-sm font-semibold text-slate-800 mb-3">预览</div>
+            {!currentSelectedItem && <div className="text-sm text-slate-500">选择结果查看预览</div>}
+            {currentSelectedItem && (
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  {selectedIcon ? (
+                    <img
+                      src={selectedIcon.startsWith("data:image") ? selectedIcon : `data:image/png;base64,${selectedIcon}`}
+                      alt=""
+                      className="w-10 h-10 object-contain rounded-lg bg-slate-50 border border-slate-100"
+                    />
+                  ) : (
+                    <FileKindBadge kind={classifyFileKind(currentSelectedItem.name, currentSelectedItem.is_folder)} large />
+                  )}
+                  <div className="min-w-0">
+                    <div className="text-sm text-slate-900 font-medium break-all">
+                      {currentSelectedItem.name}
+                    </div>
+                    <button
+                      className="text-xs text-slate-500 hover:text-blue-600 break-all text-left"
+                      onClick={() => handleCopyText(currentSelectedItem.path, "已复制路径")}
+                      title="点击复制路径"
+                    >
+                      {currentSelectedItem.path}
+                    </button>
+                  </div>
                 </div>
-                <div className="text-xs text-gray-500 truncate">{currentSelectedItem.path}</div>
-              </div>
-              <div className="text-xs text-gray-500 flex flex-wrap gap-3">
-                {typeof currentSelectedItem.size === "number" && (
-                  <span>大小：{formatFileSize(currentSelectedItem.size!)}</span>
-                )}
-                <span>修改：{formatStandardDateTime(currentSelectedItem.date_modified, parseDate)}</span>
-                <span>类型：{getExtension(currentSelectedItem.path) || "未知"}</span>
-              </div>
+                <div className="text-xs text-slate-500 flex flex-wrap gap-2">
+                  <span className="px-2 py-0.5 rounded bg-slate-100">
+                    {getFileKindLabel(classifyFileKind(currentSelectedItem.name, currentSelectedItem.is_folder))}
+                  </span>
+                  {typeof currentSelectedItem.size === "number" && (
+                    <span className="px-2 py-0.5 rounded bg-slate-100">
+                      {formatFileSize(currentSelectedItem.size)}
+                    </span>
+                  )}
+                  <span className="px-2 py-0.5 rounded bg-slate-100">
+                    {formatStandardDateTime(currentSelectedItem.date_modified, parseDate)}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => handleLaunch(currentSelectedItem)}
+                    className="px-2.5 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    打开
+                  </button>
+                  <button
+                    onClick={() => handleRevealInFolder(currentSelectedItem)}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    打开位置
+                  </button>
+                  <button
+                    onClick={() => handleCopyText(currentSelectedItem.path, "已复制路径")}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    复制路径
+                  </button>
+                  <button
+                    onClick={() => handleCopyText(currentSelectedItem.name, "已复制文件名")}
+                    className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                  >
+                    复制名称
+                  </button>
+                  {!currentSelectedItem.is_folder && (
+                    <button
+                      onClick={() => handleCopyToDownloads(currentSelectedItem)}
+                      className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg hover:bg-slate-50"
+                    >
+                      复制到下载
+                    </button>
+                  )}
+                </div>
 
-              {isPreviewLoading && <div className="text-sm text-gray-500">加载预览...</div>}
-              {!isPreviewLoading && previewData?.kind === "text" && (
-                <div className="text-sm text-gray-800 border border-gray-200 rounded p-2 bg-gray-50 max-h-64 overflow-auto whitespace-pre-wrap">
-                  {previewData.content || "（空文件）"}
-                  {previewData.truncated && <div className="text-xs text-gray-400 mt-1">已截断</div>}
-                </div>
-              )}
-              {!isPreviewLoading && previewData?.kind === "image" && previewData.imageDataUrl && (
-                <div className="border border-gray-200 rounded p-2 bg-gray-50">
-                  <img
-                    src={previewData.imageDataUrl}
-                    alt="预览图"
-                    className="max-h-72 w-full object-contain bg-white"
-                  />
-                  {previewData.truncated && <div className="text-xs text-gray-400 mt-1">已截断</div>}
-                </div>
-              )}
-              {!isPreviewLoading && previewData?.kind === "media" && (
-                <div className="text-sm text-gray-700 border border-gray-200 rounded p-2 bg-gray-50">
-                  音视频文件，暂不内嵌播放
-                </div>
-              )}
-              {!isPreviewLoading && previewData?.kind === "folder" && (
-                <div className="text-sm text-gray-700 border border-gray-200 rounded p-2 bg-gray-50">
-                  文件夹无法直接预览
-                </div>
-              )}
-              {!isPreviewLoading &&
-                previewData &&
-                (previewData.kind === "binary" || previewData.kind === "unsupported") && (
-                  <div className="text-sm text-gray-700 border border-gray-200 rounded p-2 bg-gray-50">
-                    暂不支持该类型预览
+                {isPreviewLoading && <div className="text-sm text-slate-500">加载预览...</div>}
+                {!isPreviewLoading && previewData?.kind === "text" && (
+                  <div className="text-xs text-slate-800 border border-slate-200 rounded-lg p-2 bg-slate-50 max-h-72 overflow-auto whitespace-pre-wrap">
+                    {previewData.content || "（空文件）"}
+                    {previewData.truncated && <div className="text-[11px] text-slate-400 mt-1">已截断</div>}
                   </div>
                 )}
-              {!isPreviewLoading && previewData?.kind === "error" && (
-                <div className="text-sm text-red-600 border border-red-200 rounded p-2 bg-red-50">
-                  预览失败：{previewData.error || "未知错误"}
-                </div>
-              )}
-              {!isPreviewLoading && !previewData && (
-                <div className="text-sm text-gray-500">未获取到预览数据</div>
-              )}
-            </div>
-          )}
-        </div>
+                {!isPreviewLoading && previewData?.kind === "image" && previewData.imageDataUrl && (
+                  <div className="border border-slate-200 rounded-lg p-2 bg-slate-50">
+                    <img
+                      src={previewData.imageDataUrl}
+                      alt="预览图"
+                      className="max-h-72 w-full object-contain bg-white"
+                    />
+                  </div>
+                )}
+                {!isPreviewLoading && previewData?.kind === "media" && (
+                  <PreviewPlaceholder text="音视频文件，暂不内嵌播放" />
+                )}
+                {!isPreviewLoading && previewData?.kind === "folder" && (
+                  <PreviewPlaceholder text="文件夹无法直接预览，可打开位置查看内容" />
+                )}
+                {!isPreviewLoading &&
+                  previewData &&
+                  (previewData.kind === "binary" || previewData.kind === "unsupported") && (
+                    <PreviewPlaceholder text="暂不支持该类型预览" />
+                  )}
+                {!isPreviewLoading && previewData?.kind === "error" && (
+                  <div className="text-sm text-red-600 border border-red-200 rounded-lg p-2 bg-red-50">
+                    预览失败：{previewData.error || "未知错误"}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      <div className="px-4 py-1.5 border-t border-slate-200/70 bg-white/90 text-[11px] text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
+        <span>Enter 打开</span>
+        <span>Alt+Enter 打开位置</span>
+        <span>Ctrl+C 复制路径</span>
+        <span>Ctrl+L 聚焦搜索</span>
+        <span>Esc 关闭</span>
+      </div>
+
+      {toast && (
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-slate-800 text-white text-xs shadow-lg">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+function SyntaxTip({ code, text }: { code: string; text: string }) {
+  return (
+    <div>
+      <span className="font-mono text-blue-800 bg-blue-100 px-1.5 py-0.5 rounded">{code}</span>
+      <span className="ml-2">{text}</span>
+    </div>
+  );
 }
 
-function getExtension(pathOrName: string): string | null {
-  // 找到最后一个点的位置
-  const lastDotIndex = pathOrName.lastIndexOf(".");
-  // 如果没找到点，或者点是第一个字符（隐藏文件如 .gitignore），返回 null
-  if (lastDotIndex === -1 || lastDotIndex === 0) return null;
-  // 提取点后面的部分
-  const ext = pathOrName.substring(lastDotIndex + 1);
-  // 如果扩展名包含路径分隔符，说明这不是扩展名
-  if (ext.includes("/") || ext.includes("\\")) return null;
-  // 如果扩展名为空，返回 null
-  if (ext.length === 0) return null;
-  return ext.toLowerCase();
+function PreviewPlaceholder({ text }: { text: string }) {
+  return (
+    <div className="text-sm text-slate-600 border border-slate-200 rounded-lg p-2 bg-slate-50">
+      {text}
+    </div>
+  );
 }
 
-function parseDate(dateStr?: string): number | null {
-  if (!dateStr) return null;
-  const ts = Date.parse(dateStr);
-  if (Number.isNaN(ts)) return null;
-  return ts;
+function IconActionButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <button
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className="px-2 py-1 text-[11px] text-slate-600 hover:text-blue-700 hover:bg-white border border-transparent hover:border-slate-200 rounded-md"
+    >
+      {children}
+    </button>
+  );
 }
 
+const KIND_STYLES: Record<FileKind, string> = {
+  folder: "bg-amber-100 text-amber-700",
+  image: "bg-sky-100 text-sky-700",
+  video: "bg-violet-100 text-violet-700",
+  audio: "bg-pink-100 text-pink-700",
+  code: "bg-emerald-100 text-emerald-700",
+  archive: "bg-orange-100 text-orange-700",
+  document: "bg-blue-100 text-blue-700",
+  program: "bg-rose-100 text-rose-700",
+  file: "bg-slate-100 text-slate-600",
+};
 
-
+function FileKindBadge({ kind, large }: { kind: FileKind; large?: boolean }) {
+  const size = large ? "w-10 h-10" : "w-9 h-9";
+  return (
+    <div className={`${size} rounded-xl flex items-center justify-center shrink-0 ${KIND_STYLES[kind]}`}>
+      {kind === "folder" ? (
+        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M2 6a2 2 0 012-2h4l2 2h6a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" />
+        </svg>
+      ) : (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 3h8l4 4v14a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z" />
+        </svg>
+      )}
+    </div>
+  );
+}
