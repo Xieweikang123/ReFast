@@ -161,7 +161,7 @@ fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
     drop(stmt);
     
     // 删除对应的图片文件
-    for (id, content, content_type) in &items_to_delete {
+    for (_id, content, content_type) in &items_to_delete {
         if content_type == "image" {
             let image_path = std::path::Path::new(content);
             if image_path.exists() {
@@ -471,17 +471,14 @@ pub mod monitor {
     use windows_sys::Win32::Foundation::{HWND, HINSTANCE, LPARAM, WPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-        RegisterClassExW, TranslateMessage, MSG, WNDCLASSEXW, WM_CLIPBOARDUPDATE, WM_QUIT,
+        RegisterClassExW, TranslateMessage, MSG, WNDCLASSEXW, WM_CLIPBOARDUPDATE,
         WS_OVERLAPPED, CS_HREDRAW, CS_VREDRAW,
     };
-    use windows_sys::Win32::Graphics::Gdi::{
-        GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-    };
+    use windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 
     const CF_TEXT: u32 = 1;
     const CF_UNICODETEXT: u32 = 13;
     const CF_DIB: u32 = 8;
-    const CF_BITMAP: u32 = 2;
 
     /// 启动剪切板监控线程（使用 Windows 消息机制，完全避免冲突）
     pub fn start_clipboard_monitor(app_data_dir: PathBuf) -> Result<(), String> {

@@ -1,6 +1,8 @@
 //! 拾色器功能模块
 //! 
 //! 提供屏幕取色和拾色器窗口管理功能
+//! 注：该模块当前为预留/暂缓接入（见 commands.rs 中相关注释），相关命令未注册到前端。
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,9 +170,7 @@ fn windows_pick_color(picking: Arc<AtomicBool>) -> Result<Option<String>, String
         GetCursorPos, CreateWindowExW, DestroyWindow, SetWindowPos, ShowWindow,
         HWND_TOPMOST, SWP_NOACTIVATE, SW_SHOWNOACTIVATE, WS_EX_LAYERED, WS_EX_TOPMOST,
         WS_EX_TOOLWINDOW, WS_POPUP, SetLayeredWindowAttributes, LWA_ALPHA,
-        SetCursor, LoadCursorW, IDC_CROSS, SetWindowsHookExW, UnhookWindowsHookEx,
-        CallNextHookEx, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP,
-        WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+        SetCursor, LoadCursorW, IDC_CROSS, SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE_LL,
     };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_LBUTTON, VK_ESCAPE, VK_SHIFT, VK_C,

@@ -22,10 +22,9 @@ pub mod windows {
     use base64::Engine;
     use pinyin::ToPinyin;
     use std::env;
-    use std::io::Write;
-    use std::os::windows::ffi::OsStringExt;
+    
     use std::os::windows::process::CommandExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    
 
     
     // Icon extraction failure marker
@@ -116,10 +115,8 @@ pub mod windows {
     const MAX_SEARCH_RESULTS: usize = 20;
     const MAX_PERFECT_MATCHES: usize = 3;
     const ICON_SIZE: u32 = 32;
-    const MAX_SCAN_DEPTH: usize = 3;
     const MAX_APPS: usize = 2000;
     const WINDOWSAPPS_PATH: &str = "windowsapps";
-    const RECENT_PATH: &str = "recent";
 
     // Helper function to check if a path is a WindowsApps path
     fn is_windowsapps_path(path: &str) -> bool {
@@ -503,7 +500,7 @@ pub mod windows {
 
         // Scan start menu paths
         let start_menu_scan_start = std::time::Instant::now();
-        let start_menu_count = start_menu_paths.len();
+        let _start_menu_count = start_menu_paths.len();
         for (idx, start_menu_path) in start_menu_paths.into_iter().flatten().enumerate() {
             if start_menu_path.exists() {
                 let path_scan_start = std::time::Instant::now();
@@ -595,29 +592,6 @@ pub mod windows {
         crate::log!("AppScan", "===== 扫描全部完成 - 最终应用数: {} 个, 总耗时: {}.{}s =====", 
             apps.len(), total_duration.as_secs(), total_duration.subsec_millis());
 
-        Ok(apps)
-    }
-
-    /// 获取内置系统应用列表（确保关键系统应用始终可用）
-    /// 这些应用会在 UWP 扫描之前添加，如果 UWP 扫描找到了同名应用，会在去重时保留 UWP 版本
-    pub fn get_builtin_system_apps() -> Vec<AppInfo> {
-        // 内置系统应用列表（当前为空，可根据需要添加）
-        Vec::new()
-    }
-
-    /// 扫描特定路径并返回找到的应用
-    /// 用于在搜索时实时发现新应用
-    pub fn scan_specific_path(path: &Path) -> Result<Vec<AppInfo>, String> {
-        // Skip WindowsApps directory
-        let path_str = path.to_string_lossy();
-        if is_windowsapps_path(&path_str) {
-            return Ok(Vec::new());
-        }
-
-        let mut apps = Vec::new();
-        if path.exists() {
-            scan_directory(path, &mut apps, 0)?;
-        }
         Ok(apps)
     }
 
@@ -940,7 +914,7 @@ pub mod windows {
             let app_id = entry.app_id.trim();
             
             // 检查是否包含替换字符（说明解码可能有问题）
-            let replacement_count = name.chars().filter(|&c| c == '\u{FFFD}').count();
+            let _replacement_count = name.chars().filter(|&c| c == '\u{FFFD}').count();
             
             // 检查是否包含中文
             let has_chinese = contains_chinese(name);
@@ -1276,8 +1250,8 @@ pub mod windows {
     // 辅助函数：将 HBITMAP 转换为 PNG base64 字符串
     fn bitmap_to_png(hbitmap: isize) -> Option<String> {
         use windows_sys::Win32::Graphics::Gdi::{
-            GetDIBits, CreateCompatibleDC, SelectObject, DeleteObject, DeleteDC,
-            BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, GetDC, ReleaseDC,
+            GetDIBits, CreateCompatibleDC, DeleteObject, DeleteDC,
+            BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, GetDC, ReleaseDC,
         };
 
         unsafe {
@@ -1320,7 +1294,7 @@ pub mod windows {
             // 创建新的 32x32 位图，使用透明背景
             use windows_sys::Win32::Graphics::Gdi::{CreateDIBSection, DIB_RGB_COLORS, SelectObject};
             
-            let mut bitmap_info = BITMAPINFO {
+            let bitmap_info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
                     biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
                     biWidth: icon_size as i32,
@@ -1696,7 +1670,7 @@ try {
                     SIIGBF(0x00000010u32 as i32), // ICONONLY（回退）
                 ];
                 
-                for (idx, flags) in flags_list.iter().enumerate() {
+                for (_idx, flags) in flags_list.iter().enumerate() {
                     // 调用 GetImage 获取 HBITMAP（已包含 alpha 通道）
                     match image_factory.GetImage(icon_size, *flags) {
                         Ok(hbitmap) => {
@@ -1734,7 +1708,7 @@ try {
     // 不再创建新的 DIB 和复制，直接从源位图读取
     fn bitmap_to_png_direct(hbitmap: isize, target_size: u32) -> Option<String> {
         use windows_sys::Win32::Graphics::Gdi::{
-            GetDIBits, CreateCompatibleDC, SelectObject, DeleteObject, DeleteDC,
+            GetDIBits, CreateCompatibleDC, SelectObject, DeleteDC,
             BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB, GetDC, ReleaseDC, GetObjectW,
         };
         
@@ -1830,7 +1804,7 @@ try {
             }
             
             // 检查位图数据是否包含有效内容
-            let total_pixels = width * height;
+            let _total_pixels = width * height;
             let non_zero_pixels = dib_bits.chunks_exact(4)
                 .filter(|chunk| chunk.iter().any(|&b| b != 0))
                 .count();
@@ -2043,7 +2017,7 @@ try {
         }
         
         // 读取并解析 LinkInfo (如果存在)
-        let mut linkinfo_path: Option<String> = None;
+        let linkinfo_path: Option<String> = None;
         if link_flags & 0x02 != 0 {
             if file.seek(SeekFrom::Start(offset)).is_err() {
                 return None;
@@ -2061,7 +2035,7 @@ try {
         let mut icon_location: Option<String> = None;
         let mut icon_index: i32 = 0;
         
-        let stringdata_start = offset;
+        let _stringdata_start = offset;
         if file.seek(SeekFrom::Start(offset)).is_err() {
             return None;
         }
@@ -2319,6 +2293,7 @@ try {
     // 测试函数：验证图标提取功能
     // 输入 .lnk 路径与 .exe 路径各一个，输出 base64 PNG，校验：PNG byte length > 1000 且非零像素数 > 0
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn test_icon_extraction(lnk_path: &str, exe_path: &str) -> Result<(bool, bool), String> {
         use std::path::Path;
         
@@ -2354,7 +2329,7 @@ try {
                 let decoder = png::Decoder::new(png_bytes.as_slice());
                 let mut reader = decoder.read_info().map_err(|e| format!("解析 PNG 失败: {}", e))?;
                 let mut buf = vec![0; reader.output_buffer_size()];
-                let info = reader.next_frame(&mut buf).map_err(|e| format!("读取 PNG 帧失败: {}", e))?;
+                let _info = reader.next_frame(&mut buf).map_err(|e| format!("读取 PNG 帧失败: {}", e))?;
                 
                 let non_zero_pixels = buf.chunks_exact(4)
                     .filter(|chunk| chunk.iter().any(|&b| b != 0))
@@ -2382,7 +2357,7 @@ try {
                 let decoder = png::Decoder::new(png_bytes.as_slice());
                 let mut reader = decoder.read_info().map_err(|e| format!("解析 PNG 失败: {}", e))?;
                 let mut buf = vec![0; reader.output_buffer_size()];
-                let info = reader.next_frame(&mut buf).map_err(|e| format!("读取 PNG 帧失败: {}", e))?;
+                let _info = reader.next_frame(&mut buf).map_err(|e| format!("读取 PNG 帧失败: {}", e))?;
                 
                 let non_zero_pixels = buf.chunks_exact(4)
                     .filter(|chunk| chunk.iter().any(|&b| b != 0))
@@ -2468,14 +2443,12 @@ try {
             // 这确保 DrawIconEx 能够正确绘制到透明背景上
             if !bits_ptr.is_null() {
                 let size = (icon_size * icon_size * 4) as usize;
-                unsafe {
-                    std::ptr::write_bytes(bits_ptr, 0, size);
-                }
+                std::ptr::write_bytes(bits_ptr, 0, size);
             }
 
             // 绘制图标到位图
             let icon_size_i32 = icon_size as i32;
-            let draw_result = DrawIconEx(
+            let _draw_result = DrawIconEx(
                 hdc,
                 0,
                 0,
@@ -2488,7 +2461,7 @@ try {
             );
             
             // 读取位图数据
-            let mut bitmap = BITMAP {
+            let _bitmap = BITMAP {
                 bmType: 0,
                 bmWidth: icon_size_i32,
                 bmHeight: icon_size_i32,
@@ -2519,7 +2492,7 @@ try {
             }
 
             // 检查位图数据是否包含有效内容（不全为 0）
-            let total_pixels = icon_size * icon_size;
+            let _total_pixels = icon_size * icon_size;
             let non_zero_pixels = dib_bits.chunks_exact(4)
                 .filter(|chunk| chunk.iter().any(|&b| b != 0))
                 .count();
@@ -2637,7 +2610,7 @@ try {
         use std::fs::File;
         use std::io::{Read, Seek, SeekFrom};        let mut file = match File::open(lnk_path) {
             Ok(f) => f,
-            Err(e) => {                return None;
+            Err(_e) => {                return None;
             }
         };
         
@@ -2689,10 +2662,10 @@ try {
             if linkinfo_size >= 28 {
                 let mut linkinfo_header = [0u8; 24]; // 读取头部剩余部分（24 bytes）
                 if file.read_exact(&mut linkinfo_header).is_ok() {
-                    let linkinfo_header_size = u32::from_le_bytes([
+                    let _linkinfo_header_size = u32::from_le_bytes([
                         linkinfo_header[0], linkinfo_header[1], linkinfo_header[2], linkinfo_header[3]
                     ]);
-                    let linkinfo_flags = u32::from_le_bytes([
+                    let _linkinfo_flags = u32::from_le_bytes([
                         linkinfo_header[4], linkinfo_header[5], linkinfo_header[6], linkinfo_header[7]
                     ]);
                     let local_base_path_offset = u32::from_le_bytes([
@@ -2757,7 +2730,7 @@ try {
         }
         
         // 确保在正确的位置读取 StringData
-        let stringdata_start = offset;
+        let _stringdata_start = offset;
         if file.seek(SeekFrom::Start(offset)).is_err() {
             return None;
         }        // 读取 CommandLineArguments (如果存在，HasArguments = 0x04)
@@ -2781,7 +2754,7 @@ try {
                         utf16_chars.push(code_unit);
                     }
                 }
-                let utf16_str = if !utf16_chars.is_empty() {
+                let _utf16_str = if !utf16_chars.is_empty() {
                     Some(std::ffi::OsString::from_wide(&utf16_chars).to_string_lossy().to_string())
                 } else {
                     None
@@ -2796,10 +2769,10 @@ try {
         
         // 读取 IconLocation (如果存在，HasIconLocation = 0x20)
         if link_flags & 0x20 != 0 {
-            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            let _current_pos = file.seek(SeekFrom::Current(0)).ok();
             let icon_location_str = read_length_prefixed_string_utf16(&mut file);            if let Some(mut icon_loc) = icon_location_str {
                 // 清理字符串：移除控制字符和无效字符
-                let original_len = icon_loc.len();
+                let _original_len = icon_loc.len();
                 icon_loc = icon_loc.chars()
                     .filter(|c| !c.is_control() || *c == '\n' || *c == '\r')
                     .collect::<String>()
@@ -2823,7 +2796,7 @@ try {
         
         // 读取 WorkingDir (如果存在，HasWorkingDir = 0x10)
         if link_flags & 0x10 != 0 {
-            let current_pos = file.seek(SeekFrom::Current(0)).ok();
+            let _current_pos = file.seek(SeekFrom::Current(0)).ok();
             let _ = read_length_prefixed_string_utf16(&mut file);        }
         
         // 读取 TargetPath (如果 LinkInfo 不存在，或者作为备用)
@@ -2849,7 +2822,7 @@ try {
                         utf16_chars.push(code_unit);
                     }
                 }
-                let utf16_str = if !utf16_chars.is_empty() {
+                let _utf16_str = if !utf16_chars.is_empty() {
                     Some(std::ffi::OsString::from_wide(&utf16_chars).to_string_lossy().to_string())
                 } else {
                     None
@@ -3435,7 +3408,6 @@ public class IconExtractor {
     // IconIndex=0
     pub fn parse_url_file(url_path: &Path) -> Result<(PathBuf, Option<PathBuf>, i32), String> {
         use std::fs;
-        use std::io::BufRead;
         
         let content = fs::read_to_string(url_path)
             .map_err(|e| format!("无法读取 .url 文件: {}", e))?;

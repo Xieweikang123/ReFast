@@ -6,7 +6,6 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
-use tauri::Manager;
 
 static RECORDING_STATE: LazyLock<Arc<Mutex<RecordingState>>> =
     LazyLock::new(|| Arc::new(Mutex::new(RecordingState::new())));

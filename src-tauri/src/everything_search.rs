@@ -19,8 +19,6 @@ pub struct EverythingSearchResponse {
 /// Everything 错误类型枚举
 #[derive(Debug, Clone)]
 pub enum EverythingError {
-    /// Everything 未安装
-    NotInstalled,
     /// Everything 服务未运行
     ServiceNotRunning,
     /// 搜索超时
@@ -29,8 +27,6 @@ pub enum EverythingError {
     IpcFailed(String),
     /// 查询参数错误
     InvalidQuery(String),
-    /// JSON 解析失败
-    JsonParseError(String),
     /// 其他错误
     Other(String),
 }
@@ -38,9 +34,6 @@ pub enum EverythingError {
 impl fmt::Display for EverythingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            EverythingError::NotInstalled => {
-                write!(f, "NOT_INSTALLED:Everything 未安装，请安装 Everything")
-            }
             EverythingError::ServiceNotRunning => {
                 write!(
                     f,
@@ -56,9 +49,6 @@ impl fmt::Display for EverythingError {
             EverythingError::InvalidQuery(msg) => {
                 write!(f, "INVALID_QUERY:查询参数错误: {}", msg)
             }
-            EverythingError::JsonParseError(msg) => {
-                write!(f, "JSON_PARSE_ERROR:JSON 解析失败: {}", msg)
-            }
             EverythingError::Other(msg) => {
                 write!(f, "OTHER:{}", msg)
             }
@@ -70,8 +60,6 @@ impl fmt::Display for EverythingError {
 pub mod windows {
     use super::*;
     use std::ffi::OsStr;
-    use std::fs::{File, OpenOptions};
-    use std::io::Write;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
@@ -93,9 +81,6 @@ pub mod windows {
 
     // Everything IPC 搜索标志
     const EVERYTHING_IPC_REGEX: u32 = 0x00000001;
-    const EVERYTHING_IPC_MATCHCASE: u32 = 0x00000002;
-    const EVERYTHING_IPC_MATCHWHOLEWORD: u32 = 0x00000004;
-    const EVERYTHING_IPC_MATCHPATH: u32 = 0x00000008;
 
     // Everything IPC 查询结构体（Everything 1.4+ QueryW 协议）
     // 字段顺序必须严格按照新协议：
@@ -161,9 +146,7 @@ pub mod windows {
 
     // 日志文件（使用应用数据目录下的 logs 文件夹，按天生成）
     struct LogFileState {
-        file: Option<File>,
         file_path: PathBuf,
-        date: String, // YYYYMMDD 格式
     }
 
     static LOG_FILE_STATE: OnceLock<Arc<Mutex<LogFileState>>> = OnceLock::new();
@@ -185,7 +168,7 @@ pub mod windows {
                 // 初始化日志文件状态
                 let today = chrono::Local::now().format("%Y%m%d").to_string();
                 let log_dir = get_log_dir();
-                
+
                 // 确保日志目录存在
                 if let Err(e) = std::fs::create_dir_all(&log_dir) {
                     eprintln!(
@@ -194,66 +177,16 @@ pub mod windows {
                         e
                     );
                 }
-                
+
                 let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
 
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .ok();
-
-                // 日志输出已禁用
-                let _ = file;
+                // 日志输出已禁用，仅记录路径
 
                 Arc::new(Mutex::new(LogFileState {
-                    file,
                     file_path: log_path,
-                    date: today,
                 }))
             })
             .clone()
-    }
-
-    /// 确保日志文件是当前日期的文件，如果日期变化了则切换文件
-    fn ensure_current_log_file() {
-        let state = get_log_file_state();
-        let today = chrono::Local::now().format("%Y%m%d").to_string();
-
-        let mut state_guard = match state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
-
-        // 如果日期变化了，需要切换到新的日志文件
-        if state_guard.date != today {
-            // 关闭旧文件
-            if let Some(mut old_file) = state_guard.file.take() {
-                let _ = old_file.flush();
-                drop(old_file);
-            }
-
-            // 创建新的日志文件
-            let log_dir = get_log_dir();
-            
-            // 确保日志目录存在
-            let _ = std::fs::create_dir_all(&log_dir);
-            
-            let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .ok();
-
-            // 日志输出已禁用
-            let _ = file;
-
-            // 更新状态
-            state_guard.file = file;
-            state_guard.file_path = log_path;
-            state_guard.date = today;
-        }
     }
 
     /// 获取日志文件路径
@@ -268,24 +201,6 @@ pub mod windows {
         let _ = get_log_file_state();
 
         // 日志输出已禁用
-    }
-
-    /// 内部函数：写入日志到文件
-    fn write_log_to_file(msg: &str) {
-        // 确保使用当前日期的日志文件（如果日期变化了会自动切换）
-        ensure_current_log_file();
-
-        // 输出到日志文件
-        let state = get_log_file_state();
-        let state_guard_result = state.lock();
-        if let Ok(mut state_guard) = state_guard_result {
-            if let Some(file) = state_guard.file.as_mut() {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-                let log_msg = format!("[{}] {}", timestamp, msg);
-                let _ = writeln!(file, "{}", log_msg);
-                let _ = file.flush();
-            }
-        }
     }
 
     /// 日志宏，支持格式化字符串，同时输出到控制台和日志文件
@@ -328,13 +243,6 @@ pub mod windows {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        // 记录所有重要消息（排除常见的系统消息以减少噪音）
-        const WM_TIMER: u32 = 0x0113;
-        const WM_PAINT: u32 = 0x000F;
-        const WM_SETCURSOR: u32 = 0x0020;
-        const WM_MOUSEMOVE: u32 = 0x0200;
-        const WM_NCHITTEST: u32 = 0x0084;
-
         // 只记录重要消息，忽略常见的系统消息以减少日志噪音
 
         match msg {
@@ -358,7 +266,7 @@ pub mod windows {
                                 log_debug!("[DEBUG] Parsed result: {} paths (Total: {}, This batch: {})", paths_with_flags.len(), tot, num);
                             }
                         }
-                        Err(e) => {
+                        Err(_e) => {
                             log_debug!("[DEBUG] Parsed result error: {:?}", e);
                         }
                     }
@@ -367,7 +275,7 @@ pub mod windows {
                     let senders = get_window_senders();
                     if let Ok(senders_guard) = senders.lock() {
                         if let Some(sender) = senders_guard.get(&hwnd) {
-                            if let Err(e) = sender.send(result) {
+                            if let Err(_e) = sender.send(result) {
                                 log_debug!(
                                     "[DEBUG] ERROR: Failed to send result to channel: {:?}",
                                     e
@@ -620,11 +528,11 @@ pub mod windows {
             let list_ptr = cds.lpData as *const EverythingIpcList;
             let list = &*list_ptr;
 
-            let totfolders = list.totfolders; // Offset 0
-            let totfiles = list.totfiles;     // Offset 4
+            let _totfolders = list.totfolders; // Offset 0
+            let _totfiles = list.totfiles;     // Offset 4
             let totitems = list.totitems;     // Offset 8 - totfolders + totfiles
-            let numfolders = list.numfolders; // Offset 12
-            let numfiles = list.numfiles;     // Offset 16
+            let _numfolders = list.numfolders; // Offset 12
+            let _numfiles = list.numfiles;     // Offset 16
             let numitems = list.numitems;     // Offset 20 - 当前返回的 item 数
             let offset = list.offset;         // Offset 24 - 第一个结果在 item 列表中的索引偏移
 
@@ -837,12 +745,12 @@ pub mod windows {
     }
 
     /// 查找 Everything 窗口（内部函数，带缓存）
-    fn find_everything_window_internal(caller: &str) -> Option<HWND> {
+    fn find_everything_window_internal(_caller: &str) -> Option<HWND> {
         log_debug!("[DEBUG] find_everything_window called from: {}", caller);
 
         // 检查缓存
         let cache = get_cached_window();
-        if let Ok(mut cached) = cache.lock() {
+        if let Ok(cached) = cache.lock() {
             let now = Instant::now();
             if cached.hwnd.is_some() && now.duration_since(cached.timestamp) < CACHE_DURATION {
                 log_debug!("[DEBUG] Using cached Everything window: {:?}", cached.hwnd);
@@ -867,7 +775,7 @@ pub mod windows {
                 Some(hwnd)
             } else {
                 log_debug!("[DEBUG] Everything IPC window NOT found (FindWindowW returned 0)");
-                let last_error = windows_sys::Win32::Foundation::GetLastError();
+                let _last_error = windows_sys::Win32::Foundation::GetLastError();
                 log_debug!("[DEBUG] Last error: {}", last_error);
                 log_debug!("[DEBUG] Please ensure Everything is running");
                 None

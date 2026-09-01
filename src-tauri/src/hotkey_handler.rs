@@ -3,8 +3,6 @@ pub mod windows {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex, LazyLock};
     use std::thread;
-    use std::fs::OpenOptions;
-    use std::io::Write;
     use std::path::PathBuf;
     use std::collections::HashMap;
     use windows_sys::Win32::{
@@ -14,9 +12,7 @@ pub mod windows {
     
     // 日志文件状态
     struct LogFileState {
-        file: Option<std::fs::File>,
         file_path: PathBuf,
-        date: String,
     }
     
     static LOG_FILE_STATE: std::sync::OnceLock<Arc<Mutex<LogFileState>>> = std::sync::OnceLock::new();
@@ -49,66 +45,12 @@ pub mod windows {
                 
                 // 使用与 everything_search 相同的日志文件名
                 let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
-                let file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .ok();
                 
                 Arc::new(Mutex::new(LogFileState {
-                    file,
                     file_path: log_path,
-                    date: today,
                 }))
             })
             .clone()
-    }
-    
-    fn ensure_current_log_file() {
-        let state = get_log_file_state();
-        let today = chrono::Local::now().format("%Y%m%d").to_string();
-        
-        let mut state_guard = match state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
-        
-        if state_guard.date != today {
-            if let Some(mut old_file) = state_guard.file.take() {
-                let _ = old_file.flush();
-            }
-            
-            let log_dir = get_log_dir();
-            if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                eprintln!("[Hotkey] Failed to create log directory: {}", e);
-            }
-            
-            // 使用与 everything_search 相同的日志文件名
-            let log_path = log_dir.join(format!("everything-ipc-{}.log", today));
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .ok();
-            
-            state_guard.file = file;
-            state_guard.file_path = log_path;
-            state_guard.date = today;
-        }
-    }
-    
-    fn write_log_to_file(msg: &str) {
-        ensure_current_log_file();
-        let state = get_log_file_state();
-        let state_guard_result = state.lock();
-        if let Ok(mut state_guard) = state_guard_result {
-            if let Some(file) = state_guard.file.as_mut() {
-                let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-                let log_msg = format!("[{}] {}\n", timestamp, msg);
-                let _ = file.write_all(log_msg.as_bytes());
-                let _ = file.flush();
-            }
-        }
     }
     
     macro_rules! log_hotkey {
@@ -196,6 +138,7 @@ pub mod windows {
     }
 
     // 键盘钩子回调函数：检测重复修饰键（使用企业微信的实现方式）
+    #[allow(non_snake_case)]
     unsafe extern "system" fn keyboard_hook_proc(nCode: i32, wParam: WPARAM, lParam: LPARAM) -> LRESULT {
         use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, HHOOK, KBDLLHOOKSTRUCT};
         
@@ -967,6 +910,7 @@ pub mod windows {
     }
     
     // 全局键盘钩子回调 - 检查所有已注册的快捷键
+    #[allow(non_snake_case)]
     unsafe extern "system" fn global_keyboard_hook_proc(nCode: i32, wParam: WPARAM, lParam: LPARAM) -> LRESULT {
         use windows_sys::Win32::UI::WindowsAndMessaging::KBDLLHOOKSTRUCT;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;

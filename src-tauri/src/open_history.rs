@@ -302,11 +302,6 @@ pub fn record_open(key: String, app_data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn get_last_opened(key: &str) -> Option<u64> {
-    let state = lock_history().ok()?;
-    state.get(key).map(|item| item.last_opened)
-}
-
 pub fn get_all_history(app_data_dir: &Path) -> Result<HashMap<String, u64>, String> {
     let mut state = lock_history()?;
     load_history_into(&mut state, app_data_dir).ok(); // Ignore errors if file doesn't exist

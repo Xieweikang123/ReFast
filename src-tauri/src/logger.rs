@@ -115,12 +115,6 @@ fn ensure_current_log_file() {
     }
 }
 
-/// 获取日志文件路径
-pub fn get_log_file_path() -> Option<PathBuf> {
-    let state = get_log_file_state();
-    state.lock().ok().map(|s| s.file_path.clone())
-}
-
 /// 在程序启动时初始化日志文件（确保路径被保存和显示）
 pub fn init_log_file_early() {
     // 强制初始化日志文件

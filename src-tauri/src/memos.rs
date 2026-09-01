@@ -25,36 +25,6 @@ fn memos_file_path(app_data_dir: &PathBuf) -> PathBuf {
     app_data_dir.join("memos.json")
 }
 
-pub fn load_memos(app_data_dir: &PathBuf) -> Result<(), String> {
-    // No-op for compatibility; data now lives in SQLite.
-    let _ = app_data_dir;
-    Ok(())
-}
-
-fn save_memos(app_data_dir: &PathBuf, items: &[MemoItem]) -> Result<(), String> {
-    let mut conn = db::get_connection(app_data_dir)?;
-    maybe_migrate_from_json(&mut conn, app_data_dir)?;
-
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("Failed to start memos transaction: {}", e))?;
-    tx.execute("DELETE FROM memos", [])
-        .map_err(|e| format!("Failed to clear memos table: {}", e))?;
-
-    for m in items {
-        tx.execute(
-            "INSERT INTO memos (id, title, content, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![m.id, m.title, m.content, m.created_at as i64, m.updated_at as i64],
-        )
-        .map_err(|e| format!("Failed to insert memo {}: {}", m.id, e))?;
-    }
-
-    tx.commit()
-        .map_err(|e| format!("Failed to commit memos: {}", e))?;
-    Ok(())
-}
-
 pub fn get_all_memos(app_data_dir: &PathBuf) -> Result<Vec<MemoItem>, String> {
     let mut conn = db::get_connection(app_data_dir)?;
     maybe_migrate_from_json(&mut conn, app_data_dir)?;

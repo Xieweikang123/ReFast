@@ -32,7 +32,7 @@ fn now_ts() -> u64 {
 }
 
 pub fn get_all_word_records(app_data_dir: &Path) -> Result<Vec<WordRecord>, String> {
-    let mut conn = db::get_connection(app_data_dir)?;
+    let conn = db::get_connection(app_data_dir)?;
 
     let mut stmt = conn
         .prepare(
@@ -112,7 +112,7 @@ pub fn add_word_record(
         is_mastered: false,
     };
 
-    let mut conn = db::get_connection(app_data_dir)?;
+    let conn = db::get_connection(app_data_dir)?;
     conn.execute(
         "INSERT INTO word_records (id, word, translation, context, 
                                    phonetic, example_sentence, tags, ai_explanation, mastery_level, review_count, 
@@ -155,7 +155,7 @@ pub fn update_word_record(
     is_mastered: Option<bool>,
     app_data_dir: &Path,
 ) -> Result<WordRecord, String> {
-    let mut conn = db::get_connection(app_data_dir)?;
+    let conn = db::get_connection(app_data_dir)?;
 
     let existing: Option<WordRecord> = conn
         .query_row(
@@ -257,7 +257,7 @@ pub fn update_word_record(
 }
 
 pub fn delete_word_record(id: String, app_data_dir: &Path) -> Result<(), String> {
-    let mut conn = db::get_connection(app_data_dir)?;
+    let conn = db::get_connection(app_data_dir)?;
     let affected = conn
         .execute("DELETE FROM word_records WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to delete word_record: {}", e))?;
@@ -268,7 +268,7 @@ pub fn delete_word_record(id: String, app_data_dir: &Path) -> Result<(), String>
 }
 
 pub fn search_word_records(query: &str, app_data_dir: &Path) -> Result<Vec<WordRecord>, String> {
-    let mut conn = db::get_connection(app_data_dir)?;
+    let conn = db::get_connection(app_data_dir)?;
 
     let like = format!("%{}%", query.to_lowercase());
     let mut stmt = conn
