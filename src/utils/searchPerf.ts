@@ -12,16 +12,20 @@ const importMetaEnv =
   typeof import.meta !== "undefined" ? (import.meta as any).env : undefined;
 const IS_DEV = !!importMetaEnv?.DEV;
 
+// 开关在模块加载时求值一次并缓存，避免每次打点同步读 localStorage
+let enabledCache: boolean | null = null;
+
 export function isSearchPerfEnabled(): boolean {
+  if (enabledCache !== null) return enabledCache;
   try {
     const forced = localStorage.getItem(ENABLE_KEY);
-    if (forced === "0") return false;
-    if (forced === "1") return true;
-    // dev 构建默认开启（Vite 注入），生产默认关闭
-    return IS_DEV;
+    if (forced === "0") enabledCache = false;
+    else if (forced === "1") enabledCache = true;
+    else enabledCache = IS_DEV;
   } catch {
-    return IS_DEV;
+    enabledCache = IS_DEV;
   }
+  return enabledCache;
 }
 
 export interface SearchPhase {

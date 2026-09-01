@@ -56,17 +56,7 @@ export function useScrollbarStyle(resultStyle: ResultStyle) {
       };
     })();
     
-    const injectStyle = () => {
-      // 如果样式已存在，先移除
-      const existingStyle = document.getElementById(styleId);
-      if (existingStyle) {
-        existingStyle.remove();
-      }
-      
-      // 创建新的 style 标签
-      const style = document.createElement('style');
-      style.id = styleId;
-      style.textContent = `
+    const buildStyleText = () => `
         .results-list-scroll {
           overflow-y: auto !important;
           scrollbar-width: thin !important;
@@ -173,9 +163,28 @@ export function useScrollbarStyle(resultStyle: ResultStyle) {
           box-shadow: ${config.thumbHoverShadow} !important;
         }
       `;
+
+    // 计算本次样式文本（供判重，避免重复注入触发全文档样式重算）
+    const styleText = buildStyleText();
+
+    const injectStyle = () => {
+      // 若已存在的样式节点内容一致，跳过重建，避免不必要的样式重算
+      const existingStyle = document.getElementById(styleId);
+      if (existingStyle && existingStyle.textContent === styleText) {
+        return;
+      }
+      // 如果样式已存在，先移除
+      if (existingStyle) {
+        existingStyle.remove();
+      }
+
+      // 创建新的 style 标签
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = styleText;
       document.head.appendChild(style);
     };
-    
+
     // 立即注入样式
     injectStyle();
     

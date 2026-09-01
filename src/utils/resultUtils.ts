@@ -9,6 +9,7 @@ import {
   isSystemFolder,
   shouldShowInHorizontal,
   getResultUsageInfo,
+  getNormalizedOpenHistoryMap,
   calculateRelevanceScore,
   getMatchTier,
   MatchTier,
@@ -326,18 +327,12 @@ export function selectFirstVertical(
   setSelectedVerticalIndex(0);
 }
 
-/** 与 openHistory 的 key 对齐的路径匹配（见 getResultUsageInfo） */
+/** 与 openHistory 的 key 对齐的路径匹配（见 getNormalizedOpenHistoryMap） */
 export function getOpenHistoryTimestamp(
   path: string,
   openHistory: Record<string, number>
 ): number | undefined {
-  const normalized = normalizePathForHistory(path);
-  for (const [key, ts] of Object.entries(openHistory)) {
-    if (normalizePathForHistory(key) === normalized) {
-      return ts;
-    }
-  }
-  return undefined;
+  return getNormalizedOpenHistoryMap(openHistory).get(normalizePathForHistory(path));
 }
 
 /**

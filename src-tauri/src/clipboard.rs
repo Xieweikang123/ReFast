@@ -67,7 +67,10 @@ pub fn add_clipboard_item(
     };
 
     let conn = db::get_connection(app_data_dir)?;
-    
+
+    // 读取上限（有进程内缓存，首次才读设置）
+    let max_items = get_clipboard_max_items(app_data_dir);
+
     // 检查是否已存在相同内容（避免重复）
     let existing: Option<String> = conn
         .query_row(
@@ -77,7 +80,7 @@ pub fn add_clipboard_item(
         )
         .optional()
         .map_err(|e| format!("Failed to check existing clipboard: {}", e))?;
-    
+
     if let Some(existing_id) = existing {
         // 如果已存在，更新时间戳
         conn.execute(
@@ -85,7 +88,7 @@ pub fn add_clipboard_item(
             params![now as i64, existing_id],
         )
         .map_err(|e| format!("Failed to update clipboard timestamp: {}", e))?;
-        
+
         return Ok(ClipboardItem {
             id: existing_id,
             content,
@@ -102,26 +105,43 @@ pub fn add_clipboard_item(
     )
     .map_err(|e| format!("Failed to insert clipboard item: {}", e))?;
 
-    // 检查并限制最大数量
-    enforce_max_items(app_data_dir)?;
+    // 检查并限制最大数量（复用同一连接，避免再开一个连接）
+    enforce_max_items_with_conn(&conn, max_items)?;
 
     Ok(item)
 }
 
-/// 限制剪切板历史的最大数量，删除超出部分的记录
-fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
-    // 获取设置中的最大数量
-    let settings = settings::load_settings(app_data_dir)
-        .unwrap_or_default();
-    let max_items = settings.clipboard_max_items;
-    
+/// 缓存 clipboard_max_items，避免每次复制事件都完整读一遍设置。
+/// 0 表示不限制（保存设置时通过 invalidate_clipboard_max_items_cache 失效）。
+static CLIPBOARD_MAX_ITEMS_CACHE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static CLIPBOARD_MAX_ITEMS_LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn get_clipboard_max_items(app_data_dir: &PathBuf) -> u32 {
+    use std::sync::atomic::Ordering;
+    if !CLIPBOARD_MAX_ITEMS_LOADED.load(Ordering::Relaxed) {
+        let max_items = settings::load_settings(app_data_dir)
+            .map(|s| s.clipboard_max_items)
+            .unwrap_or_default();
+        CLIPBOARD_MAX_ITEMS_CACHE.store(max_items, Ordering::Relaxed);
+        CLIPBOARD_MAX_ITEMS_LOADED.store(true, Ordering::Relaxed);
+        max_items
+    } else {
+        CLIPBOARD_MAX_ITEMS_CACHE.load(Ordering::Relaxed)
+    }
+}
+
+/// 设置保存后调用：让剪贴板上限缓存失效（下次读取时重新加载）
+pub fn invalidate_clipboard_max_items_cache() {
+    CLIPBOARD_MAX_ITEMS_LOADED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 限制剪切板历史的最大数量，删除超出部分的记录（复用调用方的连接）
+fn enforce_max_items_with_conn(conn: &rusqlite::Connection, max_items: u32) -> Result<(), String> {
     if max_items == 0 {
         // 0 表示不限制
         return Ok(());
     }
 
-    let conn = db::get_connection(app_data_dir)?;
-    
     // 统计非收藏项的数量
     let non_favorite_count: i64 = conn
         .query_row(
@@ -130,7 +150,7 @@ fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
             |row| row.get(0),
         )
         .map_err(|e| format!("Failed to count clipboard items: {}", e))?;
-    
+
     if non_favorite_count <= max_items as i64 {
         // 未超过最大数量，不需要删除
         return Ok(());
@@ -159,10 +179,41 @@ fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
         .collect();
     
     drop(stmt);
-    
-    // 删除对应的图片文件
+
+    // 删除对应的图片文件（在数据库删除之前判断引用数，文件 IO 移到批量删除之后统一做）
+    let mut image_files_to_delete: Vec<String> = Vec::new();
     for (_id, content, content_type) in &items_to_delete {
         if content_type == "image" {
+            let image_path = std::path::Path::new(content);
+            if image_path.exists() {
+                // 检查是否还有其他记录引用这个图片（待删项本身仍占 1 条引用）
+                let ref_count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM clipboard_history WHERE content = ?1 AND content_type = 'image'",
+                        params![content],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+
+                // 只有当没有其他记录引用时才删除文件
+                if ref_count <= 1 {
+                    image_files_to_delete.push(content.clone());
+                }
+            }
+        }
+    }
+
+    // 单条 SQL 批量删除数据库记录（替代逐行 DELETE，避免多次 WAL 写）
+    let ids: Vec<String> = items_to_delete.iter().map(|(id, _, _)| id.clone()).collect();
+    conn.execute(
+        "DELETE FROM clipboard_history WHERE id IN (SELECT value FROM json_each(?1))",
+        params![serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string())],
+    )
+    .map_err(|e| format!("Failed to delete clipboard items: {}", e))?;
+
+    // 数据库记录已删除，现在再检查引用并删除图片文件（文件 IO 不占用数据库锁）
+    for (_id, content, content_type) in &items_to_delete {
+        if content_type == "image" && image_files_to_delete.iter().any(|p| p == content) {
             let image_path = std::path::Path::new(content);
             if image_path.exists() {
                 // 检查是否还有其他记录引用这个图片
@@ -173,9 +224,9 @@ fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
                         |row| row.get(0),
                     )
                     .unwrap_or(0);
-                
+
                 // 只有当没有其他记录引用时才删除文件
-                if ref_count <= 1 {
+                if ref_count == 0 {
                     if let Err(e) = std::fs::remove_file(image_path) {
                         eprintln!("[Clipboard] Failed to delete image file {}: {}", content, e);
                     } else {
@@ -185,18 +236,9 @@ fn enforce_max_items(app_data_dir: &PathBuf) -> Result<(), String> {
             }
         }
     }
-    
-    // 删除数据库记录（逐个删除更安全）
-    for (id, _, _) in &items_to_delete {
-        conn.execute(
-            "DELETE FROM clipboard_history WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to delete clipboard item {}: {}", id, e))?;
-    }
-    
+
     println!("[Clipboard] Deleted {} old clipboard items (max_items: {})", to_delete, max_items);
-    
+
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 use rusqlite::{Connection, OpenFlags};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 const DB_NAME: &str = "re-fast.db";
 const LEGACY_DB_NAME: &str = "data.db";
@@ -10,7 +11,11 @@ pub fn get_db_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(DB_NAME)
 }
 
-/// Determine the active DB path, migrating legacy `data.db` to the new name if needed.
+/// 进程内共享的单一数据库连接（串行化访问；WAL + FULL_MUTEX + busy_timeout 下线程安全）。
+/// 替代此前每次访问都重新打开文件并重跑全部迁移的模式，消除热路径的连接冷开销。
+static SHARED_CONNECTION: Mutex<Option<Connection>> = Mutex::new(None);
+
+/// 确定活动数据库路径，必要时把旧版 data.db 复制迁移到新名称。
 fn ensure_db_path(app_data_dir: &Path) -> Result<PathBuf, String> {
     if !app_data_dir.exists() {
         fs::create_dir_all(app_data_dir)
@@ -36,38 +41,78 @@ fn ensure_db_path(app_data_dir: &Path) -> Result<PathBuf, String> {
     Ok(new_path)
 }
 
-/// Open a SQLite connection with basic pragmas and run migrations.
-pub fn get_connection(app_data_dir: &Path) -> Result<Connection, String> {
-    let db_path = ensure_db_path(app_data_dir)?;
-    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-        | OpenFlags::SQLITE_OPEN_CREATE
-        | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+/// 获取共享的读写连接（锁被持有的时长 = 调用方使用连接的时长）。
+/// 首次调用时打开连接并运行完整迁移；之后复用同一连接，不再重复迁移。
+pub fn get_connection(app_data_dir: &Path) -> Result<SharedConnectionGuard, String> {
+    let mut slot = SHARED_CONNECTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    let conn = Connection::open_with_flags(&db_path, flags)
-        .map_err(|e| format!("Failed to open database: {}", e))?;
+    if slot.is_none() {
+        let db_path = ensure_db_path(app_data_dir)?;
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
 
-    // Basic pragmas for local desktop usage.
-    conn.execute_batch(
-        r#"
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-        PRAGMA foreign_keys = ON;
-        PRAGMA busy_timeout = 5000;
-    "#,
-    )
-    .map_err(|e| format!("Failed to set SQLite pragmas: {}", e))?;
+        let conn = Connection::open_with_flags(&db_path, flags)
+            .map_err(|e| format!("Failed to open database: {}", e))?;
 
-    run_migrations(&conn)?;
-    Ok(conn)
+        // Basic pragmas for local desktop usage.
+        conn.execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA synchronous = NORMAL;
+            PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout = 5000;
+        "#,
+        )
+        .map_err(|e| format!("Failed to set SQLite pragmas: {}", e))?;
+
+        run_migrations(&conn)?;
+        *slot = Some(conn);
+    }
+
+    Ok(SharedConnectionGuard { _slot: slot })
 }
 
-/// Open a read-only SQLite connection for search operations.
-/// This reduces file lock contention compared to read-write connections.
+/// 关闭并清空共享连接（备份恢复等直接覆盖数据库文件的场景使用，
+/// 下次 get_connection 会重新打开新文件并重新迁移）。
+pub fn reset_shared_connection() {
+    let mut slot = SHARED_CONNECTION
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // 先做 WAL checkpoint 并关闭旧连接，确保文件句柄释放
+    if let Some(conn) = slot.as_ref() {
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+    *slot = None;
+}
+
+/// 持有共享连接锁的 guard，通过 Deref/DerefMut 暴露 Connection。
+/// drop 时自动释放底层 Mutex 锁。
+pub struct SharedConnectionGuard {
+    _slot: MutexGuard<'static, Option<Connection>>,
+}
+
+impl std::ops::Deref for SharedConnectionGuard {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self._slot.as_ref().expect("connection must be present")
+    }
+}
+
+impl std::ops::DerefMut for SharedConnectionGuard {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self._slot.as_mut().expect("connection must be present")
+    }
+}
+
+/// 打开一个独立的只读连接（用于只读查询，不参与共享连接的写锁竞争）。
+/// 迁移由共享连接负责，这里不再执行迁移。
 pub fn get_readonly_connection(app_data_dir: &Path) -> Result<Connection, String> {
     let db_path = ensure_db_path(app_data_dir)?;
     // 使用只读标志，减少文件锁竞争
-    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-        | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
 
     let conn = Connection::open_with_flags(&db_path, flags)
         .map_err(|e| format!("Failed to open read-only database: {}", e))?;
@@ -220,6 +265,8 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
         .prepare("SELECT source_lang, target_lang FROM word_records LIMIT 1")
         .is_ok();
     
+    ensure_window_config_geometry_columns(conn)?;
+
     if old_columns_exist {
         // Old columns exist, need to migrate
         conn.execute_batch(
@@ -264,6 +311,32 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|e| format!("Failed to migrate word_records table: {}", e))?;
+    }
+
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.prepare(&format!("SELECT {column} FROM {table} LIMIT 1"))
+        .is_ok()
+}
+
+fn ensure_window_config_geometry_columns(conn: &Connection) -> Result<(), String> {
+    let columns = [
+        ("width", "INTEGER"),
+        ("height", "INTEGER"),
+        ("maximized", "INTEGER NOT NULL DEFAULT 0"),
+        ("fullscreen", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+
+    for (column, definition) in columns {
+        if !column_exists(conn, "window_config", column) {
+            conn.execute(
+                &format!("ALTER TABLE window_config ADD COLUMN {column} {definition}"),
+                [],
+            )
+            .map_err(|e| format!("Failed to add window_config.{column}: {e}"))?;
+        }
     }
 
     Ok(())

@@ -155,12 +155,6 @@ fn save_history_internal(
     Ok(())
 }
 
-// Legacy function for backward compatibility
-pub fn save_history(app_data_dir: &Path) -> Result<(), String> {
-    let state = lock_history()?;
-    save_history_internal(&state, app_data_dir)
-}
-
 // Extract domain from URL for default display name
 fn extract_url_domain(url: &str) -> String {
     if let Some(domain_start) = url.find("://") {
@@ -227,35 +221,33 @@ pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("Failed to get timestamp: {}", e))?
         .as_secs();
 
+    // 先更新内存缓存（保证后续搜索用到最新数据），再单行 UPSERT 落库
     let mut state = lock_history()?;
 
     if state.is_empty() {
         load_history_into(&mut state, app_data_dir)?;
     }
 
-    // Update or create history item
+    // 内存更新逻辑与原实现完全一致（URL 再次打开时保留用户备注）
     if let Some(item) = state.get_mut(&normalized_path_str) {
-        let old_count = item.use_count;
         item.last_opened = timestamp;
         item.use_count += 1;
-        eprintln!("[open_history::add_item] 路径已存在: {}, use_count: {} -> {}", normalized_path_str, old_count, item.use_count);
         item.is_folder = Some(is_folder); // Update is_folder in case it changed
         if is_url {
             // URL 再次打开时保留用户备注，不要用域名覆盖
             if item.name.is_none() {
-                item.name = name;
+                item.name = name.clone();
             }
         } else if name.is_some() {
-            item.name = name;
+            item.name = name.clone();
         }
     } else {
-        eprintln!("[open_history::add_item] 创建新项: {}, use_count: 1", normalized_path_str);
         state.insert(
             normalized_path_str.clone(),
             OpenHistoryItem {
-                key: normalized_path_str,
+                key: normalized_path_str.clone(),
                 last_opened: timestamp,
-                name,
+                name: name.clone(),
                 use_count: 1,
                 is_folder: Some(is_folder),
             },
@@ -264,8 +256,23 @@ pub fn add_item(path: String, app_data_dir: &Path) -> Result<(), String> {
 
     drop(state);
 
-    // Save to disk
-    save_history(app_data_dir)?;
+    // 单行 UPSERT：只写受影响的一行，避免原来全表 DELETE + 重 INSERT 的写放大。
+    // name 语义与原逻辑一致：URL 已有备注（name 非空）时不覆盖，否则更新为最新值。
+    let conn = db::get_connection(app_data_dir)?;
+    conn.execute(
+        "INSERT INTO open_history (key, last_opened, name, use_count, is_folder)
+         VALUES (?1, ?2, ?3, 1, ?4)
+         ON CONFLICT(key) DO UPDATE SET
+            last_opened = excluded.last_opened,
+            use_count = open_history.use_count + 1,
+            is_folder = excluded.is_folder,
+            name = CASE
+                WHEN open_history.name IS NOT NULL AND ?5 = 1 THEN open_history.name
+                ELSE excluded.name
+            END",
+        params![normalized_path_str, timestamp as i64, name, Some(is_folder), is_url],
+    )
+    .map_err(|e| format!("Failed to upsert open_history item: {}", e))?;
 
     Ok(())
 }
@@ -296,22 +303,36 @@ pub fn record_open(key: String, app_data_dir: &Path) -> Result<(), String> {
     }
     drop(state);
 
-    // Save to disk
-    save_history(app_data_dir)?;
+    // 单行 UPSERT：只写受影响的一行，避免全表 DELETE + 重 INSERT 的写放大。
+    // 新行 name/is_folder 为 NULL，与原 save 全量重写时写入的值一致。
+    let conn = db::get_connection(app_data_dir)?;
+    conn.execute(
+        "INSERT INTO open_history (key, last_opened, name, use_count, is_folder)
+         VALUES (?1, ?2, NULL, 1, NULL)
+         ON CONFLICT(key) DO UPDATE SET
+            last_opened = excluded.last_opened,
+            use_count = open_history.use_count + 1",
+        params![key, timestamp as i64],
+    )
+    .map_err(|e| format!("Failed to upsert open_history item: {}", e))?;
 
     Ok(())
 }
 
 pub fn get_all_history(app_data_dir: &Path) -> Result<HashMap<String, u64>, String> {
     let mut state = lock_history()?;
-    load_history_into(&mut state, app_data_dir).ok(); // Ignore errors if file doesn't exist
+    if state.is_empty() {
+        load_history_into(&mut state, app_data_dir).ok(); // Ignore errors if file doesn't exist
+    }
     Ok(state.iter().map(|(k, v)| (k.clone(), v.last_opened)).collect())
 }
 
 // Get all history items with full information
 pub fn get_all_history_items(app_data_dir: &Path) -> Result<HashMap<String, OpenHistoryItem>, String> {
     let mut state = lock_history()?;
-    load_history_into(&mut state, app_data_dir).ok(); // Ignore errors if file doesn't exist
+    if state.is_empty() {
+        load_history_into(&mut state, app_data_dir).ok(); // Ignore errors if file doesn't exist
+    }
     Ok(state.clone())
 }
 
@@ -707,17 +728,24 @@ pub fn get_history_count(app_data_dir: &Path) -> Result<usize, String> {
     thread::spawn(move || {
         let result = (|| -> Result<usize, String> {
             let db_path = db::get_db_path(&app_data_dir_owned);
-            let conn = if db_path.exists() {
-                db::get_readonly_connection(&app_data_dir_owned).or_else(|_| {
-                    db::get_connection(&app_data_dir_owned)
-                })?
+            let count: i64 = if db_path.exists() {
+                // 只读直查；失败时回退到共享连接（会顺带初始化/迁移）
+                let readonly = db::get_readonly_connection(&app_data_dir_owned);
+                match readonly {
+                    Ok(conn) => conn
+                        .query_row("SELECT COUNT(*) FROM open_history", [], |row| row.get(0))
+                        .map_err(|e| format!("Failed to count open history: {}", e)),
+                    Err(_) => {
+                        let conn = db::get_connection(&app_data_dir_owned)?;
+                        conn.query_row("SELECT COUNT(*) FROM open_history", [], |row| row.get(0))
+                            .map_err(|e| format!("Failed to count open history: {}", e))
+                    }
+                }?
             } else {
-                db::get_connection(&app_data_dir_owned)?
+                let conn = db::get_connection(&app_data_dir_owned)?;
+                conn.query_row("SELECT COUNT(*) FROM open_history", [], |row| row.get(0))
+                    .map_err(|e| format!("Failed to count open history: {}", e))?
             };
-            
-            let count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM open_history", [], |row| row.get(0))
-                .map_err(|e| format!("Failed to count open history: {}", e))?;
             Ok(count as usize)
         })();
         let _ = tx.send(result);
@@ -737,8 +765,12 @@ pub fn get_history_count(app_data_dir: &Path) -> Result<usize, String> {
 // Check if path exists in history
 pub fn check_path_exists(key: &str, app_data_dir: &Path) -> Result<Option<OpenHistoryItem>, String> {
     let mut state = lock_history()?;
-    load_history_into(&mut state, app_data_dir).ok();
-    
+    // 仅在缓存为空时从 SQLite 加载（与 search_history 一致），
+    // 避免每次按键都全量重读表并长时间持有全局锁
+    if state.is_empty() {
+        load_history_into(&mut state, app_data_dir).ok();
+    }
+
     Ok(state.get(key).cloned())
 }
 

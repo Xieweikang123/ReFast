@@ -793,6 +793,9 @@ function getNormalizedOpenHistoryMap(
   return usageMapCache;
 }
 
+/** 供 resultUtils 复用同一规范化缓存（openHistory 引用不变时免重建 Map） */
+export { getNormalizedOpenHistoryMap };
+
 export function getResultUsageInfo(
   result: { path: string; file?: { use_count?: number; last_used?: number } },
   openHistory: Record<string, number>
