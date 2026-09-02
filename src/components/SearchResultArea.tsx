@@ -219,12 +219,14 @@ export function SearchResultArea({
                       ul: ({ children }: any) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
                       ol: ({ children }: any) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
                       li: ({ children }: any) => <li className="ml-2">{children}</li>,
-                      code: ({ inline, children }: any) => 
-                        inline ? (
-                          <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>
-                        ) : (
+                      code: ({ node, className, children }: any) => {
+                        const isBlock = className?.includes("language-") || node?.position?.start?.line !== node?.position?.end?.line;
+                        return isBlock ? (
                           <code className="block bg-gray-100 p-3 rounded text-sm font-mono overflow-x-auto mb-3">{children}</code>
-                        ),
+                        ) : (
+                          <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono">{children}</code>
+                        );
+                      },
                       pre: ({ children }: any) => <pre className="mb-3">{children}</pre>,
                       blockquote: ({ children }: any) => (
                         <blockquote className="border-l-4 border-gray-300 pl-4 italic my-3">{children}</blockquote>

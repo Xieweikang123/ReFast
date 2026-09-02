@@ -1493,12 +1493,14 @@ export function WordbookPanel({
                           ul: ({ children }: any) => <ul className="list-disc list-inside mb-4 space-y-2 ml-2">{children}</ul>,
                           ol: ({ children }: any) => <ol className="list-decimal list-inside mb-4 space-y-2 ml-2">{children}</ol>,
                           li: ({ children }: any) => <li className="ml-2">{children}</li>,
-                          code: ({ inline, children }: any) => 
-                            inline ? (
-                              <code className="bg-gray-100 px-2 py-1 rounded text-sm font-mono text-purple-700 border border-gray-200">{children}</code>
-                            ) : (
+                          code: ({ node, className, children }: any) => {
+                            const isBlock = className?.includes("language-") || node?.position?.start?.line !== node?.position?.end?.line;
+                            return isBlock ? (
                               <code className="block bg-gray-50 p-4 rounded-lg text-sm font-mono overflow-x-auto mb-4 border border-gray-200">{children}</code>
-                            ),
+                            ) : (
+                              <code className="bg-gray-100 px-2 py-1 rounded text-sm font-mono text-purple-700 border border-gray-200">{children}</code>
+                            );
+                          },
                           pre: ({ children }: any) => <pre className="mb-4">{children}</pre>,
                           blockquote: ({ children }: any) => (
                             <blockquote className="border-l-4 border-purple-300 pl-4 italic my-4 bg-purple-50 py-2 rounded-r-lg">{children}</blockquote>

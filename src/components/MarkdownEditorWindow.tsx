@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type MouseEvent as ReactMouseEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
+import rehypeHighlight from "rehype-highlight";
 import { useEscapeKey } from "../hooks/useEscapeKey";
 import { useWindowClose } from "../hooks/useWindowClose";
 import { tauriApi } from "../api/tauri";
@@ -31,6 +32,18 @@ interface Heading {
   id: string;
 }
 
+// 从 React 子节点中提取纯文本
+function extractText(children: any): string {
+  if (typeof children === "string") return children;
+  if (Array.isArray(children)) {
+    return children.map(extractText).join("");
+  }
+  if (children?.props?.children) {
+    return extractText(children.props.children);
+  }
+  return "";
+}
+
 export function MarkdownEditorWindow() {
   const [markdownContent, setMarkdownContent] = useState("");
   const [filePath, setFilePath] = useState<string | null>(null);
@@ -41,9 +54,12 @@ export function MarkdownEditorWindow() {
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [showRecentFiles, setShowRecentFiles] = useState(false);
   const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
+  const [tocWidth, setTocWidth] = useState(220);
   const [isDarkMode, setIsDarkMode] = useState(true); // 默认深色模式
   const isEditingRef = useRef(false); // 标记是否正在编辑，避免外部变化触发时覆盖用户输入
   const isScrollingRef = useRef(false); // 标记是否正在进行程序化滚动
+  const scrollAnimRef = useRef<{ current: number } | null>(null); // 跟踪当前滚动动画
+  const scrollTimerRef = useRef<number | null>(null); // 跟踪滚动完成定时器
   const recentFilesRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const openFileByPathRef = useRef<
@@ -51,7 +67,7 @@ export function MarkdownEditorWindow() {
   >(async () => false);
 
   // 深色模式样式配置
-  const theme = {
+  const theme = useMemo(() => ({
     bg: isDarkMode ? "#1e1e1e" : "#ffffff",
     bgSecondary: isDarkMode ? "#252526" : "#f9fafb",
     bgTertiary: isDarkMode ? "#2d2d30" : "#f3f4f6",
@@ -71,7 +87,8 @@ export function MarkdownEditorWindow() {
     errorText: isDarkMode ? "#f48771" : "#991b1b",
     activeHeading: isDarkMode ? "#094771" : "#eff6ff",
     activeHeadingText: isDarkMode ? "#4a9eff" : "#3b82f6",
-  };
+    tocLevel1: isDarkMode ? "#4a9eff" : "#1d4ed8",
+  }), [isDarkMode]);
 
 
   // ESC 键关闭窗口
@@ -295,7 +312,15 @@ export function MarkdownEditorWindow() {
 
     while ((match = headingRegex.exec(markdownContent)) !== null) {
       const level = match[1].length;
-      const text = match[2].trim();
+      // 剥离行内 markdown 标记（反引号、加粗、斜体、链接），只保留纯文本
+      const text = match[2]
+        .trim()
+        .replace(/`([^`]*)`/g, "$1")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/^#+\s*/, "")
+        .trim();
       let baseId = generateSlug(text);
       
       // 如果 ID 已存在，添加数字后缀
@@ -324,14 +349,23 @@ export function MarkdownEditorWindow() {
       
       const scrollTop = previewElement.scrollTop;
       const headingsElements = previewElement.querySelectorAll("h1[id], h2[id], h3[id], h4[id], h5[id], h6[id]");
+      const containerRect = previewElement.getBoundingClientRect();
       
       let currentHeadingId: string | null = null;
       
-      for (let i = headingsElements.length - 1; i >= 0; i--) {
-        const element = headingsElements[i] as HTMLElement;
-        if (element.offsetTop - scrollTop <= 100) {
-          currentHeadingId = element.id;
-          break;
+      // 触底时直接高亮最后一个标题，避免最后几个标题因未滚到阈值内而无法选中
+      const atBottom = scrollTop + previewElement.clientHeight >= previewElement.scrollHeight - 2;
+      if (atBottom && headingsElements.length > 0) {
+        currentHeadingId = (headingsElements[headingsElements.length - 1] as HTMLElement).id;
+      } else {
+        for (let i = headingsElements.length - 1; i >= 0; i--) {
+          const element = headingsElements[i] as HTMLElement;
+          // 用 getBoundingClientRect 相对容器计算，offsetTop 相对 offsetParent 不可靠
+          const elementTopInContainer = element.getBoundingClientRect().top - containerRect.top;
+          if (elementTopInContainer <= 100) {
+            currentHeadingId = element.id;
+            break;
+          }
         }
       }
       
@@ -351,6 +385,7 @@ export function MarkdownEditorWindow() {
     const startTop = container.scrollTop;
     const distance = targetTop - startTop;
     const startTime = performance.now();
+    const rafId = { current: 0 };
     
     const animateScroll = (currentTime: number) => {
       const elapsed = currentTime - startTime;
@@ -363,11 +398,12 @@ export function MarkdownEditorWindow() {
       container.scrollTop = startTop + distance * easedProgress;
       
       if (progress < 1) {
-        requestAnimationFrame(animateScroll);
+        rafId.current = requestAnimationFrame(animateScroll);
       }
     };
     
-    requestAnimationFrame(animateScroll);
+    rafId.current = requestAnimationFrame(animateScroll);
+    return rafId;
   };
 
   // 滚动到指定标题
@@ -402,6 +438,14 @@ export function MarkdownEditorWindow() {
     }
     
     if (element && previewRef.current) {
+      // 取消上一次未完成的滚动动画与定时器，避免快速连续点击时竞态
+      if (scrollAnimRef.current) {
+        cancelAnimationFrame(scrollAnimRef.current.current);
+      }
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+      }
+      
       // 立即设置高亮
       setActiveHeadingId(id);
       
@@ -430,14 +474,15 @@ export function MarkdownEditorWindow() {
       const finalTargetScrollTop = Math.max(0, targetScrollTop);
       
       // 使用自定义滚动函数，固定 400ms 动画时长
-      smoothScrollTo(container, finalTargetScrollTop, 400);
+      scrollAnimRef.current = smoothScrollTo(container, finalTargetScrollTop, 400);
       
       // 等待滚动完成后再允许滚动监听器更新高亮
-      setTimeout(() => {
+      scrollTimerRef.current = window.setTimeout(() => {
         isScrollingRef.current = false;
         // 滚动完成后，确保高亮正确（滚动监听器会基于实际位置更新）
         // 但为了确保点击的标题被高亮，我们再次设置它
         setActiveHeadingId(id);
+        scrollAnimRef.current = null;
       }, 450); // 稍微长一点，确保动画完成
     } else {
       console.warn(`找不到标题元素: ${id}`);
@@ -512,6 +557,17 @@ export function MarkdownEditorWindow() {
     }
   };
 
+  // 在文件管理器中打开当前文件所在文件夹
+  const handleRevealInFolder = async () => {
+    if (!filePath) return;
+    try {
+      await tauriApi.revealInFolder(filePath);
+    } catch (err) {
+      console.error("打开所在文件夹失败:", err);
+      setError(`无法打开所在文件夹: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   // 清空内容
   const handleClear = async () => {
     // 停止文件监听
@@ -553,6 +609,12 @@ export function MarkdownEditorWindow() {
   // 组件卸载时清理监听
   useEffect(() => {
     return () => {
+      if (scrollAnimRef.current) {
+        cancelAnimationFrame(scrollAnimRef.current.current);
+      }
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+      }
       if (filePath) {
         const window = getCurrentWindow();
         tauriApi.unwatchMarkdownFile(window.label, filePath).catch(console.error);
@@ -570,6 +632,27 @@ export function MarkdownEditorWindow() {
 
   const toggleViewMode = () => {
     setViewMode((prev) => (prev === "preview" ? "split" : "preview"));
+  };
+
+  // 拖动调整目录宽度
+  const startResizeToc = (e: ReactMouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = tocWidth;
+    const onMove = (ev: MouseEvent) => {
+      const next = Math.min(420, Math.max(160, startWidth + (ev.clientX - startX)));
+      setTocWidth(next);
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
   };
 
   const fileDisplayName = filePath
@@ -654,6 +737,140 @@ export function MarkdownEditorWindow() {
           /* 分屏模式：更细、overlay 风格滚动条，减少双栏视觉干扰 */
           .markdown-editor-split-scrollbar {
             scrollbar-gutter: stable;
+          }
+
+          /* 目录项 hover 高亮（非激活项） */
+          .markdown-editor-toc-item:hover {
+            background-color: ${isDarkMode ? '#2a2d2e' : '#f3f4f6'} !important;
+          }
+
+          /* 代码块语法高亮（highlight.js 深色/浅色主题） */
+          .markdown-editor-scrollbar pre code.hljs {
+            display: block;
+            overflow-x: auto;
+            padding: 0;
+            background: transparent;
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-comment,
+          .markdown-editor-scrollbar pre code.hljs .hljs-quote {
+            color: ${isDarkMode ? '#6a9955' : '#6a737d'};
+            font-style: italic;
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-keyword,
+          .markdown-editor-scrollbar pre code.hljs .hljs-selector-tag,
+          .markdown-editor-scrollbar pre code.hljs .hljs-literal,
+          .markdown-editor-scrollbar pre code.hljs .hljs-section,
+          .markdown-editor-scrollbar pre code.hljs .hljs-link {
+            color: ${isDarkMode ? '#569cd6' : '#d73a49'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-string,
+          .markdown-editor-scrollbar pre code.hljs .hljs-title,
+          .markdown-editor-scrollbar pre code.hljs .hljs-name,
+          .markdown-editor-scrollbar pre code.hljs .hljs-type,
+          .markdown-editor-scrollbar pre code.hljs .hljs-attribute,
+          .markdown-editor-scrollbar pre code.hljs .hljs-symbol,
+          .markdown-editor-scrollbar pre code.hljs .hljs-bullet,
+          .markdown-editor-scrollbar pre code.hljs .hljs-addition,
+          .markdown-editor-scrollbar pre code.hljs .hljs-variable,
+          .markdown-editor-scrollbar pre code.hljs .hljs-template-tag,
+          .markdown-editor-scrollbar pre code.hljs .hljs-template-variable {
+            color: ${isDarkMode ? '#ce9178' : '#032f62'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-number,
+          .markdown-editor-scrollbar pre code.hljs .hljs-meta,
+          .markdown-editor-scrollbar pre code.hljs .hljs-built_in,
+          .markdown-editor-scrollbar pre code.hljs .hljs-builtin-name,
+          .markdown-editor-scrollbar pre code.hljs .hljs-params {
+            color: ${isDarkMode ? '#b5cea8' : '#005cc5'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-title.function_,
+          .markdown-editor-scrollbar pre code.hljs .hljs-function .hljs-title {
+            color: ${isDarkMode ? '#dcdcaa' : '#6f42c1'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-selector-class,
+          .markdown-editor-scrollbar pre code.hljs .hljs-selector-id,
+          .markdown-editor-scrollbar pre code.hljs .hljs-selector-attr,
+          .markdown-editor-scrollbar pre code.hljs .hljs-selector-pseudo {
+            color: ${isDarkMode ? '#d7ba7d' : '#e36209'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-deletion {
+            color: ${isDarkMode ? '#f48771' : '#b31d28'};
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-emphasis {
+            font-style: italic;
+          }
+          .markdown-editor-scrollbar pre code.hljs .hljs-strong {
+            font-weight: bold;
+          }
+
+          /* 表格行 hover 高亮 */
+          .markdown-editor-scrollbar table tr:hover {
+            background-color: ${isDarkMode ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)'};
+          }
+
+          /* 代码块 hover 时显示复制按钮 */
+          .markdown-editor-code-block:hover .markdown-editor-copy-btn {
+            opacity: 1 !important;
+          }
+
+          /* 预览列表：更精致的标记 */
+          .markdown-editor-scrollbar ul {
+            list-style: none;
+            padding-left: 1.2em;
+          }
+          .markdown-editor-scrollbar ul > li {
+            position: relative;
+          }
+          .markdown-editor-scrollbar ul > li::before {
+            content: "";
+            position: absolute;
+            left: -1.1em;
+            top: 0.72em;
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background-color: ${isDarkMode ? '#858585' : '#9ca3af'};
+          }
+          .markdown-editor-scrollbar ul > li:has(> input[type="checkbox"])::before {
+            display: none;
+          }
+
+          /* 任务清单复选框：原生交互样式 */
+          .markdown-editor-scrollbar li input[type="checkbox"] {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 15px;
+            height: 15px;
+            margin: 0 8px 0 0;
+            vertical-align: -2px;
+            border: 1.5px solid ${isDarkMode ? '#858585' : '#9ca3af'};
+            border-radius: 4px;
+            background-color: transparent;
+            cursor: pointer;
+            position: relative;
+            transition: background-color 0.15s, border-color 0.15s;
+          }
+          .markdown-editor-scrollbar li input[type="checkbox"]:hover {
+            border-color: ${theme.link};
+          }
+          .markdown-editor-scrollbar li input[type="checkbox"]:checked {
+            background-color: ${theme.link};
+            border-color: ${theme.link};
+          }
+          .markdown-editor-scrollbar li input[type="checkbox"]:checked::after {
+            content: "";
+            position: absolute;
+            left: 4px;
+            top: 1px;
+            width: 4px;
+            height: 8px;
+            border: solid #fff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+          }
+          .markdown-editor-scrollbar li:has(> input[type="checkbox"]:checked) {
+            color: ${theme.textMuted};
+            text-decoration: line-through;
           }
 
           .markdown-editor-split-scrollbar::-webkit-scrollbar {
@@ -748,6 +965,7 @@ export function MarkdownEditorWindow() {
               fontWeight: 600,
               color: theme.text,
               whiteSpace: "nowrap",
+              letterSpacing: "0.2px",
             }}
           >
             Markdown 编辑器
@@ -757,7 +975,7 @@ export function MarkdownEditorWindow() {
               style={{
                 fontSize: "12px",
                 color: theme.textSecondary,
-                padding: "2px 10px",
+                padding: "3px 10px",
                 borderRadius: "999px",
                 backgroundColor: theme.bgSecondary,
                 border: `1px solid ${theme.border}`,
@@ -776,7 +994,7 @@ export function MarkdownEditorWindow() {
               style={{
                 fontSize: "11px",
                 color: "#34d399",
-                padding: "2px 8px",
+                padding: "3px 9px",
                 borderRadius: "999px",
                 backgroundColor: isDarkMode ? "rgba(16, 185, 129, 0.12)" : "#ecfdf5",
                 display: "flex",
@@ -793,6 +1011,7 @@ export function MarkdownEditorWindow() {
                   height: "6px",
                   borderRadius: "50%",
                   backgroundColor: "#34d399",
+                  boxShadow: "0 0 0 2px rgba(52, 211, 153, 0.25)",
                 }}
               />
               监听中
@@ -807,7 +1026,8 @@ export function MarkdownEditorWindow() {
                 display: "inline-flex",
                 borderRadius: "6px",
                 overflow: "hidden",
-                border: `1px solid ${isDarkMode ? theme.buttonPrimary : theme.buttonPrimary}`,
+                border: `1px solid ${theme.buttonPrimary}`,
+                boxShadow: isDarkMode ? "0 1px 2px rgba(0,0,0,0.3)" : "0 1px 2px rgba(0,0,0,0.08)",
               }}
             >
               <button
@@ -821,6 +1041,10 @@ export function MarkdownEditorWindow() {
                   cursor: isLoading ? "not-allowed" : "pointer",
                   fontSize: "13px",
                   fontWeight: 500,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  transition: "background-color 0.15s",
                 }}
                 onMouseOver={(e) => {
                   if (!isLoading) {
@@ -833,6 +1057,9 @@ export function MarkdownEditorWindow() {
                   }
                 }}
               >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
                 {isLoading ? "打开中..." : "打开文件"}
               </button>
               {recentFiles.length > 0 && (
@@ -850,6 +1077,9 @@ export function MarkdownEditorWindow() {
                     cursor: isLoading ? "not-allowed" : "pointer",
                     fontSize: "12px",
                     fontWeight: 500,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    transition: "background-color 0.15s",
                   }}
                   onMouseOver={(e) => {
                     if (!isLoading) {
@@ -865,7 +1095,9 @@ export function MarkdownEditorWindow() {
                   }}
                   title="最近打开"
                 >
-                  ▾
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
                 </button>
               )}
             </div>
@@ -995,24 +1227,77 @@ export function MarkdownEditorWindow() {
           </div>
 
           <button
+            onClick={handleRevealInFolder}
+            disabled={!filePath}
+            style={{
+              padding: "6px 12px",
+              backgroundColor: "transparent",
+              color: filePath ? theme.textSecondary : theme.textMuted,
+              border: `1px solid ${theme.border}`,
+              borderRadius: "6px",
+              cursor: filePath ? "pointer" : "not-allowed",
+              fontSize: "13px",
+              fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              transition: "background-color 0.15s, color 0.15s, border-color 0.15s",
+            }}
+            onMouseOver={(e) => {
+              if (filePath) {
+                e.currentTarget.style.backgroundColor = theme.hover;
+                e.currentTarget.style.color = theme.text;
+                e.currentTarget.style.borderColor = theme.textSecondary;
+              }
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = filePath ? theme.textSecondary : theme.textMuted;
+              e.currentTarget.style.borderColor = theme.border;
+            }}
+            title={filePath ? "在文件管理器中打开所在文件夹" : "请先打开文件"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              <path d="M12 11v6" />
+              <path d="M9 14l3 3 3-3" />
+            </svg>
+            打开所在文件夹
+          </button>
+
+          <button
             onClick={handleClear}
             style={{
-              padding: "6px 14px",
-              backgroundColor: theme.bg,
+              padding: "6px 12px",
+              backgroundColor: "transparent",
               color: theme.textSecondary,
               border: `1px solid ${theme.border}`,
               borderRadius: "6px",
               cursor: "pointer",
               fontSize: "13px",
               fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              transition: "background-color 0.15s, color 0.15s, border-color 0.15s",
             }}
             onMouseOver={(e) => {
-              e.currentTarget.style.backgroundColor = theme.hover;
+              e.currentTarget.style.backgroundColor = isDarkMode ? "rgba(244, 63, 94, 0.12)" : "rgba(220, 38, 38, 0.08)";
+              e.currentTarget.style.color = isDarkMode ? "#f48771" : "#dc2626";
+              e.currentTarget.style.borderColor = isDarkMode ? "rgba(244, 63, 94, 0.4)" : "rgba(220, 38, 38, 0.4)";
             }}
             onMouseOut={(e) => {
-              e.currentTarget.style.backgroundColor = theme.bg;
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = theme.textSecondary;
+              e.currentTarget.style.borderColor = theme.border;
             }}
+            title="清空当前内容"
           >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M3 6h18" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+              <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
             清空
           </button>
 
@@ -1030,6 +1315,7 @@ export function MarkdownEditorWindow() {
               display: "inline-flex",
               alignItems: "center",
               gap: "6px",
+              transition: "background-color 0.15s",
             }}
             onMouseOver={(e) => {
               e.currentTarget.style.backgroundColor = theme.buttonPrimaryHover;
@@ -1039,9 +1325,10 @@ export function MarkdownEditorWindow() {
             }}
             title={viewMode === "preview" ? "当前为预览，点击进入编辑" : "当前为编辑，点击进入预览"}
           >
-            <span aria-hidden style={{ opacity: 0.85, fontSize: "12px", lineHeight: 1 }}>
-              ⇄
-            </span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
             {viewMode === "preview" ? "编辑" : "预览"}
           </button>
 
@@ -1056,16 +1343,31 @@ export function MarkdownEditorWindow() {
               cursor: "pointer",
               fontSize: "14px",
               lineHeight: 1,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              transition: "background-color 0.15s, color 0.15s",
             }}
             onMouseOver={(e) => {
               e.currentTarget.style.backgroundColor = theme.hover;
+              e.currentTarget.style.color = theme.text;
             }}
             onMouseOut={(e) => {
               e.currentTarget.style.backgroundColor = theme.bg;
+              e.currentTarget.style.color = theme.textSecondary;
             }}
             title={isDarkMode ? "切换到浅色模式" : "切换到深色模式"}
           >
-            {isDarkMode ? "☀️" : "🌙"}
+            {isDarkMode ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              </svg>
+            )}
           </button>
           <button
             onClick={handleClose}
@@ -1078,6 +1380,10 @@ export function MarkdownEditorWindow() {
               cursor: "pointer",
               fontSize: "13px",
               fontWeight: 500,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              transition: "background-color 0.15s, color 0.15s",
             }}
             onMouseOver={(e) => {
               e.currentTarget.style.backgroundColor = theme.hover;
@@ -1089,6 +1395,9 @@ export function MarkdownEditorWindow() {
             }}
             title="关闭 (Esc)"
           >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
             关闭
           </button>
         </div>
@@ -1193,7 +1502,7 @@ export function MarkdownEditorWindow() {
                 <div
                   className={paneScrollClass}
                   style={{
-                    width: "220px",
+                    width: `${tocWidth}px`,
                     flexShrink: 0,
                     backgroundColor: theme.bgSecondary,
                     borderRight: `1px solid ${theme.border}`,
@@ -1220,54 +1529,95 @@ export function MarkdownEditorWindow() {
                       {headings.length} 项
                     </span>
                   </div>
-                  {headings.map((heading) => (
-                    <div
-                      key={heading.id}
-                      onClick={() => scrollToHeading(heading.id)}
-                      style={{
-                        padding: "5px 8px",
-                        paddingLeft: `${(heading.level - 1) * 10 + 8}px`,
-                        cursor: "pointer",
-                        borderRadius: "4px",
-                        marginBottom: "2px",
-                        color:
-                          activeHeadingId === heading.id
+                  {headings.map((heading, idx) => {
+                    const isActive = activeHeadingId === heading.id;
+                    const isLevel1 = heading.level === 1;
+                    const isLastInGroup =
+                      idx === headings.length - 1 ||
+                      headings[idx + 1].level === 1;
+                    return (
+                      <div
+                        key={heading.id}
+                        onClick={() => scrollToHeading(heading.id)}
+                        className="markdown-editor-toc-item"
+                        style={{
+                          position: "relative",
+                          padding: "4px 8px",
+                          paddingLeft: `${(heading.level - 1) * 14 + 8}px`,
+                          cursor: "pointer",
+                          borderRadius: "4px",
+                          marginBottom: isLevel1 ? "8px" : isLastInGroup ? "8px" : "1px",
+                          color: isActive
                             ? theme.activeHeadingText
-                            : theme.text,
-                        backgroundColor:
-                          activeHeadingId === heading.id
-                            ? theme.activeHeading
+                            : isLevel1
+                              ? theme.text
+                              : heading.level === 2
+                                ? theme.textSecondary
+                                : theme.textMuted,
+                          backgroundColor: isActive
+                            ? isDarkMode ? "rgba(74, 158, 255, 0.12)" : "rgba(59, 130, 246, 0.08)"
                             : "transparent",
-                        fontWeight: activeHeadingId === heading.id ? 600 : 400,
-                        fontSize:
-                          heading.level === 1
-                            ? "13px"
-                            : heading.level === 2
-                              ? "12px"
-                              : "11px",
-                        lineHeight: 1.45,
-                        overflow: "hidden",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        transition: "background-color 0.15s",
-                      }}
-                      onMouseOver={(e) => {
-                        if (activeHeadingId !== heading.id) {
-                          e.currentTarget.style.backgroundColor = theme.hover;
-                        }
-                      }}
-                      onMouseOut={(e) => {
-                        if (activeHeadingId !== heading.id) {
-                          e.currentTarget.style.backgroundColor = "transparent";
-                        }
-                      }}
-                      title={heading.text}
-                    >
-                      {heading.text}
-                    </div>
-                  ))}
+                          fontWeight: isActive ? 600 : isLevel1 ? 500 : 400,
+                          fontSize: isLevel1 ? "13px" : "12px",
+                          lineHeight: 1.5,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          transition: "background-color 0.12s, color 0.12s",
+                        }}
+                        title={heading.text}
+                      >
+                        {isActive && (
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: 0,
+                              top: "50%",
+                              transform: "translateY(-50%)",
+                              width: "3px",
+                              height: "16px",
+                              borderRadius: "2px",
+                              backgroundColor: theme.link,
+                            }}
+                          />
+                        )}
+                        {heading.level > 1 && (
+                          <span
+                            style={{
+                              position: "absolute",
+                              left: `${(heading.level - 1) * 14 + 2}px`,
+                              top: 0,
+                              bottom: 0,
+                              width: "1px",
+                              backgroundColor: theme.border,
+                            }}
+                          />
+                        )}
+                        {heading.text}
+                      </div>
+                    );
+                  })}
                 </div>
+              )}
+              {/* 目录宽度拖拽手柄 */}
+              {headings.length > 0 && (
+                <div
+                  onMouseDown={startResizeToc}
+                  style={{
+                    width: "5px",
+                    flexShrink: 0,
+                    cursor: "col-resize",
+                    backgroundColor: "transparent",
+                    transition: "background-color 0.15s",
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.backgroundColor = theme.link;
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                  }}
+                  title="拖动调整目录宽度"
+                />
               )}
               {/* 预览内容 */}
               <div
@@ -1291,23 +1641,13 @@ export function MarkdownEditorWindow() {
                 >
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeRaw]}
+                    rehypePlugins={[rehypeRaw, rehypeHighlight]}
                     components={{
                       // 自定义样式 - 为标题添加 ID 以便导航
                       h1: ({ node, children, ...props }: any) => {
-                        // 提取文本内容
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
-                        const id = generateSlug(text);
+                        const heading = headings.find(h => h.text === text.trim());
+                        const id = heading?.id || generateSlug(text);
                         return (
                           <h1
                             id={id}
@@ -1326,16 +1666,6 @@ export function MarkdownEditorWindow() {
                         );
                       },
                       h2: ({ node, children, ...props }: any) => {
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
                         const heading = headings.find(h => h.text === text.trim());
                         const id = heading?.id || generateSlug(text);
@@ -1356,16 +1686,6 @@ export function MarkdownEditorWindow() {
                         );
                       },
                       h3: ({ node, children, ...props }: any) => {
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
                         const heading = headings.find(h => h.text === text.trim());
                         const id = heading?.id || generateSlug(text);
@@ -1386,16 +1706,6 @@ export function MarkdownEditorWindow() {
                         );
                       },
                       h4: ({ node, children, ...props }: any) => {
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
                         const heading = headings.find(h => h.text === text.trim());
                         const id = heading?.id || generateSlug(text);
@@ -1416,16 +1726,6 @@ export function MarkdownEditorWindow() {
                         );
                       },
                       h5: ({ node, children, ...props }: any) => {
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
                         const heading = headings.find(h => h.text === text.trim());
                         const id = heading?.id || generateSlug(text);
@@ -1446,16 +1746,6 @@ export function MarkdownEditorWindow() {
                         );
                       },
                       h6: ({ node, children, ...props }: any) => {
-                        const extractText = (children: any): string => {
-                          if (typeof children === "string") return children;
-                          if (Array.isArray(children)) {
-                            return children.map(extractText).join("");
-                          }
-                          if (children?.props?.children) {
-                            return extractText(children.props.children);
-                          }
-                          return "";
-                        };
                         const text = extractText(children);
                         const heading = headings.find(h => h.text === text.trim());
                         const id = heading?.id || generateSlug(text);
@@ -1478,8 +1768,9 @@ export function MarkdownEditorWindow() {
                       p: ({ node, ...props }) => (
                         <p style={{ marginTop: "0", marginBottom: "0.75em", lineHeight: "1.6" }} {...props} />
                       ),
-                      code: ({ node, inline, ...props }: any) => {
-                        if (inline) {
+                      code: ({ node, className, ...props }: any) => {
+                        const isBlock = className?.includes("language-") || node?.position?.start?.line !== node?.position?.end?.line;
+                        if (!isBlock) {
                           return (
                             <code
                               style={{
@@ -1497,35 +1788,86 @@ export function MarkdownEditorWindow() {
                         return (
                           <code
                             style={{
-                              display: "block",
-                              backgroundColor: theme.codeBg,
-                              padding: "12px",
-                              borderRadius: "6px",
                               fontFamily: "'Courier New', monospace",
                               fontSize: "0.9em",
-                              overflow: "auto",
-                              marginTop: "1em",
-                              marginBottom: "1em",
                               color: theme.codeText,
                             }}
                             {...props}
                           />
                         );
                       },
-                      pre: ({ node, ...props }) => (
-                        <pre
-                          style={{
-                            backgroundColor: theme.codeBg,
-                            padding: "12px",
-                            borderRadius: "6px",
-                            overflow: "auto",
-                            marginTop: "1em",
-                            marginBottom: "1em",
-                            color: theme.codeText,
-                          }}
-                          {...props}
-                        />
-                      ),
+                      pre: ({ node, children, ...props }: any) => {
+                        const codeText = extractText(children);
+                        return (
+                          <div
+                            className="markdown-editor-code-block"
+                            style={{
+                              position: "relative",
+                              marginTop: "1em",
+                              marginBottom: "1em",
+                            }}
+                          >
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(codeText);
+                                } catch (e) {
+                                  console.error("复制代码失败:", e);
+                                }
+                              }}
+                              className="markdown-editor-copy-btn"
+                              title="复制代码"
+                              style={{
+                                position: "absolute",
+                                top: "8px",
+                                right: "8px",
+                                padding: "4px 8px",
+                                backgroundColor: isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)",
+                                color: theme.textSecondary,
+                                border: `1px solid ${theme.border}`,
+                                borderRadius: "4px",
+                                cursor: "pointer",
+                                fontSize: "11px",
+                                fontWeight: 500,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                opacity: 0,
+                                transition: "opacity 0.15s, background-color 0.15s, color 0.15s",
+                                zIndex: 2,
+                              }}
+                              onMouseOver={(e) => {
+                                e.currentTarget.style.backgroundColor = theme.hover;
+                                e.currentTarget.style.color = theme.text;
+                              }}
+                              onMouseOut={(e) => {
+                                e.currentTarget.style.backgroundColor = isDarkMode ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)";
+                                e.currentTarget.style.color = theme.textSecondary;
+                              }}
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              </svg>
+                              复制
+                            </button>
+                            <pre
+                              style={{
+                                backgroundColor: theme.codeBg,
+                                padding: "12px",
+                                borderRadius: "6px",
+                                overflow: "auto",
+                                marginTop: 0,
+                                marginBottom: 0,
+                                color: theme.codeText,
+                              }}
+                              {...props}
+                            >
+                              {children}
+                            </pre>
+                          </div>
+                        );
+                      },
                       blockquote: ({ node, ...props }) => (
                         <blockquote
                           style={{
@@ -1548,6 +1890,25 @@ export function MarkdownEditorWindow() {
                       li: ({ node, ...props }) => (
                         <li style={{ marginTop: "0.5em", marginBottom: "0.5em" }} {...props} />
                       ),
+                      input: ({ node, ...props }: any) => (
+                        <input
+                          type="checkbox"
+                          {...props}
+                          disabled={false}
+                          onChange={(e) => {
+                            // 任务清单勾选状态（仅本地交互，不写回文件）
+                            const li = e.currentTarget.closest("li");
+                            if (li) {
+                              li.style.color = e.currentTarget.checked
+                                ? theme.textMuted
+                                : theme.text;
+                              li.style.textDecoration = e.currentTarget.checked
+                                ? "line-through"
+                                : "none";
+                            }
+                          }}
+                        />
+                      ),
                       a: ({ node, ...props }: any) => (
                         <a
                           style={{ color: theme.link, textDecoration: "underline" }}
@@ -1568,6 +1929,12 @@ export function MarkdownEditorWindow() {
                           />
                         </div>
                       ),
+                      tr: ({ node, ...props }) => (
+                        <tr
+                          style={{ transition: "background-color 0.12s" }}
+                          {...props}
+                        />
+                      ),
                       th: ({ node, ...props }) => (
                         <th
                           style={{
@@ -1577,6 +1944,9 @@ export function MarkdownEditorWindow() {
                             fontWeight: 600,
                             textAlign: "left",
                             color: theme.text,
+                            position: "sticky",
+                            top: 0,
+                            zIndex: 1,
                           }}
                           {...props}
                         />
@@ -1587,6 +1957,19 @@ export function MarkdownEditorWindow() {
                             border: `1px solid ${theme.border}`,
                             padding: "8px 12px",
                             color: theme.text,
+                          }}
+                          {...props}
+                        />
+                      ),
+                      img: ({ node, ...props }: any) => (
+                        <img
+                          style={{
+                            maxWidth: "100%",
+                            height: "auto",
+                            borderRadius: "6px",
+                            marginTop: "1em",
+                            marginBottom: "1em",
+                            display: "block",
                           }}
                           {...props}
                         />
