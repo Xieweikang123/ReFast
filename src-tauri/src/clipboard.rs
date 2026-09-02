@@ -887,6 +887,137 @@ pub mod monitor {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 生成唯一的临时目录
+        fn test_dir(name: &str) -> PathBuf {
+            let dir = std::env::temp_dir().join(format!(
+                "refast-clip-test-{}-{}-{}",
+                name,
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        /// 构造一个 2x2 的 24 位 DIB（BITMAPINFOHEADER + 像素），像素颜色可指定
+        fn make_dib(width: i32, height: i32) -> Vec<u8> {
+            let bit_count: u16 = 24;
+            let row_size = ((width * bit_count as i32 + 31) / 32 * 4) as usize;
+            let header_size = std::mem::size_of::<BITMAPINFOHEADER>();
+            let mut dib = vec![0u8; header_size + row_size * height as usize];
+
+            // BITMAPINFOHEADER：biSize/biWidth/biHeight/biPlanes/biBitCount
+            let header = &mut dib[0..header_size];
+            header[0..4].copy_from_slice(&(header_size as u32).to_le_bytes());
+            header[4..8].copy_from_slice(&(width as u32).to_le_bytes());
+            header[8..12].copy_from_slice(&(height as u32).to_le_bytes()); // 正值 = bottom-up
+            header[12..14].copy_from_slice(&1u16.to_le_bytes());
+            header[14..16].copy_from_slice(&bit_count.to_le_bytes());
+
+            // 填充可辨识的像素：每行 BGR 值随 y 变化
+            for y in 0..height as usize {
+                for x in 0..width as usize {
+                    let off = y * row_size + x * 3;
+                    dib[header_size + off] = (y * 50) as u8; // B
+                    dib[header_size + off + 1] = (x * 50) as u8; // G
+                    dib[header_size + off + 2] = 200; // R
+                }
+            }
+            dib
+        }
+
+        /// 核心回归：DIB → PNG 保存管线（截图入库的关键路径）
+        #[test]
+        fn save_dib_snapshot_produces_png() {
+            let dir = test_dir("png");
+            let dib = make_dib(2, 2);
+            let hash = hash_dib_snapshot(&dib).expect("哈希应成功");
+
+            let path = save_dib_snapshot_as_png(&dib, &hash, &dir).expect("保存应成功");
+            let file = std::path::Path::new(&path);
+            assert!(file.exists(), "PNG 文件应存在: {path}");
+            // PNG magic number
+            let bytes = std::fs::read(file).unwrap();
+            assert_eq!(&bytes[0..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+            assert!(bytes.len() > 8, "PNG 不应为空文件");
+        }
+
+        /// 回归：相同 DIB 再次保存应复用已有文件（去重路径，不重写）
+        #[test]
+        fn save_dib_snapshot_dedups() {
+            let dir = test_dir("dedup");
+            let dib = make_dib(3, 3);
+            let hash = hash_dib_snapshot(&dib).unwrap();
+
+            let p1 = save_dib_snapshot_as_png(&dib, &hash, &dir).unwrap();
+            let mtime1 = std::fs::metadata(&p1).unwrap().modified().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let p2 = save_dib_snapshot_as_png(&dib, &hash, &dir).unwrap();
+            let mtime2 = std::fs::metadata(&p2).unwrap().modified().unwrap();
+
+            assert_eq!(p1, p2, "同内容应返回同一路径");
+            assert_eq!(mtime1, mtime2, "去重路径不应重写文件");
+        }
+
+        /// 回归：不同 DIB 内容 → 不同哈希 → 不同文件（去重不误伤）
+        #[test]
+        fn hash_distinguishes_content() {
+            let d1 = make_dib(2, 2);
+            let mut d2 = make_dib(2, 2);
+            d2[40] ^= 0xFF; // 改一个像素字节
+
+            let h1 = hash_dib_snapshot(&d1).unwrap();
+            let h2 = hash_dib_snapshot(&d2).unwrap();
+            assert_ne!(h1, h2, "内容不同哈希必须不同");
+            assert_eq!(h1.len(), 16, "哈希应为 16 字符截断形式");
+        }
+
+        /// 回归：畸形 DIB（截断/坏尺寸/坏位深）应报错而非 panic 或写坏文件
+        #[test]
+        fn save_rejects_malformed_dib() {
+            let dir = test_dir("malformed");
+
+            // 空数据
+            assert!(save_dib_snapshot_as_png(&[], "abc", &dir).is_err());
+            // 数据小于 header
+            assert!(save_dib_snapshot_as_png(&[0u8; 10], "abd", &dir).is_err());
+            // 声称 100x100 但只有 header
+            let mut lying = vec![0u8; std::mem::size_of::<BITMAPINFOHEADER>()];
+            lying[4..8].copy_from_slice(&100u32.to_le_bytes());
+            lying[8..12].copy_from_slice(&100u32.to_le_bytes());
+            lying[14..16].copy_from_slice(&24u16.to_le_bytes());
+            assert!(save_dib_snapshot_as_png(&lying, "abe", &dir).is_err());
+            // 位深过低（8 位调色板格式，不支持）
+            let mut pal = vec![0u8; 40 + 8];
+            pal[14..16].copy_from_slice(&8u16.to_le_bytes());
+            pal[4..8].copy_from_slice(&1i32.to_le_bytes());
+            pal[8..12].copy_from_slice(&1i32.to_le_bytes());
+            assert!(save_dib_snapshot_as_png(&pal, "abf", &dir).is_err());
+        }
+
+        /// 回归：负高度（top-down DIB，某些截图工具产生）也应正确处理
+        #[test]
+        fn save_handles_negative_height() {
+            let dir = test_dir("negative_h");
+            let dib = make_dib(2, 2);
+            // 翻转 biHeight 符号模拟 top-down
+            let mut topdown = dib.clone();
+            let h_val = i32::from_le_bytes([dib[8], dib[9], dib[10], dib[11]]);
+            topdown[8..12].copy_from_slice(&(-h_val).to_le_bytes());
+
+            let hash = hash_dib_snapshot(&topdown).unwrap();
+            let path = save_dib_snapshot_as_png(&topdown, &hash, &dir);
+            assert!(path.is_ok(), "top-down DIB 应可保存（abs(height) 处理）");
+        }
+    }
 }
 
 #[cfg(not(target_os = "windows"))]

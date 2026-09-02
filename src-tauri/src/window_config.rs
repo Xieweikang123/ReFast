@@ -1,4 +1,4 @@
-use crate::db;
+﻿use crate::db;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -13,7 +13,7 @@ pub const MARKDOWN_EDITOR_WINDOW_KEY: &str = "markdown-editor-window";
 /// 位置是低频写、高频读的数据 —— 读路径走缓存，彻底移出唤起热路径。
 static LAUNCHER_POSITION_CACHE: Mutex<Option<Option<WindowPosition>>> = Mutex::new(None);
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct WindowPosition {
     pub x: i32,
     pub y: i32,
@@ -226,7 +226,10 @@ fn maybe_migrate_from_json(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_window_position_visible, MonitorRect};
+    use super::{is_window_position_visible, MonitorRect, WindowPosition};
+    use super::{
+        get_launcher_position, save_launcher_position, LAUNCHER_POSITION_CACHE,
+    };
 
     fn primary() -> MonitorRect {
         MonitorRect {
@@ -258,6 +261,122 @@ mod tests {
         };
         assert!(is_window_position_visible(2000, 40, &[primary(), secondary]));
     }
+
+    // ===== launcher 位置缓存回归（死锁修复：唤起路径零 DB 访问） =====
+    // ⚠️ LAUNCHER_POSITION_CACHE 是进程级单例，缓存相关测试必须与
+    // db 测试一样避免并行互相污染：通过下方串行锁 + 每测前后 reset 保证。
+
+    /// 生成唯一的临时目录
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "refast-wincfg-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 缓存相关测试的串行锁（缓存是全局单例，并行测试会互相污染）
+
+
+    /// 清空位置缓存（测试间隔离；缓存是进程级单例）
+    fn reset_position_cache() {
+        *LAUNCHER_POSITION_CACHE.lock().unwrap() = None;
+    }
+
+    /// 回归：save 后 get 应立即命中缓存返回新位置（唤起路径不回源 DB）
+    #[test]
+    fn save_then_get_uses_cache() {
+        let _serial = crate::db::test_global_serial_lock();
+        reset_position_cache();
+        let dir = test_dir("cache_roundtrip");
+
+        save_launcher_position(&dir, 123, 456).expect("保存应成功");
+        let pos = get_launcher_position(&dir);
+        assert_eq!(pos, Some(WindowPosition { x: 123, y: 456 }));
+    }
+
+    /// 核心回归（死锁场景模拟）：缓存预热后，即使 DB 锁被占死，
+    /// get_launcher_position 也必须成功返回 —— 这是唤起链零 DB 依赖的保证。
+    #[test]
+    fn cache_hit_avoids_db_when_db_locked() {
+        let _serial = crate::db::test_global_serial_lock();
+        reset_position_cache();
+        let dir = test_dir("cache_no_db");
+
+        // 预热缓存
+        save_launcher_position(&dir, 77, 88).expect("保存应成功");
+
+        // 占死 SHARED_CONNECTION（模拟持锁者卡住）
+        let held = crate::db::test_lock_shared_connection();
+
+        // 缓存命中路径不应触碰 DB 锁 → 不超时不阻塞，立即返回
+        let start = std::time::Instant::now();
+        let pos = get_launcher_position(&dir);
+        let elapsed = start.elapsed();
+
+        assert_eq!(pos, Some(WindowPosition { x: 77, y: 88 }));
+        assert!(
+            elapsed < std::time::Duration::from_millis(100),
+            "缓存命中应即时返回（实际 {:?}），若接近 3s 说明回源了 DB（锁死风险回归）",
+            elapsed
+        );
+        drop(held);
+        reset_position_cache();
+    }
+
+    /// 回归：缓存未命中且 DB 可用时，从 DB 加载并填充缓存
+    #[test]
+    fn cache_miss_loads_from_db() {
+        let _serial = crate::db::test_global_serial_lock();
+        reset_position_cache();
+        let dir = test_dir("cache_miss");
+
+        // 直接写 DB（绕过缓存）
+        {
+            let conn = crate::db::get_connection(&dir).expect("DB 应可用");
+            conn.execute(
+                "INSERT OR REPLACE INTO window_config (key, x, y) VALUES ('launcher', 10, 20)",
+                [],
+            )
+            .expect("写入应成功");
+        }
+
+        // 缓存空 → 应回源加载
+        let pos = get_launcher_position(&dir);
+        assert_eq!(pos, Some(WindowPosition { x: 10, y: 20 }));
+
+        // 再清空缓存 + 删除 DB 记录 → 应返回 None（不残留旧缓存）
+        reset_position_cache();
+        {
+            let conn = crate::db::get_connection(&dir).unwrap();
+            conn.execute("DELETE FROM window_config WHERE key = 'launcher'", [])
+                .unwrap();
+        }
+        assert_eq!(
+            get_launcher_position(&dir),
+            None,
+            "DB 无记录且缓存为空时应返回 None"
+        );
+        reset_position_cache();
+    }
+
+    /// 回归：全新 DB（无任何记录）首次读取返回 None 且不 panic
+    #[test]
+    fn fresh_db_returns_none() {
+        let _serial = crate::db::test_global_serial_lock();
+        reset_position_cache();
+        let dir = test_dir("fresh");
+        assert_eq!(get_launcher_position(&dir), None);
+        reset_position_cache();
+    }
 }
+
+
 
 

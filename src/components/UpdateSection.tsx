@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
 import { ReleaseNotesMarkdown } from "./ReleaseNotesMarkdown";
 import { tauriApi } from "../api/tauri";
-import type { UpdateCheckResult, DownloadProgress } from "../types";
+import type {
+  UpdateCheckResult,
+  DownloadProgress,
+  UpdateDownloadFinishedPayload,
+} from "../types";
 import { formatDateString } from "../utils/dateUtils";
 
 interface UpdateSectionProps {
@@ -17,6 +21,48 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [ignoredVersion, setIgnoredVersion] = useState<string | null>(null);
+  // 下载完成后弹出的安装确认对话框同一时间只弹一个
+  const installConfirmShowingRef = useRef(false);
+
+  // 应用下载完成的统一处理（下载结束/窗口重开后恢复时共用）
+  const handleDownloadFinished = async (filePath: string) => {
+    if (installConfirmShowingRef.current) return;
+    installConfirmShowingRef.current = true;
+    try {
+      const userChoice = await confirm(
+        `是否立即安装更新？\n\n点击"是"将启动安装程序并关闭当前应用。\n点击"否"可稍后手动安装。`,
+        {
+          title: "下载完成",
+          kind: "info",
+          okLabel: "立即安装",
+          cancelLabel: "稍后安装",
+        }
+      );
+
+      if (userChoice) {
+        try {
+          await tauriApi.installUpdate(filePath);
+          await message("安装程序已启动，应用即将退出。", {
+            title: "提示",
+            kind: "info",
+          });
+          await tauriApi.quitApp();
+        } catch (error) {
+          console.error("启动安装程序失败:", error);
+          await message(`启动安装程序失败: ${error}\n\n已为您打开文件所在目录，请手动运行安装程序。`, {
+            title: "错误",
+            kind: "error",
+          });
+          await tauriApi.revealInFolder(filePath);
+        }
+      } else {
+        // 稍后安装：清除后端完成状态，避免重开窗口重复提示
+        await tauriApi.clearUpdateDownloadStatus().catch(() => {});
+      }
+    } finally {
+      installConfirmShowingRef.current = false;
+    }
+  };
 
   // 页面加载时自动检查更新
   useEffect(() => {
@@ -52,23 +98,56 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
     return () => clearTimeout(timer);
   }, []);
 
-  // 监听下载进度
+  // 监听下载进度 + 下载结束事件
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
 
     const setupListener = async () => {
-      unlisten = await listen<DownloadProgress>("download-progress", (event) => {
-        setDownloadProgress(event.payload);
-      });
+      unlisteners.push(
+        await listen<DownloadProgress>("download-progress", (event) => {
+          setDownloadProgress(event.payload);
+        })
+      );
+      unlisteners.push(
+        await listen<UpdateDownloadFinishedPayload>("update-download-finished", (event) => {
+          const payload = event.payload;
+          if (payload.success && payload.file_path) {
+            // 下载完成：无论当前窗口是否发起了下载都弹出安装确认
+            handleDownloadFinished(payload.file_path);
+          }
+          setIsDownloading(false);
+          setDownloadProgress(null);
+        })
+      );
     };
 
     setupListener();
 
     return () => {
-      if (unlisten) {
-        unlisten();
+      unlisteners.forEach((fn) => fn());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 挂载时查询后端下载状态：恢复进行中的进度条，或补弹"下载完成"安装提示
+  useEffect(() => {
+    const restoreDownloadState = async () => {
+      try {
+        const status = await tauriApi.getUpdateDownloadStatus();
+        if (status.status === "downloading" && status.progress) {
+          setIsDownloading(true);
+          setDownloadProgress(status.progress);
+        } else if (status.status === "completed" && status.file_path) {
+          // 窗口关闭期间下载已完成：补弹安装提示
+          handleDownloadFinished(status.file_path);
+        }
+      } catch (error) {
+        console.error("恢复下载状态失败:", error);
       }
     };
+
+    restoreDownloadState();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleCheckUpdate = async () => {
@@ -108,52 +187,31 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
       setIsDownloading(true);
       setDownloadProgress(null);
 
-      // 调用后端下载
+      // 调用后端下载（后端去重：同 URL 已在下载时复用该任务）
       const filePath = await tauriApi.downloadUpdate(updateInfo.download_url);
-      
-      // 下载完成，使用 Tauri 原生对话框询问用户是否立即安装
-      const userChoice = await confirm(
-        `是否立即安装更新？\n\n点击"是"将启动安装程序并关闭当前应用。\n点击"否"可稍后手动安装。`,
-        {
-          title: "下载完成",
-          kind: "info",
-          okLabel: "立即安装",
-          cancelLabel: "稍后安装",
-        }
-      );
-      
-      if (userChoice) {
-        // 用户确认后才执行安装
-        try {
-          // 先启动安装程序
-          await tauriApi.installUpdate(filePath);
-          
-          // 显示提示信息
-          await message("安装程序已启动，应用即将退出。", {
-            title: "提示",
-            kind: "info",
-          });
-          
-          // 退出应用
-          await tauriApi.quitApp();
-        } catch (error) {
-          console.error("启动安装程序失败:", error);
-          await message(`启动安装程序失败: ${error}\n\n已为您打开文件所在目录，请手动运行安装程序。`, {
-            title: "错误",
-            kind: "error",
-          });
-          await tauriApi.revealInFolder(filePath);
-        }
-      } else {
-        // 用户选择稍后安装，打开文件所在目录
-        await tauriApi.revealInFolder(filePath);
-      }
+
+      // 下载完成，统一走安装确认流程
+      await handleDownloadFinished(filePath);
     } catch (error) {
-      console.error("下载失败:", error);
-      alert(`下载失败: ${error}\n\n请尝试使用浏览器下载或前往 GitHub 手动下载。`);
+      // 用户主动取消下载时不弹错误
+      if (String(error).includes("取消")) {
+        console.log("下载已取消");
+      } else {
+        console.error("下载失败:", error);
+        alert(`下载失败: ${error}\n\n请尝试使用浏览器下载或前往 GitHub 手动下载。`);
+      }
     } finally {
       setIsDownloading(false);
       setDownloadProgress(null);
+    }
+  };
+
+  // 取消当前下载
+  const handleCancelDownload = async () => {
+    try {
+      await tauriApi.cancelUpdateDownload();
+    } catch (error) {
+      console.error("取消下载失败:", error);
     }
   };
 
@@ -276,9 +334,17 @@ export function UpdateSection({ currentVersion }: UpdateSectionProps) {
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-gray-700 font-medium">正在下载更新...</span>
-                  <span className="text-blue-600 font-semibold">
-                    {downloadProgress.percentage.toFixed(1)}%
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-blue-600 font-semibold">
+                      {downloadProgress.percentage.toFixed(1)}%
+                    </span>
+                    <button
+                      onClick={handleCancelDownload}
+                      className="text-xs text-gray-500 hover:text-red-600 transition-colors"
+                    >
+                      取消
+                    </button>
+                  </div>
                 </div>
                 
                 {/* 进度条 */}

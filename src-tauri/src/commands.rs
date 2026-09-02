@@ -1265,15 +1265,17 @@ pub fn hide_launcher(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn add_file_to_history(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    // ⚠️ 死锁修复（第三次挂死 dump 实锤）：原为 sync command，主线程执行
+    // open_history::add_item → get_connection 抢 SHARED_CONNECTION 锁，
+    // 锁被占时主线程事件循环整体悬挂（表现为「点击结果后未响应」）。
+    // DB 操作移到 spawn_blocking，配合 db 层 3s 锁超时，主线程永不被拖死。
     let app_data_dir = get_app_data_dir(&app)?;
-
-    // Write to open_history instead of file_history
-    eprintln!("[commands::add_file_to_history] 被调用: {}", path);
-    open_history::add_item(path, &app_data_dir)?;
-    eprintln!("[commands::add_file_to_history] 完成");
-
-    Ok(())
+    tauri::async_runtime::spawn_blocking(move || {
+        open_history::add_item(path, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("add_file_to_history join error: {}", e))?
 }
 
 #[tauri::command]
@@ -4058,27 +4060,44 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn record_open_history(key: String, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn record_open_history(key: String, app: tauri::AppHandle) -> Result<(), String> {
+    // 打开文件/URL 的高频写路径，DB 操作移出主线程（同 add_file_to_history）
     let app_data_dir = get_app_data_dir(&app)?;
-    open_history::record_open(key, &app_data_dir)
+    tauri::async_runtime::spawn_blocking(move || {
+        open_history::record_open(key, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("record_open_history join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_open_history(app: tauri::AppHandle) -> Result<std::collections::HashMap<String, u64>, String> {
+pub async fn get_open_history(app: tauri::AppHandle) -> Result<std::collections::HashMap<String, u64>, String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    open_history::get_all_history(&app_data_dir)
+    tauri::async_runtime::spawn_blocking(move || {
+        open_history::get_all_history(&app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("get_open_history join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn delete_open_history(key: String, app: tauri::AppHandle) -> Result<(), String> {
+pub async fn delete_open_history(key: String, app: tauri::AppHandle) -> Result<(), String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    open_history::delete_open_history(key, &app_data_dir)
+    tauri::async_runtime::spawn_blocking(move || {
+        open_history::delete_open_history(key, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("delete_open_history join error: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_open_history_item(key: String, app: tauri::AppHandle) -> Result<Option<open_history::OpenHistoryItem>, String> {
+pub async fn get_open_history_item(key: String, app: tauri::AppHandle) -> Result<Option<open_history::OpenHistoryItem>, String> {
     let app_data_dir = get_app_data_dir(&app)?;
-    open_history::check_path_exists(&key, &app_data_dir)
+    tauri::async_runtime::spawn_blocking(move || {
+        open_history::check_path_exists(&key, &app_data_dir)
+    })
+    .await
+    .map_err(|e| format!("get_open_history_item join error: {}", e))?
 }
 
 #[tauri::command]
@@ -5934,6 +5953,52 @@ pub struct DownloadProgress {
     pub speed: String, // 下载速度（如 "2.5 MB/s"）
 }
 
+/// 更新包下载状态
+#[derive(Debug, Clone)]
+enum UpdateDownloadStatus {
+    Downloading,
+    Completed,
+    Failed(String),
+}
+
+/// 全局更新包下载状态（跨窗口存活：应用中心窗口关闭后下载继续，重开后可查询恢复）
+struct UpdateDownloadState {
+    url: String,
+    file_path: PathBuf,
+    status: UpdateDownloadStatus,
+    progress: DownloadProgress,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+static UPDATE_DOWNLOAD_STATE: LazyLock<Arc<Mutex<Option<UpdateDownloadState>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(None)));
+
+/// 安全地获取更新下载状态锁（自动处理 poisoned lock）
+fn lock_update_download_state() -> MutexGuard<'static, Option<UpdateDownloadState>> {
+    UPDATE_DOWNLOAD_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 更新包下载状态查询结果（发给前端）
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateDownloadStatusResult {
+    /// idle | downloading | completed | failed
+    pub status: String,
+    pub url: Option<String>,
+    pub file_path: Option<String>,
+    pub progress: Option<DownloadProgress>,
+    pub error: Option<String>,
+}
+
+/// 更新包下载完成事件负载
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateDownloadFinishedPayload {
+    pub success: bool,
+    pub file_path: Option<String>,
+    pub error: Option<String>,
+}
+
 /// 通用下载函数
 /// 
 /// # 参数
@@ -5942,12 +6007,14 @@ pub struct DownloadProgress {
 /// - `save_path`: 保存路径
 /// - `progress_event`: 进度事件名称（可选）
 /// - `user_agent`: User-Agent（可选，默认为 "ReFast-Downloader/1.0"）
+/// - `cancel_flag`: 取消标志（可选，被置位时中止下载并删除半成品文件）
 async fn download_file(
     app_handle: &tauri::AppHandle,
     download_url: &str,
     save_path: &std::path::Path,
     progress_event: Option<&str>,
     user_agent: Option<&str>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(), String> {
     use std::io::Write;
     use std::time::Instant;
@@ -5986,6 +6053,14 @@ async fn download_file(
     let mut last_update_time = Instant::now();
     
     while let Some(chunk) = stream.next().await {
+        // 检查取消标志
+        if let Some(flag) = &cancel_flag {
+            if flag.load(Ordering::Relaxed) {
+                drop(file);
+                let _ = std::fs::remove_file(save_path);
+                return Err("下载已取消".to_string());
+            }
+        }
         let chunk = chunk.map_err(|e| format!("下载数据失败: {}", e))?;
         file.write_all(&chunk)
             .map_err(|e| format!("写入文件失败: {}", e))?;
@@ -6044,6 +6119,10 @@ async fn download_file(
 }
 
 /// 下载更新文件
+/// 
+/// 全局仅允许一个更新下载任务：
+/// - 同一 URL 已在下载时，不重复发起，直接等待复用该次下载结果（避免并发写坏临时文件）
+/// - 应用中心窗口关闭不会中断下载；窗口重开后可通过 get_update_download_status 恢复进度
 #[tauri::command]
 pub async fn download_update(
     app_handle: tauri::AppHandle,
@@ -6056,18 +6135,202 @@ pub async fn download_update(
         .last()
         .unwrap_or("ReFast-update.msi");
     let file_path = temp_dir.join(file_name);
-    
-    // 使用通用下载函数
-    download_file(
+
+    // 登记/复用检查（决策块：结束时必须释放锁，任何 guard 不得跨 .await）
+    #[allow(dead_code)]
+    enum DownloadDecision {
+        Reuse(PathBuf),
+        Proceed(PathBuf),
+    }
+    let decision = {
+        let mut state = lock_update_download_state();
+        if let Some(existing) = state.as_ref() {
+            if existing.url == download_url {
+                match existing.status {
+                    // 已有同 URL 的完成记录：直接复用（文件仍在临时目录）
+                    UpdateDownloadStatus::Completed => {
+                        DownloadDecision::Reuse(existing.file_path.clone())
+                    }
+                    UpdateDownloadStatus::Downloading => DownloadDecision::Reuse(existing.file_path.clone()),
+                    // 上次失败：清掉旧记录，重新下载
+                    UpdateDownloadStatus::Failed(_) => {
+                        *state = None;
+                        DownloadDecision::Proceed(file_path.clone())
+                    }
+                }
+            } else {
+                // 不同 URL 的旧记录（理论上极少出现）：覆盖
+                *state = None;
+                DownloadDecision::Proceed(file_path.clone())
+            }
+        } else {
+            DownloadDecision::Proceed(file_path.clone())
+        }
+    };
+
+    match decision {
+        // 已有同 URL 的完成/进行中记录：走复用逻辑
+        DownloadDecision::Reuse(ref path) => return Ok(path.to_string_lossy().to_string()),
+        DownloadDecision::Proceed(_) => {}
+    }
+
+    // 等待已有进行中的同 URL 下载结束并复用其结果（无锁轮询）
+    {
+        let waiting = {
+            let state = lock_update_download_state();
+            state
+                .as_ref()
+                .map(|s| s.url == download_url && matches!(s.status, UpdateDownloadStatus::Downloading))
+                .unwrap_or(false)
+        };
+        if waiting {
+            loop {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let state = lock_update_download_state();
+                match state.as_ref() {
+                    Some(s) if s.url == download_url => match s.status {
+                        UpdateDownloadStatus::Downloading => {}
+                        UpdateDownloadStatus::Completed => {
+                            return Ok(s.file_path.to_string_lossy().to_string());
+                        }
+                        UpdateDownloadStatus::Failed(ref e) => return Err(e.clone()),
+                    },
+                    _ => return Err("下载任务已消失".to_string()),
+                }
+            }
+        }
+    }
+
+    // 登记新的下载任务
+    let cancel_flag = {
+        let mut state = lock_update_download_state();
+        let flag = Arc::new(AtomicBool::new(false));
+        *state = Some(UpdateDownloadState {
+            url: download_url.clone(),
+            file_path: file_path.clone(),
+            status: UpdateDownloadStatus::Downloading,
+            progress: DownloadProgress {
+                downloaded: 0,
+                total: 0,
+                percentage: 0.0,
+                speed: String::new(),
+            },
+            cancel_flag: flag.clone(),
+        });
+        flag
+    };
+
+    // 使用通用下载函数（带取消标志），完成后更新全局状态并发事件
+    let result = download_file(
         &app_handle,
         &download_url,
         &file_path,
         Some("download-progress"),
         Some("ReFast-Updater/1.0"),
-    ).await?;
+        Some(cancel_flag.clone()),
+    ).await;
+
+    let finished_payload = match &result {
+        Ok(()) => {
+            let mut state = lock_update_download_state();
+            if let Some(s) = state.as_mut() {
+                if s.url == download_url {
+                    s.status = UpdateDownloadStatus::Completed;
+                    s.progress.percentage = 100.0;
+                    s.progress.speed = "完成".to_string();
+                }
+            }
+            UpdateDownloadFinishedPayload {
+                success: true,
+                file_path: Some(file_path.to_string_lossy().to_string()),
+                error: None,
+            }
+        }
+        Err(e) => {
+            let cancelled = cancel_flag.load(Ordering::Relaxed);
+            {
+                let mut state = lock_update_download_state();
+                if let Some(s) = state.as_mut() {
+                    if s.url == download_url {
+                        if cancelled {
+                            // 用户主动取消：清空状态
+                            *state = None;
+                        } else {
+                            s.status = UpdateDownloadStatus::Failed(e.clone());
+                        }
+                    }
+                }
+            }
+            if cancelled {
+                // 取消不算失败，静默返回
+                return Err("下载已取消".to_string());
+            }
+            UpdateDownloadFinishedPayload {
+                success: false,
+                file_path: None,
+                error: Some(e.clone()),
+            }
+        }
+    };
+
+    // 广播下载结束事件（成功/失败），窗口重开后监听此事件也能收到提示
+    let _ = app_handle.emit("update-download-finished", &finished_payload);
+
+    result?;
     
     // 返回文件路径
     Ok(file_path.to_string_lossy().to_string())
+}
+
+/// 查询更新包下载状态（应用中心窗口重开后恢复进度用）
+#[tauri::command]
+pub fn get_update_download_status() -> Result<UpdateDownloadStatusResult, String> {
+    let state = lock_update_download_state();
+    let result = match state.as_ref() {
+        Some(s) => {
+            let (status, error) = match s.status {
+                UpdateDownloadStatus::Downloading => ("downloading", None),
+                UpdateDownloadStatus::Completed => ("completed", None),
+                UpdateDownloadStatus::Failed(ref e) => ("failed", Some(e.clone())),
+            };
+            UpdateDownloadStatusResult {
+                status: status.to_string(),
+                url: Some(s.url.clone()),
+                file_path: Some(s.file_path.to_string_lossy().to_string()),
+                progress: Some(s.progress.clone()),
+                error,
+            }
+        }
+        None => UpdateDownloadStatusResult {
+            status: "idle".to_string(),
+            url: None,
+            file_path: None,
+            progress: None,
+            error: None,
+        },
+    };
+    Ok(result)
+}
+
+/// 取消进行中的更新下载
+#[tauri::command]
+pub fn cancel_update_download() -> Result<bool, String> {
+    let state = lock_update_download_state();
+    Ok(match state.as_ref() {
+        Some(s) if matches!(s.status, UpdateDownloadStatus::Downloading) => {
+            s.cancel_flag.store(true, Ordering::Relaxed);
+            true
+        }
+        _ => false,
+    })
+}
+
+/// 清除更新包下载状态（用户选择"稍后安装"或忽略后调用，避免重开窗口重复提示）
+#[tauri::command]
+pub fn clear_update_download_status() -> Result<(), String> {
+    let mut state = lock_update_download_state();
+    *state = None;
+    Ok(())
 }
 
 /// 安装更新（启动安装程序）- 不自动退出应用

@@ -228,6 +228,23 @@ export interface DownloadProgress {
   speed: string;
 }
 
+/** 后端更新包下载状态（跨窗口存活，窗口重开后查询恢复） */
+export interface UpdateDownloadStatusResult {
+  /** idle | downloading | completed | failed */
+  status: string;
+  url: string | null;
+  file_path: string | null;
+  progress: DownloadProgress | null;
+  error: string | null;
+}
+
+/** 更新包下载结束事件负载 */
+export interface UpdateDownloadFinishedPayload {
+  success: boolean;
+  file_path: string | null;
+  error: string | null;
+}
+
 export interface DatabaseHealthStatus {
   accessible: boolean;
   error_message?: string | null;

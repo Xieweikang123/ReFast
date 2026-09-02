@@ -18,6 +18,7 @@ import type {
   DatabaseBackupList,
   PluginUsage,
   UpdateCheckResult,
+  UpdateDownloadStatusResult,
   DatabaseHealthStatus,
   ClipboardItem,
   OpenHistoryItem,
@@ -691,6 +692,21 @@ export const tauriApi = {
   // Download update API
   async downloadUpdate(downloadUrl: string): Promise<string> {
     return invoke("download_update", { downloadUrl });
+  },
+
+  // 查询后端更新包下载状态（窗口重开后恢复进度/完成提示）
+  async getUpdateDownloadStatus(): Promise<UpdateDownloadStatusResult> {
+    return invoke("get_update_download_status");
+  },
+
+  // 取消进行中的更新下载
+  async cancelUpdateDownload(): Promise<boolean> {
+    return invoke("cancel_update_download");
+  },
+
+  // 清除更新包下载状态（稍后安装/忽略后调用）
+  async clearUpdateDownloadStatus(): Promise<void> {
+    return invoke("clear_update_download_status");
   },
 
   // Install update API

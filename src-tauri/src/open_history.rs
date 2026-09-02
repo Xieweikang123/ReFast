@@ -1,4 +1,4 @@
-use crate::db;
+﻿use crate::db;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -773,4 +773,131 @@ pub fn check_path_exists(key: &str, app_data_dir: &Path) -> Result<Option<OpenHi
 
     Ok(state.get(key).cloned())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 生成唯一的临时目录
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "refast-ophist-test-{}-{}-{}",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// OPEN_HISTORY 内存缓存是进程级单例，测试串行 + 前后清空
+
+
+    fn clear_state() {
+        lock_history().unwrap().clear();
+    }
+
+    /// 回归：首次 add_item 写入，再次 add 计数递增（UPSERT 语义）
+    #[test]
+    fn add_item_upsert_increments_count() {
+        let _serial = crate::db::test_global_serial_lock();
+        let dir = test_dir("upsert");
+        clear_state();
+
+        let target = dir.join("goexcel.exe");
+        std::fs::write(&target, b"x").unwrap();
+        let key = target.to_string_lossy().to_string();
+
+        add_item(key.clone(), &dir).expect("首次写入应成功");
+        add_item(key.clone(), &dir).expect("重复写入应成功");
+
+        let state = lock_history().unwrap();
+        let item = state.get(&key).expect("应存在");
+        assert_eq!(item.use_count, 2, "两次打开计数应为 2");
+        drop(state);
+        clear_state();
+    }
+
+    /// 核心业务回归：URL 再次打开时保留用户备注（name 不被域名覆盖）
+    #[test]
+    fn url_reopen_preserves_remark() {
+        let _serial = crate::db::test_global_serial_lock();
+        let dir = test_dir("url_remark");
+        clear_state();
+
+        add_item("https://example.com".to_string(), &dir).unwrap();
+
+        // 模拟用户设置备注（直接改内存缓存里的 name）
+        {
+            let mut state = lock_history().unwrap();
+            if let Some(item) = state.get_mut("https://example.com") {
+                item.name = Some("custom remark".to_string());
+            }
+        }
+
+        // 再次打开
+        add_item("https://example.com".to_string(), &dir).unwrap();
+
+        let state = lock_history().unwrap();
+        let item = state.get("https://example.com").unwrap();
+        assert_eq!(
+            item.name.as_deref(),
+            Some("custom remark"),
+            "URL 再次打开时备注必须保留"
+        );
+        drop(state);
+        clear_state();
+    }
+
+    /// 回归：不存在的路径 add_item 应报错（不写入垃圾记录）
+    #[test]
+    fn add_item_rejects_nonexistent_path() {
+        let _serial = crate::db::test_global_serial_lock();
+        let dir = test_dir("nonexistent");
+        clear_state();
+
+        let result = add_item(r"C:\definitely\not\exist\here.dll".to_string(), &dir);
+        assert!(result.is_err(), "不存在的路径应返回 Err");
+        assert!(lock_history().unwrap().is_empty(), "不应写入任何记录");
+        clear_state();
+    }
+
+    /// 并发回归（第三次挂死场景）：多线程同时 add_item，全部成功且计数正确
+    #[test]
+    fn concurrent_add_item_no_deadlock() {
+        let _serial = crate::db::test_global_serial_lock();
+        let dir = test_dir("concurrent");
+        clear_state();
+
+        let target = dir.join("target.txt");
+        std::fs::write(&target, b"x").unwrap();
+        let target_str = target.to_string_lossy().to_string();
+
+        let dir = std::sync::Arc::new(dir);
+        let key = std::sync::Arc::new(target_str.clone());
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let dir = dir.clone();
+            let key = key.clone();
+            handles.push(std::thread::spawn(move || {
+                add_item((*key).clone(), &dir)
+                    .expect("并发 add_item 应成功（DB 锁超时机制下最坏是可重试失败）");
+            }));
+        }
+        for h in handles {
+            h.join().expect("工作线程不应 panic");
+        }
+
+        let state = lock_history().unwrap();
+        let item = state.get(&target_str).expect("应存在");
+        assert_eq!(item.use_count, 6, "6 次并发打开计数应为 6");
+        drop(state);
+        clear_state();
+    }
+}
+
+
 
