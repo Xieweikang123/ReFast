@@ -193,15 +193,16 @@ export async function revealInFolder(
       ? await getRevealPath(target.path)
       : target.path;
 
-    console.log("Revealing in folder:", path);
     // 为应用、文件和 Everything 结果都提供"打开所在文件夹"
     if (
       target.type === "file" ||
       target.type === "everything" ||
       target.type === "app"
     ) {
-      // 对于文件类型，先检查文件是否存在
-      if (target.type === "file" || target.type === "everything") {
+      // 对所有类型（含 app）先检查文件是否存在；不存在则删除文件历史记录
+      // 跳过非本地文件系统路径（UWP shell: / ms-settings:）
+      const isNonLocal = path.startsWith("shell:") || path.startsWith("ms-settings:");
+      if (!isNonLocal) {
         const pathItem = await tauriApi.checkPathExists(path);
         if (!pathItem) {
           // 文件不存在，自动删除历史记录

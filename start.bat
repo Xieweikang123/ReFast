@@ -11,6 +11,11 @@ if not exist node_modules (
     )
 )
 
+echo [START] Killing existing ReFast dev processes...
+taskkill /F /IM re-fast.exe 2>nul
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr :1420 ^| findstr LISTENING') do (
+    taskkill /F /PID %%a 2>nul
+)
 echo [START] Launching ReFast dev mode...
 call npm run dev:tauri
 

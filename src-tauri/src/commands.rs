@@ -134,6 +134,46 @@ pub fn get_app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .join("recordings"))
 }
 
+/// 当本地文件路径已不存在时，从应用索引（内存缓存 + 磁盘缓存）移除同路径的失效旧条目。
+/// 供 `extract_icon_from_path`、`reveal_in_folder` 等检测到失效路径的入口共用，
+/// 让「拦新增」与「清存量」一步到位。返回是否确实移除了一条。
+fn purge_missing_app_from_cache(app: &tauri::AppHandle, file_path: &str) -> bool {
+    let removed = {
+        let cache = get_app_cache();
+        let mut cache_guard = lock_app_cache_safe(&cache);
+        match cache_guard.as_mut() {
+            Some(apps_arc) => {
+                let mut apps = (**apps_arc).clone();
+                let before = apps.len();
+                apps.retain(|a| a.path != file_path);
+                if apps.len() != before {
+                    *apps_arc = Arc::new(apps.clone());
+                    drop(cache_guard);
+                    if let Ok(app_data_dir) = get_app_data_dir(app) {
+                        let _ = app_search::windows::save_cache(&app_data_dir, &apps);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    };
+    if removed {
+        eprintln!("[purge_missing_app_from_cache] 已从应用索引移除失效条目: {}", file_path);
+        // 通知前端同步应用索引缓存，让搜索结果立即刷新（否则仍显示旧列表）
+        let updated: Vec<app_search::AppInfo> = {
+            let cache = get_app_cache();
+            let guard = lock_app_cache_safe(&cache);
+            guard.as_ref().map(|a| (**a).clone()).unwrap_or_default()
+        };
+        let _ = app.emit("app-rescan-complete", serde_json::json!({ "apps": updated }));
+    }
+    removed
+}
+
+
 /// 统一的窗口显示辅助函数
 /// 
 /// 处理窗口的显示、取消最小化和聚焦逻辑，确保窗口正确显示在最前面
@@ -910,7 +950,21 @@ pub async fn resolve_lnk_target(lnk_path: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn extract_icon_from_path(file_path: String, app: tauri::AppHandle) -> Result<Option<String>, String> {
     let file_path_clone = file_path.clone();
-    
+
+    // 源头掐断：只对「会入库的本地文件路径」(exe/lnk/msc) 做存在性校验。
+    // UWP(shell:)、ms-settings:、url 不是本地文件系统路径，跳过检查。
+    // 文件已删除时：直接返回 None、不入索引，并顺手把缓存里同路径的失效旧条目移除，
+    // 一次性拦「新增」+ 清「存量」，避免失效条目反复“复活”。
+    {
+        let p = file_path.to_lowercase();
+        let is_local_file_type = p.ends_with(".exe") || p.ends_with(".lnk") || p.ends_with(".msc");
+        if is_local_file_type && !Path::new(&file_path).exists() {
+            eprintln!("[extract_icon_from_path] 目标文件已不存在，跳过提取与入库: {}", file_path);
+            purge_missing_app_from_cache(&app, &file_path);
+            return Ok(None);
+        }
+    }
+
     // 在后台线程执行耗时操作，避免阻塞 UI
     let icon_result = async_runtime::spawn_blocking(move || {
         // 先检查缓存中是否已经标记为提取失败或已有有效图标
@@ -3750,12 +3804,25 @@ pub fn detect_browsers() -> Vec<DetectedBrowser> {
 }
 
 #[tauri::command]
-pub fn reveal_in_folder(path: String) -> Result<(), String> {
-    use std::path::PathBuf;
-    use std::process::Command;
+pub async fn reveal_in_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let purge_app = app.clone();
+    async_runtime::spawn_blocking(move || {
+        use std::path::PathBuf;
+        use std::process::Command;
 
-    // Normalize path
-    let trimmed = path.trim();
+        // .lnk 一定要展开到目标路径，否则 Explorer 会打开快捷方式所在目录。
+        let path = if path.to_lowercase().ends_with(".lnk") {
+            let lnk_path = path.clone();
+            match app_search::windows::resolve_lnk_target(Path::new(&lnk_path)) {
+                Ok(target) if !target.is_empty() => target,
+                _ => return Err("无法解析快捷方式目标路径".to_string()),
+            }
+        } else {
+            path
+        };
+
+        // Normalize path
+        let trimmed = path.trim();
     let trimmed = trimmed.trim_end_matches(|c| c == '\\' || c == '/');
     let path_buf = PathBuf::from(trimmed);
 
@@ -3847,7 +3914,7 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
         let is_likely_file = absolute_path.extension().is_some() 
             || (!absolute_path.exists() && !trimmed.ends_with("\\") && !trimmed.ends_with("/"));
 
-        // If it's a directory, open it directly
+        // If it's a directory, open its parent and select it (same as files)
         if is_directory {
             // Get the canonicalized directory path
             let dir_path = absolute_path
@@ -3865,11 +3932,21 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
             // Remove trailing backslash if present
             normalized_dir = normalized_dir.trim_end_matches('\\').to_string();
             
-            // Open the directory directly
+            // 打开所在文件夹时，应打开父目录并选中该文件夹，
+            // 而不是直接进入该文件夹内部。
             Command::new("explorer")
-                .arg(&normalized_dir)
+                .args(&["/select,", &normalized_dir])
                 .spawn()
                 .map_err(|e| format!("Failed to open directory: {}", e))?;
+        }
+        // 目标文件已不存在（被移动/删除）：不能 /select（Explorer 会回退到桌面），
+        // 改为打开父目录，并顺手从应用索引移除该失效条目。
+        else if !absolute_path.exists() && is_likely_file {
+            purge_missing_app_from_cache(&purge_app, trimmed);
+            Command::new("explorer")
+                .arg(&parent_str)
+                .spawn()
+                .map_err(|e| format!("Failed to open folder: {}", e))?;
         }
         // If it's a file (exists and is file) or looks like a file path, use /select
         // This ensures we open the correct folder even if the file doesn't exist
@@ -3970,7 +4047,10 @@ pub fn reveal_in_folder(path: String) -> Result<(), String> {
         return Err("Reveal in folder is not supported on this platform".to_string());
     }
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("reveal_in_folder join error: {}", e))?
 }
 
 #[tauri::command]
