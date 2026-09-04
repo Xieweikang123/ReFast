@@ -624,7 +624,19 @@ export const MatchTier = {
 export type MatchTierValue = (typeof MatchTier)[keyof typeof MatchTier];
 
 /**
+ * 将含通配符（* / ?）的查询转成正则，用于模糊匹配
+ * 先转义正则特殊字符，再把 * 替换为 .*、? 替换为 .
+ */
+function wildcardToRegex(query: string): RegExp | null {
+  if (!/[*?]/.test(query)) return null;
+  const escaped = query.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const pattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
+  return new RegExp(`^${pattern}$`, "i");
+}
+
+/**
  * 计算查询与结果的匹配档位（去 .exe/.lnk 后再比名称）
+ * 查询含通配符（* / ?）时按正则模糊匹配
  */
 export function getMatchTier(
   displayName: string,
@@ -641,6 +653,23 @@ export function getMatchTier(
   const nameLower = displayName.toLowerCase();
   const nameNormalized = normalizeAppName(displayName);
   const pathLower = path.toLowerCase();
+
+  // 通配符查询：按正则匹配名称/路径，命中即视为包含匹配
+  const wildcardRegex = wildcardToRegex(queryLower);
+  if (wildcardRegex) {
+    if (
+      wildcardRegex.test(nameLower) ||
+      wildcardRegex.test(nameNormalized) ||
+      (namePinyin && wildcardRegex.test(namePinyin)) ||
+      (namePinyinInitials && wildcardRegex.test(namePinyinInitials))
+    ) {
+      return MatchTier.CONTAINS;
+    }
+    if (wildcardRegex.test(pathLower)) {
+      return MatchTier.PATH;
+    }
+    return MatchTier.NONE;
+  }
 
   if (nameNormalized === queryLower || nameLower === queryLower) {
     return MatchTier.EXACT;

@@ -386,6 +386,34 @@ describe("launcherUtils", () => {
         MatchTier.NONE
       );
     });
+
+    it("通配符 * 应模糊匹配名称", () => {
+      expect(
+        getMatchTier(
+          "Excel助手_0.1.25_x64-setup.exe",
+          "C:\\Excel助手_0.1.25_x64-setup.exe",
+          "excel*.exe"
+        )
+      ).toBe(MatchTier.CONTAINS);
+      expect(getMatchTier("excel.exe", "C:\\excel.exe", "excel*.exe")).toBe(
+        MatchTier.CONTAINS
+      );
+    });
+
+    it("通配符 ? 应匹配单个字符", () => {
+      expect(getMatchTier("excel2.exe", "C:\\excel2.exe", "excel?.exe")).toBe(
+        MatchTier.CONTAINS
+      );
+      expect(getMatchTier("excel22.exe", "C:\\excel22.exe", "excel?.exe")).toBe(
+        MatchTier.NONE
+      );
+    });
+
+    it("通配符查询未命中时应为 NONE", () => {
+      expect(getMatchTier("word.exe", "C:\\word.exe", "excel*.exe")).toBe(
+        MatchTier.NONE
+      );
+    });
   });
 
   describe("normalizePathForHistory", () => {
