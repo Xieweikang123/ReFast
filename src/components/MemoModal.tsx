@@ -28,6 +28,7 @@ import {
   MemoListNoMatch,
 } from "./MemoListStatus";
 import { MemoMarkdown } from "./MemoMarkdown";
+import { MemoModeToggle } from "./MemoModeToggle";
 
 interface MemoModalProps {
   isOpen: boolean;
@@ -49,11 +50,11 @@ interface MemoModalProps {
 }
 
 const headerBtn =
-  "px-3 py-1.5 text-sm rounded-lg border transition-colors";
+  "px-3.5 py-1.5 text-sm rounded-xl border transition-[background-color,border-color,box-shadow,color]";
 const headerBtnSecondary =
-  `${headerBtn} border-gray-200 bg-white text-gray-700 shadow-sm hover:border-gray-300 hover:bg-gray-50`;
+  `${headerBtn} border-slate-200/90 bg-white/90 text-slate-700 shadow-sm hover:border-slate-300 hover:bg-slate-50`;
 const headerBtnPrimary =
-  `${headerBtn} border-blue-500 bg-blue-500 font-medium text-white shadow-sm hover:border-blue-600 hover:bg-blue-600`;
+  `${headerBtn} border-sky-500 bg-sky-500 font-semibold text-white shadow-[0_4px_14px_rgba(14,165,233,0.35)] hover:border-sky-600 hover:bg-sky-600`;
 
 export function MemoModal({
   isOpen,
@@ -379,19 +380,25 @@ export function MemoModal({
     : "预览备忘录";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-auto bg-black/45 backdrop-blur-[2px]">
-      <div className="relative m-4 my-auto flex max-h-[calc(100vh-32px)] min-h-[500px] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200/80 bg-white shadow-2xl shadow-gray-900/10">
-        <div className="flex items-center justify-between border-b border-gray-200/80 bg-white px-4 py-3">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-auto bg-slate-900/45 backdrop-blur-[6px]">
+      <div
+        className={`relative m-4 my-auto flex max-h-[calc(100vh-32px)] min-h-[500px] w-full flex-col overflow-hidden rounded-[1.35rem] border border-white/60 bg-white shadow-[0_32px_80px_rgba(15,23,42,0.28)] ${
+          isListMode
+            ? "max-w-2xl"
+            : "max-w-2xl md:max-w-4xl lg:max-w-5xl xl:max-w-6xl"
+        }`}
+      >
+        <div className="relative flex items-center justify-between border-b border-slate-200/40 bg-white/90 px-5 py-3.5 backdrop-blur-xl">
           <div>
-            <h2 className="text-base font-semibold tracking-tight text-gray-900">
+            <h2 className="text-lg font-bold tracking-tight text-slate-900">
               {pageTitle}
             </h2>
             {isListMode &&
               !listLoading &&
               !listError &&
               memos.length > 0 && (
-              <p className="mt-0.5 text-[11px] text-gray-400">
-                共 {memos.length} 条
+              <p className="mt-0.5 text-[12px] font-medium text-slate-400 tabular-nums">
+                共 <span className="text-sky-600">{memos.length}</span> 条
               </p>
             )}
           </div>
@@ -429,28 +436,17 @@ export function MemoModal({
                 </button>
               </>
             )}
-            {isEditing && (
-              <button
-                type="button"
-                onClick={() => void switchToPreview()}
-                className={headerBtnSecondary}
-                title="保存后切换到只读预览"
-              >
-                预览
-              </button>
-            )}
-            {isPreviewMode && selectedMemo && (
-              <button
-                type="button"
-                onClick={() => {
+            {(isEditing || isPreviewMode) && (
+              <MemoModeToggle
+                mode={isEditing ? "edit" : "preview"}
+                onEdit={() => {
+                  if (!selectedMemo || isEditing) return;
                   onSetEditTitle(selectedMemo.title);
                   onSetEditContent(selectedMemo.content);
                   onSetEditing(true);
                 }}
-                className={headerBtnPrimary}
-              >
-                编辑
-              </button>
+                onPreview={() => void switchToPreview()}
+              />
             )}
             <button
               type="button"
@@ -463,11 +459,16 @@ export function MemoModal({
         </div>
 
         <div
-          className={`flex-1 bg-gray-50/60 p-4 ${
+          className={`relative flex-1 p-5 ${
             isEditing
               ? "flex min-h-0 flex-col overflow-hidden"
               : "overflow-y-auto"
           }`}
+          style={{
+            backgroundImage:
+              "radial-gradient(ellipse 90% 55% at 50% -15%, rgba(14,165,233,0.14), transparent 55%), radial-gradient(circle at 1px 1px, rgba(15,23,42,0.045) 1px, transparent 0), linear-gradient(180deg, #f0f9ff 0%, #f8fafc 42%, #eef2f7 100%)",
+            backgroundSize: "auto, 18px 18px, auto",
+          }}
         >
           {isListMode ? (
             listLoading && memos.length === 0 ? (
@@ -493,12 +494,12 @@ export function MemoModal({
                     onClear={() => setListQuery("")}
                   />
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {filteredMemos.map((memo) => (
                       <MemoListItem
                         key={memo.id}
                         memo={memo}
-                        thumbSize={44}
+                        thumbSize={52}
                         onOpen={() => openEdit(memo)}
                         onPreview={() => openPreview(memo)}
                         onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
@@ -556,25 +557,31 @@ export function MemoModal({
             )
           ) : isEditing ? (
             <div className="flex h-full min-h-0 flex-col gap-4">
-              <div className="shrink-0">
-                <label className="mb-1.5 block text-sm font-medium text-gray-600">
+              <div className="shrink-0 rounded-[1.35rem] border border-slate-200/70 bg-white px-5 py-4 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_8px_28px_rgba(15,23,42,0.05)]">
+                <label
+                  htmlFor="memo-modal-edit-title"
+                  className="mb-1.5 block text-[11px] font-semibold tracking-[0.14em] text-slate-400"
+                >
                   标题
                 </label>
                 <input
+                  id="memo-modal-edit-title"
                   type="text"
                   value={editTitle}
                   onChange={(e) => onSetEditTitle(e.target.value)}
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-gray-900 shadow-sm transition-shadow placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  className="w-full border-0 bg-transparent p-0 text-[1.35rem] font-bold leading-snug tracking-tight text-slate-900 outline-none placeholder:font-semibold placeholder:text-slate-300 focus:ring-0"
                   placeholder="标题（可选）"
                 />
               </div>
-              <div className="flex min-h-0 flex-1 flex-col">
-                <label className="mb-1.5 shrink-0 text-sm font-medium text-gray-600">
-                  内容
-                  <span className="ml-2 font-normal text-xs text-gray-400">
+              <div className="flex min-h-0 flex-1 flex-col gap-2">
+                <div className="flex shrink-0 items-baseline justify-between gap-3 px-0.5">
+                  <span className="text-[11px] font-semibold tracking-[0.14em] text-slate-400">
+                    正文
+                  </span>
+                  <span className="text-[12px] text-slate-400">
                     粘贴图片即显 · Ctrl+S 保存
                   </span>
-                </label>
+                </div>
                 <MemoContentEditor
                   value={editContent}
                   onChange={onSetEditContent}
@@ -584,28 +591,23 @@ export function MemoModal({
               </div>
             </div>
           ) : selectedMemo ? (
-            <div className="space-y-4">
-              <div>
-                <div className="mb-1.5 text-sm font-medium text-gray-600">
-                  标题
-                </div>
-                <div className="text-lg font-semibold tracking-tight text-gray-900">
+            <article className="overflow-hidden rounded-[1.35rem] border border-slate-200/70 bg-white shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_12px_40px_rgba(15,23,42,0.06)]">
+              <header className="border-b border-slate-100 px-6 pb-5 pt-6">
+                <h3 className="text-[1.5rem] font-bold leading-snug tracking-tight text-slate-900">
                   {selectedMemo.title || "(无标题)"}
-                </div>
+                </h3>
+                <p className="mt-3 text-[12px] font-medium text-slate-400 tabular-nums">
+                  创建于 {formatFullDateTime(selectedMemo.created_at)}
+                  <span className="mx-2 text-slate-200" aria-hidden>
+                    ·
+                  </span>
+                  更新于 {formatFullDateTime(selectedMemo.updated_at)}
+                </p>
+              </header>
+              <div className="px-6 py-5">
+                <MemoMarkdown content={selectedMemo.content} />
               </div>
-              <div>
-                <div className="mb-1.5 text-sm font-medium text-gray-600">
-                  内容
-                </div>
-                <div className="rounded-xl border border-gray-200/80 bg-white px-4 py-3 shadow-sm">
-                  <MemoMarkdown content={selectedMemo.content} />
-                </div>
-              </div>
-              <div className="space-y-0.5 border-t border-gray-200/80 pt-3 text-xs text-gray-400 tabular-nums">
-                <div>创建于 {formatFullDateTime(selectedMemo.created_at)}</div>
-                <div>更新于 {formatFullDateTime(selectedMemo.updated_at)}</div>
-              </div>
-            </div>
+            </article>
           ) : null}
         </div>
 

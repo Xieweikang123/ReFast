@@ -32,45 +32,49 @@ export function MemoEditFooter({
     ? "dirty"
     : "idle";
 
+  const pillClass =
+    tone === "dirty"
+      ? "bg-amber-50 text-amber-800 ring-amber-200/90"
+      : tone === "info"
+      ? "bg-sky-50 text-sky-800 ring-sky-200/90"
+      : "bg-slate-50 text-slate-500 ring-slate-200/80";
   const dotClass =
     tone === "dirty"
       ? "bg-amber-500"
       : tone === "info"
-      ? "bg-blue-500"
-      : "bg-gray-300";
-  const textClass =
-    tone === "dirty"
-      ? "text-amber-700"
-      : tone === "info"
-      ? "text-blue-600"
-      : "text-gray-400";
+      ? "bg-sky-500"
+      : "bg-slate-300";
 
   return (
-    <div className="shrink-0 border-t border-gray-200/80 bg-white/95 backdrop-blur-sm">
+    <div className="shrink-0 border-t border-slate-200/50 bg-white/95 shadow-[0_-10px_32px_rgba(15,23,42,0.05)] backdrop-blur-xl">
       <div
-        className={`flex items-center justify-between gap-3 py-3 ${
-          contentClassName ?? "px-4"
+        className={`flex items-center justify-between gap-4 py-4 ${
+          contentClassName ?? "px-5"
         }`.trim()}
       >
-        <div className="flex min-w-0 items-center gap-2 text-xs">
+        <div
+          className={`inline-flex min-w-0 max-w-[50%] items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ${pillClass}`}
+        >
           <span
-            className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`}
+            className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass} ${
+              tone === "dirty" ? "animate-pulse" : ""
+            }`}
             aria-hidden
           />
-          <span className={`truncate ${textClass}`}>{status}</span>
+          <span className="truncate">{status}</span>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2.5">
           <button
             type="button"
             onClick={() => void onSave()}
-            className="rounded-lg bg-blue-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-600"
+            className="rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_4px_14px_rgba(14,165,233,0.4)] transition-[background-color,box-shadow,transform] hover:bg-sky-600 hover:shadow-[0_6px_18px_rgba(14,165,233,0.45)] active:translate-y-px"
           >
             保存
           </button>
           <button
             type="button"
             onClick={() => void onCancel()}
-            className="rounded-lg px-4 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-100"
+            className="rounded-xl border border-slate-200/90 bg-white px-4 py-2.5 text-sm font-medium text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50"
           >
             取消
           </button>
@@ -86,7 +90,7 @@ export function MemoEditFooter({
                 e.preventDefault();
                 e.stopPropagation();
               }}
-              className="rounded-lg px-4 py-2 text-sm text-red-600 transition-colors hover:bg-red-50"
+              className="rounded-xl px-4 py-2.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
             >
               删除
             </button>

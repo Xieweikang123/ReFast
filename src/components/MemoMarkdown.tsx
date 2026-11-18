@@ -102,8 +102,9 @@ async function copyPreviewImage(src: string, displayUrl: string): Promise<void> 
   ]);
 }
 
+/** 灯箱玻璃按钮：高对比玻璃控件 */
 const lightboxBtnClass =
-  "flex h-9 w-9 items-center justify-center rounded-full bg-black/45 text-white/90 backdrop-blur-md transition-colors hover:bg-black/65 hover:text-white disabled:opacity-50";
+  "flex h-10 w-10 items-center justify-center rounded-full text-white transition-[background-color,color,box-shadow,transform] duration-150 hover:bg-white/20 hover:text-white hover:scale-105 disabled:opacity-45";
 
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 6;
@@ -311,11 +312,13 @@ function MemoImageLightbox({
     }
   };
 
+  const zoomed = Math.abs(scale - 1) > 0.02;
+
   // 挂到 body，避免落在 overflow-y-auto / backdrop-filter 祖先内触发滚动复位
   return createPortal(
     <div
       ref={stageRef}
-      className={`fixed inset-0 z-[200] overflow-hidden transition-opacity duration-200 ${
+      className={`fixed inset-0 z-[200] overflow-hidden transition-[opacity,backdrop-filter] duration-300 ease-out ${
         entered ? "opacity-100" : "opacity-0"
       }`}
       onClick={onClose}
@@ -324,11 +327,22 @@ function MemoImageLightbox({
       aria-label="图片预览"
       style={{
         background:
-          "radial-gradient(ellipse at center, rgba(40,40,44,0.92) 0%, rgba(0,0,0,0.92) 70%)",
+          "radial-gradient(ellipse 70% 55% at 50% 40%, rgba(28,36,52,0.72) 0%, rgba(6,8,14,0.92) 48%, rgba(0,0,0,0.98) 100%)",
       }}
     >
+      {/* 电影感 vignette + 冷色氛围 */}
       <div
-        className="absolute right-4 top-4 z-10 flex items-center gap-1.5"
+        className="pointer-events-none absolute inset-0"
+        aria-hidden
+        style={{
+          background:
+            "radial-gradient(ellipse 55% 45% at 50% 36%, rgba(56,189,248,0.14) 0%, transparent 65%), radial-gradient(ellipse 100% 100% at 50% 50%, transparent 42%, rgba(0,0,0,0.55) 100%)",
+        }}
+      />
+
+      {/* 右上角玻璃控制条 */}
+      <div
+        className="absolute right-5 top-5 z-10 flex items-center gap-1 rounded-full border border-white/20 bg-black/45 p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.55),0_0_0_1px_rgba(255,255,255,0.06)_inset] backdrop-blur-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <button
@@ -351,6 +365,7 @@ function MemoImageLightbox({
             <path d="M5 15V5a2 2 0 0 1 2-2h10" />
           </svg>
         </button>
+        <span className="mx-0.5 h-4 w-px bg-white/15" aria-hidden />
         <button
           type="button"
           onClick={onClose}
@@ -376,23 +391,26 @@ function MemoImageLightbox({
       </div>
 
       <div
-        className="absolute inset-0 flex items-center justify-center p-8"
+        className="absolute inset-0 flex items-center justify-center p-8 sm:p-10"
         onClick={onClose}
       >
         <div
           className={`relative max-h-[88vh] max-w-[88vw] will-change-transform ${
             dragging
               ? "cursor-grabbing"
-              : Math.abs(scale - 1) > 0.02
+              : zoomed
                 ? "cursor-grab"
                 : "cursor-zoom-in"
           }`}
           style={{
             transform: `translate(${offset.x}px, ${offset.y}px) scale(${
-              entered ? scale : scale * 0.97
+              entered ? scale : scale * 0.94
             })`,
+            opacity: entered ? 1 : 0.85,
             transition:
-              dragging || !smooth ? "none" : "transform 200ms ease-out",
+              dragging || !smooth
+                ? "none"
+                : "transform 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 280ms ease-out",
           }}
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => {
@@ -408,27 +426,35 @@ function MemoImageLightbox({
           onPointerUp={endDrag}
           onPointerCancel={endDrag}
         >
-          {/* 暗底上用多层外发光 + 深投影，才能看出「浮起来」 */}
+          {/* 图片背后光晕：电影感悬浮 */}
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 -z-10 h-[85%] w-[85%] -translate-x-1/2 -translate-y-1/2 rounded-full blur-[48px]"
+            aria-hidden
+            style={{
+              background:
+                "radial-gradient(circle, rgba(255,255,255,0.22) 0%, rgba(56,189,248,0.16) 35%, rgba(14,165,233,0.06) 55%, transparent 72%)",
+            }}
+          />
           <img
             src={preview.displayUrl}
             alt={preview.alt || "图片预览"}
-            className="block max-h-[88vh] max-w-[88vw] select-none rounded-lg object-contain"
+            className="block max-h-[88vh] max-w-[88vw] select-none rounded-2xl object-contain"
             style={{
               boxShadow:
-                "0 0 0 1px rgba(255,255,255,0.12), 0 2px 8px rgba(0,0,0,0.35), 0 18px 50px rgba(0,0,0,0.55), 0 40px 100px rgba(0,0,0,0.45), 0 0 80px rgba(0,0,0,0.35)",
+                "0 0 0 1px rgba(255,255,255,0.22), 0 0 40px rgba(56,189,248,0.12), 0 2px 4px rgba(0,0,0,0.25), 0 12px 32px rgba(0,0,0,0.45), 0 36px 80px rgba(0,0,0,0.6), 0 64px 140px rgba(0,0,0,0.45)",
             }}
             draggable={false}
           />
         </div>
       </div>
 
-      <div className="pointer-events-none absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2">
+      <div className="pointer-events-none absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-3">
         {copyHint && (
           <div
-            className={`rounded-full px-3.5 py-1.5 text-sm shadow-lg backdrop-blur-md ${
+            className={`rounded-full border px-5 py-2 text-sm font-semibold shadow-[0_12px_36px_rgba(0,0,0,0.45)] backdrop-blur-xl ${
               copyHint.includes("失败")
-                ? "bg-red-500/90 text-white"
-                : "bg-white/95 text-gray-800"
+                ? "border-red-400/40 bg-red-500/95 text-white"
+                : "border-white/50 bg-white text-slate-900"
             }`}
             role="status"
           >
@@ -436,10 +462,26 @@ function MemoImageLightbox({
           </div>
         )}
         {!copyHint && (
-          <div className="rounded-full bg-black/40 px-3 py-1 text-[11px] text-white/55 backdrop-blur-sm">
-            {Math.abs(scale - 1) > 0.02
-              ? `${Math.round(scale * 100)}% · 拖拽平移 · 双击复位`
-              : "滚轮缩放 · 双击放大 · Esc 关闭"}
+          <div className="flex items-center gap-2.5 rounded-full border border-white/18 bg-black/55 px-4 py-2 text-[12px] font-medium tracking-wide text-white/70 shadow-[0_8px_28px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)_inset] backdrop-blur-xl">
+            {zoomed ? (
+              <>
+                <span className="tabular-nums text-sky-300">
+                  {Math.round(scale * 100)}%
+                </span>
+                <span className="h-3 w-px bg-white/25" aria-hidden />
+                <span>拖拽平移</span>
+                <span className="text-white/25">·</span>
+                <span>双击复位</span>
+              </>
+            ) : (
+              <>
+                <span>滚轮缩放</span>
+                <span className="text-white/25">·</span>
+                <span>双击放大</span>
+                <span className="text-white/25">·</span>
+                <span>Esc 关闭</span>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -471,7 +513,7 @@ function MemoLocalImage({
         {...rest}
         src={url}
         alt={alt || "图片"}
-        className="my-2 max-w-full cursor-zoom-in rounded-lg border border-gray-200/80 shadow-sm transition-shadow hover:shadow-md"
+        className="my-3 max-w-full cursor-zoom-in rounded-2xl border border-slate-200/80 shadow-[0_6px_20px_rgba(15,23,42,0.1)] transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_14px_32px_rgba(14,165,233,0.14),0_6px_16px_rgba(15,23,42,0.08)]"
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -491,7 +533,7 @@ function MemoLocalImage({
       {...rest}
       src={src}
       alt={alt || ""}
-      className="my-2 max-w-full cursor-zoom-in rounded-lg border border-gray-200/80 shadow-sm transition-shadow hover:shadow-md"
+      className="my-3 max-w-full cursor-zoom-in rounded-2xl border border-slate-200/80 shadow-[0_6px_20px_rgba(15,23,42,0.1)] transition-[box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:shadow-[0_14px_32px_rgba(14,165,233,0.14),0_6px_16px_rgba(15,23,42,0.08)]"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -567,7 +609,7 @@ export function MemoMarkdown({ content }: MemoMarkdownProps) {
   return (
     <div
       ref={rootRef}
-      className="prose prose-sm max-w-none break-words text-gray-700 prose-p:my-2 prose-img:my-2 prose-headings:text-gray-900"
+      className="prose prose-sm max-w-none break-words text-[15px] leading-[1.8] text-slate-700 prose-p:my-3 prose-img:my-4 prose-headings:font-bold prose-headings:tracking-tight prose-headings:text-slate-900 prose-a:text-sky-600 prose-li:my-1"
     >
       <ReactMarkdown components={markdownComponents}>{text}</ReactMarkdown>
       {preview && (

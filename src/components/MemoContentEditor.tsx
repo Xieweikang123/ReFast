@@ -263,7 +263,7 @@ export function MemoContentEditor({
       } ${className}`.trim()}
     >
       {showPlaceholder && (
-        <div className="pointer-events-none absolute left-3.5 top-2.5 z-0 text-sm text-gray-400">
+        <div className="pointer-events-none absolute left-6 top-5 z-0 text-[15px] leading-relaxed text-slate-400">
           {placeholder}
         </div>
       )}
@@ -288,7 +288,7 @@ export function MemoContentEditor({
           composing.current = false;
           emitMarkdown();
         }}
-        className={`memo-wysiwyg relative z-10 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white px-3.5 py-2.5 text-gray-800 shadow-sm transition-shadow focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 ${
+        className={`memo-wysiwyg relative z-10 w-full overflow-y-auto rounded-[1.35rem] border border-slate-200/70 bg-white px-6 py-5 text-[15px] leading-[1.75] text-slate-800 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_10px_36px_rgba(15,23,42,0.06)] transition-[border-color,box-shadow] focus:border-sky-300/80 focus:outline-none focus:shadow-[0_1px_0_rgba(255,255,255,0.95)_inset,0_0_0_4px_rgba(14,165,233,0.12),0_14px_40px_rgba(15,23,42,0.08)] ${
           fillHeight ? "h-full min-h-0 flex-1" : ""
         }`}
         style={fillHeight ? undefined : { minHeight: `${minHeightRem}rem` }}
@@ -299,13 +299,13 @@ export function MemoContentEditor({
           max-width: 100%;
           max-height: 360px;
           height: auto;
-          margin: 10px 0;
-          border-radius: 8px;
-          border: 1px solid #e5e7eb;
+          margin: 14px 0;
+          border-radius: 14px;
+          border: 1px solid rgba(226, 232, 240, 0.95);
           background: #fff;
-          box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
         }
-        .memo-wysiwyg div { min-height: 1.35em; line-height: 1.55; }
+        .memo-wysiwyg div { min-height: 1.5em; line-height: 1.75; }
       `}</style>
     </div>
   );

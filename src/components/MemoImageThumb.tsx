@@ -10,7 +10,7 @@ interface MemoImageThumbProps {
 /** 备忘录本地图片缩略图 */
 export function MemoImageThumb({
   src,
-  size = 48,
+  size = 56,
   onRemove,
   className = "",
 }: MemoImageThumbProps) {
@@ -18,13 +18,13 @@ export function MemoImageThumb({
 
   return (
     <div
-      className={`relative shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 shadow-sm ${className}`}
+      className={`relative shrink-0 overflow-hidden rounded-xl border border-slate-200/90 bg-gradient-to-br from-slate-50 to-slate-100/90 shadow-[0_4px_14px_rgba(15,23,42,0.1),0_0_0_1px_rgba(255,255,255,0.7)_inset] ${className}`}
       style={{ width: size, height: size }}
     >
       {/* 浅色内衬：深色截图也不会贴边成一块黑斑 */}
-      <div className="absolute inset-[2px] overflow-hidden rounded-md bg-gray-100">
+      <div className="absolute inset-[3px] overflow-hidden rounded-[10px] bg-slate-100 ring-1 ring-black/[0.04]">
         {loading && (
-          <div className="absolute inset-0 flex animate-pulse items-center justify-center bg-gray-100 text-[10px] text-gray-400">
+          <div className="absolute inset-0 flex animate-pulse items-center justify-center bg-slate-100 text-[10px] text-slate-400">
             …
           </div>
         )}
@@ -37,7 +37,7 @@ export function MemoImageThumb({
           />
         ) : (
           !loading && (
-            <div className="absolute inset-0 flex items-center justify-center text-[10px] text-gray-400">
+            <div className="absolute inset-0 flex items-center justify-center text-[10px] font-medium text-slate-400">
               图
             </div>
           )
@@ -51,7 +51,7 @@ export function MemoImageThumb({
             e.stopPropagation();
             onRemove();
           }}
-          className="absolute right-0.5 top-0.5 z-10 h-5 w-5 rounded-full bg-black/55 text-xs leading-5 text-white hover:bg-black/75"
+          className="absolute right-0.5 top-0.5 z-10 h-5 w-5 rounded-full bg-slate-900/70 text-xs leading-5 text-white shadow-sm hover:bg-slate-900/90"
           title="移除图片"
         >
           ×
