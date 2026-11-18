@@ -130,6 +130,8 @@ export function resultMatchesScope(
   scope: SearchScope
 ): boolean {
   if (scope === "all") return true;
+  // 即时工具仅在全量搜索展示
+  if (resultType === "instant") return false;
 
   switch (scope) {
     case "app":

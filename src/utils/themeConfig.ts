@@ -132,6 +132,7 @@ export function getThemeConfig(style: ResultStyle): ThemeConfig {
         json_formatter: selected ? "bg-indigo-400 text-white" : "bg-indigo-100 text-indigo-700 border border-indigo-200",
         memo: selected ? "bg-purple-400 text-white" : "bg-purple-100 text-purple-700 border border-purple-200",
         everything: selected ? "bg-green-400 text-white" : "bg-green-100 text-green-700 border border-green-200",
+        instant: selected ? "bg-teal-400 text-white" : "bg-teal-100 text-teal-700 border border-teal-200",
         default: selected ? "bg-white/20 text-white backdrop-blur-sm" : "bg-gray-50 text-gray-600 border border-gray-200",
       };
       return map[type] || map.default;

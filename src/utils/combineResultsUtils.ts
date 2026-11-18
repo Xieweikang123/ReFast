@@ -36,6 +36,7 @@ import {
   shouldSearchSource,
   resultMatchesScope,
 } from "./searchFilterUtils";
+import { detectInstantTools } from "./instantToolsUtils";
 
 /** 为 URL 解析路由浏览器标识；未命中规则时返回 undefined（不显示路由标签） */
 function browserForUrl(
@@ -411,6 +412,19 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
         },
       ]
     : [];
+
+  // 即时工具（计算 / 换算 / Hash / GUID）：仅在全量搜索时展示
+  const instantResults: SearchResult[] =
+    scope === "all"
+      ? detectInstantTools(rawQuery).map((hit) => ({
+          type: "instant" as const,
+          instantKind: hit.kind,
+          instantValue: hit.value,
+          instantDetail: hit.detail,
+          displayName: hit.displayName,
+          path: hit.path,
+        }))
+      : [];
 
   // 检查是否应该显示"历史访问"结果（只在明确搜索相关关键词时显示）
   const lowerQuery = query.toLowerCase().trim();
@@ -841,7 +855,8 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
       result.type === "url" ||
       result.type === "email" ||
       result.type === "json_formatter" ||
-      result.type === "plugin"
+      result.type === "plugin" ||
+      result.type === "instant"
     ) {
       deduplicatedResults.push(result);
       continue;
@@ -995,7 +1010,7 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   };
 
   if (needsTruncatedSort) {
-    const specialTypes = ["ai", "history", "settings"];
+    const specialTypes = ["instant", "ai", "history", "settings"];
     const specialResults: SearchResult[] = [];
     const regularResults: SearchResult[] = [];
 
@@ -1034,6 +1049,7 @@ export function computeCombinedResults(options: CombineResultsOptions): SearchRe
   });
 
   const allResultsToSort = [
+    ...instantResults,
     ...otherResults,
     ...deduplicatedUrlResults,
     ...emailResults,

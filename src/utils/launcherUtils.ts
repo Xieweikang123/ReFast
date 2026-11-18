@@ -259,9 +259,22 @@ export function containsChinese(text: string): boolean {
   return /[\u4E00-\u9FFF]/.test(text);
 }
 
+/** 去掉成对包裹引号（资源管理器「复制路径」会带 "..."） */
+export function stripWrappingQuotes(text: string): string {
+  const t = text.trim();
+  if (t.length >= 2) {
+    const first = t[0];
+    const last = t[t.length - 1];
+    if ((first === '"' || first === "'") && last === first) {
+      return t.slice(1, -1).trim();
+    }
+  }
+  return t;
+}
+
 // 粗略判断输入是否像是绝对路径（含盘符、UNC 或根路径）
 export function isLikelyAbsolutePath(text: string): boolean {
-  const trimmed = text.trim();
+  const trimmed = stripWrappingQuotes(text);
   if (trimmed.length < 3) return false;
   const hasSeparator = trimmed.includes("\\") || trimmed.includes("/");
   const drivePattern = /^[a-zA-Z]:[\\/]/;
@@ -634,6 +647,21 @@ function wildcardToRegex(query: string): RegExp | null {
   return new RegExp(`^${pattern}$`, "i");
 }
 
+/** 去掉路径末尾的 \ /，便于完整路径粘贴（常带尾缀）与结果路径对齐 */
+export function stripTrailingPathSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, "");
+}
+
+/**
+ * 路径匹配用规范化：去引号、统一为 \、去末尾分隔符、小写
+ * 对齐「复制路径」/ 正斜杠粘贴与 Everything 返回的反斜杠路径
+ */
+export function normalizePathForMatch(path: string): string {
+  return stripTrailingPathSeparators(
+    stripWrappingQuotes(path).toLowerCase().replace(/\//g, "\\")
+  );
+}
+
 /**
  * 计算查询与结果的匹配档位（去 .exe/.lnk 后再比名称）
  * 查询含通配符（* / ?）时按正则模糊匹配
@@ -645,7 +673,8 @@ export function getMatchTier(
   namePinyin?: string,
   namePinyinInitials?: string
 ): MatchTierValue {
-  const queryLower = query.toLowerCase().trim();
+  // 名称匹配也先剥引号，避免 "excel" 对不上 excel
+  const queryLower = stripWrappingQuotes(query).toLowerCase().trim();
   if (!queryLower) {
     return MatchTier.NONE;
   }
@@ -653,6 +682,8 @@ export function getMatchTier(
   const nameLower = displayName.toLowerCase();
   const nameNormalized = normalizeAppName(displayName);
   const pathLower = path.toLowerCase();
+  const queryPath = normalizePathForMatch(query);
+  const resultPath = normalizePathForMatch(path);
 
   // 通配符查询：按正则匹配名称/路径，命中即视为包含匹配
   const wildcardRegex = wildcardToRegex(queryLower);
@@ -665,7 +696,7 @@ export function getMatchTier(
     ) {
       return MatchTier.CONTAINS;
     }
-    if (wildcardRegex.test(pathLower)) {
+    if (wildcardRegex.test(pathLower) || wildcardRegex.test(resultPath)) {
       return MatchTier.PATH;
     }
     return MatchTier.NONE;
@@ -695,7 +726,11 @@ export function getMatchTier(
     }
   }
 
-  if (pathLower.includes(queryLower)) {
+  // 完整路径相等（忽略引号/分隔符/末尾 \）抬到 EXACT，文件夹排在子文件之前
+  if (queryPath && resultPath === queryPath) {
+    return MatchTier.EXACT;
+  }
+  if (queryPath && resultPath.includes(queryPath)) {
     return MatchTier.PATH;
   }
 
@@ -712,7 +747,8 @@ export function isQueryIndependentResultType(type: string): boolean {
     type === "search" ||
     type === "settings" ||
     type === "history" ||
-    type === "plugin"
+    type === "plugin" ||
+    type === "instant"
   );
 }
 

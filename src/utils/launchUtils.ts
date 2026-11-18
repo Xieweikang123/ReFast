@@ -17,6 +17,7 @@ import {
   resolveFileOpenHandler,
 } from "./fileOpenUtils";
 import type { FileOpenRules } from "../types";
+import { getMemoPrimaryCopyText } from "./memoUtils";
 
 /** 规范化路径用于比较（Windows 不区分大小写，统一反斜杠） */
 function normalizePathForCompare(path: string): string {
@@ -48,6 +49,8 @@ async function openUrlSmart(
 export interface LaunchOptions {
   result: SearchResult;
   query: string;
+  /** 备忘录：Shift+Enter / 右键「编辑」时打开详情，而不是快速复制 */
+  openMemoEdit?: boolean;
   
   // 状态更新函数
   setOpenHistory: (updater: (prev: Record<string, number>) => Record<string, number>) => void;
@@ -100,6 +103,7 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
   const {
     result,
     query,
+    openMemoEdit = false,
     setOpenHistory,
     setFilteredFiles,
     setApps,
@@ -156,7 +160,8 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
         result.type === "history" ||
         result.type === "settings" ||
         result.type === "memo" ||
-        result.type === "plugin"
+        result.type === "plugin" ||
+        result.type === "instant"
       ) {
         return false;
       }
@@ -311,6 +316,18 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
       } catch (error) {
         console.error("Failed to copy email to clipboard:", error);
         setErrorMessage("复制邮箱地址失败");
+      }
+      return;
+    } else if (result.type === "instant" && result.instantValue) {
+      try {
+        await navigator.clipboard.writeText(result.instantValue);
+        setSuccessMessage(`已复制：${result.instantValue}`);
+        setTimeout(() => {
+          setSuccessMessage(null);
+        }, 3000);
+      } catch (error) {
+        console.error("Failed to copy instant tool value:", error);
+        setErrorMessage("复制失败");
       }
       return;
     } else if (result.type === "json_formatter" && result.jsonContent) {
@@ -614,14 +631,35 @@ export async function handleLaunch(options: LaunchOptions): Promise<void> {
         }
       }
     } else if (result.type === "memo" && result.memo) {
-      // 打开备忘录详情弹窗（单条模式）
-      setIsMemoListMode(false);
-      setSelectedMemo(result.memo);
-      setMemoEditTitle(result.memo.title);
-      setMemoEditContent(result.memo.content);
-      setIsEditingMemo(false);
-      setIsMemoModalOpen(true);
-      // 不关闭启动器，让用户查看/编辑备忘录
+      // Shift+Enter / 显式编辑：直接进入编辑；默认回车/单击：快速复制标题（空则正文）后关闭
+      if (openMemoEdit) {
+        setIsMemoListMode(false);
+        setSelectedMemo(result.memo);
+        setMemoEditTitle(result.memo.title);
+        setMemoEditContent(result.memo.content);
+        setIsEditingMemo(true);
+        setIsMemoModalOpen(true);
+        return;
+      }
+
+      const text = getMemoPrimaryCopyText(result.memo);
+      if (!text) {
+        setIsMemoListMode(false);
+        setSelectedMemo(result.memo);
+        setMemoEditTitle(result.memo.title);
+        setMemoEditContent(result.memo.content);
+        setIsEditingMemo(true);
+        setIsMemoModalOpen(true);
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(text);
+        await hideLauncherAndResetState();
+      } catch (error) {
+        console.error("Failed to copy memo to clipboard:", error);
+        setErrorMessage("复制备忘录失败");
+      }
       return;
     } else if (result.type === "plugin" && result.plugin) {
       // 使用插件系统执行插件

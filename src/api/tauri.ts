@@ -399,6 +399,18 @@ export const tauriApi = {
     return invoke("search_memos", { query });
   },
 
+  async saveMemoImage(imageData: Uint8Array, extension: string): Promise<string> {
+    return invoke("save_memo_image", { imageData: Array.from(imageData), extension });
+  },
+
+  async getMemoImageData(imagePath: string): Promise<Uint8Array> {
+    return invoke("get_memo_image_data", { imagePath });
+  },
+
+  async getMemosRootPath(): Promise<string> {
+    return invoke("get_memos_root_path");
+  },
+
   async showMainWindow(): Promise<void> {
     return invoke("show_main_window");
   },

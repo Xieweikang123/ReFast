@@ -23,7 +23,7 @@ import {
 
 // SearchResult 类型定义（与 LauncherWindow.tsx 中的定义保持一致）
 export type SearchResult = {
-  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings" | "search";
+  type: "app" | "file" | "everything" | "url" | "email" | "memo" | "plugin" | "history" | "ai" | "json_formatter" | "settings" | "search" | "instant";
   app?: any;
   file?: any;
   everything?: any;
@@ -33,6 +33,12 @@ export type SearchResult = {
   plugin?: { id: string; name: string; description?: string };
   aiAnswer?: string;
   jsonContent?: string;
+  /** 即时工具：回车复制的纯值 */
+  instantValue?: string;
+  /** 即时工具种类 */
+  instantKind?: "calc" | "unit" | "hash" | "guid";
+  /** 即时工具副标题说明 */
+  instantDetail?: string;
   displayName: string;
   path: string;
   /** Extracted file icon (base64 / data URL) for non-app file/everything results */
@@ -101,7 +107,7 @@ export function compareSearchResults(
   const trimmedQuery = query.trim();
 
   if (preferSpecialTypes) {
-    const specialTypes = ["ai", "history", "settings"];
+    const specialTypes = ["instant", "ai", "history", "settings"];
     const aIsSpecial = specialTypes.includes(a.type);
     const bIsSpecial = specialTypes.includes(b.type);
     if (aIsSpecial && !bIsSpecial) return -1;

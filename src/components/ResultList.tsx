@@ -18,6 +18,7 @@ import {
   SHOW_MORE_EVERYTHING_PATH,
   type VisibleVerticalItem,
 } from "../utils/resultGroupUtils";
+import { getMemoContentPreview } from "../utils/memoPreviewUtils";
 
 /** 将浏览器标识格式化为可读名称 */
 function formatBrowserName(browser: string): string {
@@ -318,7 +319,14 @@ const VerticalResultItem = React.memo<{
               {result.aiAnswer}
             </div>
           )}
-          {result.path && result.type !== "memo" && result.type !== "history" && result.type !== "ai" && (
+          {result.type === "instant" && result.instantDetail && (
+            <div
+              className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
+            >
+              {result.instantDetail}
+            </div>
+          )}
+          {result.path && result.type !== "memo" && result.type !== "history" && result.type !== "ai" && result.type !== "instant" && (
             <>
               <div
                 className={`text-xs truncate mt-0.5 ${theme.pathText(isSelected)}`}
@@ -454,20 +462,48 @@ const VerticalResultItem = React.memo<{
               </span>
             </div>
           )}
+          {result.type === "instant" && (
+            <div className="flex items-center gap-2 mt-1.5">
+              <span
+                className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("instant", isSelected)}`}
+                title="回车复制结果"
+              >
+                {result.instantKind === "calc"
+                  ? "计算"
+                  : result.instantKind === "unit"
+                    ? "换算"
+                    : result.instantKind === "hash"
+                      ? "Hash"
+                      : result.instantKind === "guid"
+                        ? "GUID"
+                        : "工具"}
+              </span>
+              {isSelected && (
+                <span className={`text-xs shrink-0 ${theme.metaText(isSelected)}`}>
+                  回车复制
+                </span>
+              )}
+            </div>
+          )}
           {result.type === "memo" && result.memo && (
             <div className="flex items-center gap-2 mt-1.5">
               <span
                 className={`text-xs px-2.5 py-1 rounded-md font-medium transition-all ${theme.tag("memo", isSelected)}`}
-                title="备忘录"
+                title="回车复制标题 · Shift+回车编辑"
               >
                 备忘录
               </span>
+              {isSelected && (
+                <span className={`text-xs shrink-0 ${theme.metaText(isSelected)}`}>
+                  回车复制
+                </span>
+              )}
               {result.memo.content && (
                 <span
                   className={`text-xs truncate ${theme.metaText(isSelected)}`}
                   dangerouslySetInnerHTML={{ 
                     __html: highlightText(
-                      result.memo.content.slice(0, 50) + (result.memo.content.length > 50 ? "..." : ""),
+                      getMemoContentPreview(result.memo.content, 50),
                       query
                     )
                   }}

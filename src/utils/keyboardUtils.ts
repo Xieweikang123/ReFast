@@ -42,6 +42,10 @@ export interface HandleKeyDownOptions {
   errorMessage: string | null;
   isPluginListModalOpen: boolean;
   isMemoModalOpen: boolean;
+  /** 备忘录列表模式；非列表（编辑/预览）时由 MemoModal 自行处理 ESC */
+  isMemoListMode?: boolean;
+  /** 备忘录编辑中时由 MemoModal 自行处理 ESC（含脏检查） */
+  isEditingMemo?: boolean;
   isRemarkModalOpen: boolean;
   pastedImageDataUrl: string | null;
   selectedHorizontalIndex: number | null;
@@ -84,7 +88,10 @@ export interface HandleKeyDownOptions {
     resetAi?: boolean;
   }) => Promise<void>;
   resetMemoState: () => void;
-  handleLaunch: (result: SearchResult) => Promise<void>;
+  handleLaunch: (
+    result: SearchResult,
+    opts?: { openMemoEdit?: boolean }
+  ) => Promise<void>;
 }
 
 function canBrowseQueryHistory(
@@ -127,6 +134,8 @@ export async function handleKeyDown(
     errorMessage,
     isPluginListModalOpen,
     isMemoModalOpen,
+    isMemoListMode = true,
+    isEditingMemo = false,
     isRemarkModalOpen,
     pastedImageDataUrl,
     selectedHorizontalIndex,
@@ -192,6 +201,10 @@ export async function handleKeyDown(
       return;
     }
     if (isMemoModalOpen) {
+      // 编辑/预览交给 MemoModal（脏检查或回列表）；列表模式才整窗关闭
+      if (isEditingMemo || !isMemoListMode) {
+        return;
+      }
       resetMemoState();
       setTimeout(() => {
         hideLauncherAndResetState();
@@ -487,7 +500,12 @@ export async function handleKeyDown(
       }
     }
     if (selectedResult) {
-      await handleLaunch(selectedResult);
+      await handleLaunch(
+        selectedResult,
+        selectedResult.type === "memo" && e.shiftKey
+          ? { openMemoEdit: true }
+          : undefined
+      );
     }
     return;
   }

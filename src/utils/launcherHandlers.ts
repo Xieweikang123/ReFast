@@ -9,6 +9,8 @@
 export interface EscapeHandlerOptions {
   isPluginListModalOpen: boolean | (() => boolean);
   isMemoModalOpen: boolean | (() => boolean);
+  /** 备忘录正在编辑时由 MemoModal 自行处理 ESC（含脏检查） */
+  isMemoEditing?: boolean | (() => boolean);
   showAiAnswer: boolean;
   setIsPluginListModalOpen: (value: boolean) => void;
   resetMemoState: () => void;
@@ -25,15 +27,23 @@ export function handleEscapeKey(
     return false;
   }
 
-  e.preventDefault();
-  e.stopPropagation();
-
   const isPluginListModalOpen = typeof options.isPluginListModalOpen === 'function' 
     ? options.isPluginListModalOpen() 
     : options.isPluginListModalOpen;
   const isMemoModalOpen = typeof options.isMemoModalOpen === 'function'
     ? options.isMemoModalOpen()
     : options.isMemoModalOpen;
+  const isMemoEditing = typeof options.isMemoEditing === 'function'
+    ? options.isMemoEditing()
+    : !!options.isMemoEditing;
+
+  // 编辑中的备忘录交给 MemoModal 处理，此处不拦截
+  if (isMemoModalOpen && isMemoEditing) {
+    return false;
+  }
+
+  e.preventDefault();
+  e.stopPropagation();
 
   // 如果应用中心弹窗已打开，关闭应用中心并隐藏窗口
   if (isPluginListModalOpen) {

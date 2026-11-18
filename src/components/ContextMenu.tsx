@@ -175,6 +175,8 @@ interface ContextMenuProps {
   /** 应用类型：打开应用中心 → 应用索引列表，并按名称筛选 */
   onRequestOpenAppIndexSameName?: (info: { searchQuery: string }) => void;
   onEditMemo: () => void;
+  /** 复制备忘录标题/正文；label 用于提示文案（如「标题」） */
+  onCopyMemoText?: (text: string, label: string) => Promise<void>;
   onDeleteMemo: (memoId: string) => Promise<void>;
   onOpenUrl: (url: string) => Promise<void>;
   /** 使用指定浏览器打开 URL（仅 URL 类型显示对应子菜单） */
@@ -185,6 +187,8 @@ interface ContextMenuProps {
   onEditRemark?: (url: string) => Promise<void>;
   onCopyJson: (json: string) => Promise<void>;
   onCopyAiAnswer: (answer: string) => Promise<void>;
+  /** 复制即时工具结果值 */
+  onCopyInstantValue?: (value: string) => Promise<void>;
   query: string;
   selectedMemoId: string | null;
   onRefreshMemos: () => Promise<void>;
@@ -201,6 +205,7 @@ export function ContextMenu({
   onRequestRemoveFromAppIndex,
   onRequestOpenAppIndexSameName,
   onEditMemo,
+  onCopyMemoText,
   onDeleteMemo,
   onOpenUrl,
   onOpenUrlWithBrowser,
@@ -209,6 +214,7 @@ export function ContextMenu({
   onEditRemark,
   onCopyJson,
   onCopyAiAnswer,
+  onCopyInstantValue,
   query: _query,
   selectedMemoId,
   onRefreshMemos,
@@ -304,6 +310,10 @@ export function ContextMenu({
   const hasUrlMenu = menu.result.type === "url" && menu.result.url;
   const hasJsonMenu = menu.result.type === "json_formatter" && menu.result.jsonContent;
   const hasAiMenu = menu.result.type === "ai" && menu.result.aiAnswer;
+  const hasInstantMenu =
+    menu.result.type === "instant" &&
+    !!menu.result.instantValue &&
+    Boolean(onCopyInstantValue);
 
   // 如果没有菜单项，不显示菜单
   if (
@@ -314,7 +324,8 @@ export function ContextMenu({
     !hasMemoMenu &&
     !hasUrlMenu &&
     !hasJsonMenu &&
-    !hasAiMenu
+    !hasAiMenu &&
+    !hasInstantMenu
   ) {
     return null;
   }
@@ -426,8 +437,36 @@ export function ContextMenu({
           从应用索引删除
         </MenuItem>
       )}
-      {hasMemoMenu && (
+      {hasMemoMenu && menu.result.memo && (
         <>
+          {onCopyMemoText && (menu.result.memo.title?.trim() || menu.result.memo.content?.trim()) && (
+            <>
+              {menu.result.memo.title?.trim() && (
+                <MenuItem
+                  icon={<IconCopy />}
+                  accent
+                  onSelect={async () => {
+                    await onCopyMemoText(menu.result.memo!.title.trim(), "标题");
+                    onClose();
+                  }}
+                >
+                  复制标题
+                </MenuItem>
+              )}
+              {menu.result.memo.content?.trim() && (
+                <MenuItem
+                  icon={<IconCopy />}
+                  onSelect={async () => {
+                    await onCopyMemoText(menu.result.memo!.content.trim(), "正文");
+                    onClose();
+                  }}
+                >
+                  复制正文
+                </MenuItem>
+              )}
+              <MenuDivider />
+            </>
+          )}
           <MenuItem
             icon={<IconPencil />}
             onSelect={() => {
@@ -573,6 +612,23 @@ export function ContextMenu({
           }}
         >
           复制回答
+        </MenuItem>
+      )}
+      {hasInstantMenu && (
+        <MenuItem
+          icon={<IconCopy />}
+          onSelect={async () => {
+            try {
+              await onCopyInstantValue!(menu.result.instantValue!);
+              onClose();
+            } catch (error) {
+              console.error("Failed to copy instant value:", error);
+              alert("复制失败，请手动复制");
+              onClose();
+            }
+          }}
+        >
+          复制结果
         </MenuItem>
       )}
     </div>

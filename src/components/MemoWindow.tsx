@@ -1,10 +1,31 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { MemoItem } from "../types";
-import { formatFullDateTime } from "../utils/dateUtils";
 import { useWindowClose } from "../hooks/useWindowClose";
+import { formatFullDateTime } from "../utils/dateUtils";
+import { hasMemoSubstance } from "../utils/memoPreviewUtils";
+import {
+  buildMemoFileAiPrompt,
+  buildMemosRootAiPrompt,
+  isMemoEditDirty,
+  joinMemoMdPath,
+  MEMO_AI_PROMPT_COPIED_MESSAGE,
+  MEMO_DISCARD_CONFIRM_MESSAGE,
+} from "../utils/memoUtils";
+import { MemoContentEditor } from "./MemoContentEditor";
+import { MemoEditFooter } from "./MemoEditFooter";
+import { MemoEmptyState } from "./MemoEmptyState";
+import { MemoListItem } from "./MemoListItem";
+import { MemoMarkdown } from "./MemoMarkdown";
+
+const headerBtn =
+  "px-3 py-1.5 text-sm rounded-lg border transition-colors";
+const headerBtnSecondary =
+  `${headerBtn} border-gray-200 bg-white text-gray-700 shadow-sm hover:border-gray-300 hover:bg-gray-50`;
+const headerBtnPrimary =
+  `${headerBtn} border-blue-500 bg-blue-500 font-medium text-white shadow-sm hover:border-blue-600 hover:bg-blue-600`;
 
 export function MemoWindow() {
   const [memos, setMemos] = useState<MemoItem[]>([]);
@@ -13,6 +34,15 @@ export function MemoWindow() {
   const [memoEditContent, setMemoEditContent] = useState("");
   const [isEditingMemo, setIsEditingMemo] = useState(false);
   const [isMemoListMode, setIsMemoListMode] = useState(true);
+
+  const isEditingMemoRef = useRef(isEditingMemo);
+  const memoEditTitleRef = useRef(memoEditTitle);
+  const memoEditContentRef = useRef(memoEditContent);
+  const selectedMemoRef = useRef(selectedMemo);
+  isEditingMemoRef.current = isEditingMemo;
+  memoEditTitleRef.current = memoEditTitle;
+  memoEditContentRef.current = memoEditContent;
+  selectedMemoRef.current = selectedMemo;
 
   const loadMemos = async () => {
     try {
@@ -30,37 +60,183 @@ export function MemoWindow() {
     await window.hide();
   }, []);
 
+  const openMemosFolder = useCallback(async () => {
+    try {
+      const root = await tauriApi.getMemosRootPath();
+      await tauriApi.revealInFolder(root);
+    } catch (error) {
+      console.error("打开备忘录目录失败:", error);
+      alert(`打开备忘录目录失败: ${error}`);
+    }
+  }, []);
+
+  /** 列表顶栏：复制「阅读整个备忘录目录」提示词 */
+  const copyMemosRootPrompt = useCallback(async () => {
+    try {
+      const root = await tauriApi.getMemosRootPath();
+      await navigator.clipboard.writeText(buildMemosRootAiPrompt(root));
+      alert(MEMO_AI_PROMPT_COPIED_MESSAGE);
+    } catch (error) {
+      console.error("复制提示词失败:", error);
+      alert(`复制提示词失败: ${error}`);
+    }
+  }, []);
+
+  /** 单条：复制「阅读该 .md」提示词 */
+  const copyMemoFilePrompt = useCallback(async (memoId: string) => {
+    try {
+      const root = await tauriApi.getMemosRootPath();
+      const filePath = joinMemoMdPath(root, memoId);
+      await navigator.clipboard.writeText(buildMemoFileAiPrompt(filePath));
+      alert(MEMO_AI_PROMPT_COPIED_MESSAGE);
+    } catch (error) {
+      console.error("复制提示词失败:", error);
+      alert(`复制提示词失败: ${error}`);
+    }
+  }, []);
+
+  const confirmDiscardIfDirty = useCallback(async (): Promise<boolean> => {
+    if (!isEditingMemo) return true;
+    const baselineTitle = selectedMemo?.title ?? "";
+    const baselineContent = selectedMemo?.content ?? "";
+    if (
+      !isMemoEditDirty(
+        memoEditTitle,
+        memoEditContent,
+        baselineTitle,
+        baselineContent
+      )
+    ) {
+      return true;
+    }
+    return confirm(MEMO_DISCARD_CONFIRM_MESSAGE, {
+      title: "未保存确认",
+      kind: "warning",
+    });
+  }, [isEditingMemo, memoEditTitle, memoEditContent, selectedMemo]);
+
+  /** 退出编辑回到列表（丢弃本地编辑态） */
+  const returnToList = useCallback(() => {
+    setIsMemoListMode(true);
+    setSelectedMemo(null);
+    setMemoEditTitle("");
+    setMemoEditContent("");
+    setIsEditingMemo(false);
+  }, []);
+
+  /** 取消编辑：回到列表 */
+  const discardEdit = useCallback(() => {
+    returnToList();
+  }, [returnToList]);
+
+  /** 打开只读预览（列表「预览」入口） */
+  const openPreview = useCallback((memo: MemoItem) => {
+    setIsMemoListMode(false);
+    setSelectedMemo(memo);
+    setMemoEditTitle(memo.title);
+    setMemoEditContent(memo.content);
+    setIsEditingMemo(false);
+  }, []);
+
+  /** 打开编辑（列表点击 /「编辑」） */
+  const openEdit = useCallback((memo: MemoItem) => {
+    setIsMemoListMode(false);
+    setSelectedMemo(memo);
+    setMemoEditTitle(memo.title);
+    setMemoEditContent(memo.content);
+    setIsEditingMemo(true);
+  }, []);
+
+  /** 保存后留在编辑态，不自动回列表 */
+  const handleSave = useCallback(async () => {
+    try {
+      if (!hasMemoSubstance(memoEditTitle, memoEditContent)) {
+        alert("请输入标题、内容或图片");
+        return;
+      }
+      // 保存成功后留在编辑态，用编辑区内容对齐基线（避免空标题落成「无标题」后误判脏）
+      const saved = selectedMemo
+        ? await tauriApi.updateMemo(
+            selectedMemo.id,
+            memoEditTitle,
+            memoEditContent
+          )
+        : await tauriApi.addMemo(
+            memoEditTitle.trim() || "无标题",
+            memoEditContent
+          );
+      setSelectedMemo({
+        ...saved,
+        title: memoEditTitle,
+        content: memoEditContent,
+      });
+      void loadMemos();
+    } catch (error) {
+      console.error("Failed to save memo:", error);
+      alert(`保存备忘录失败: ${error}`);
+    }
+  }, [selectedMemo, memoEditTitle, memoEditContent]);
   useEffect(() => {
     loadMemos();
   }, []);
 
-  // ESC 键处理
+  // 关闭窗口时：编辑中有未保存改动则确认
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const setup = async () => {
+      unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+        if (!isEditingMemoRef.current) return;
+        const baselineTitle = selectedMemoRef.current?.title ?? "";
+        const baselineContent = selectedMemoRef.current?.content ?? "";
+        if (
+          !isMemoEditDirty(
+            memoEditTitleRef.current,
+            memoEditContentRef.current,
+            baselineTitle,
+            baselineContent
+          )
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const ok = await confirm(MEMO_DISCARD_CONFIRM_MESSAGE, {
+          title: "未保存确认",
+          kind: "warning",
+        });
+        if (ok) {
+          await getCurrentWindow().destroy();
+        }
+      });
+    };
+    void setup();
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  // ESC / Ctrl+S
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        if (isEditingMemo) {
+          e.preventDefault();
+          e.stopPropagation();
+          await handleSave();
+        }
+        return;
+      }
+
       if (e.key === "Escape" || e.keyCode === 27) {
         e.preventDefault();
         e.stopPropagation();
-        
+
         if (isMemoListMode) {
-          // 列表模式：关闭窗口
           await handleClose();
-        } else if (isEditingMemo && !selectedMemo) {
-          // 新建模式：返回列表
-          setIsMemoListMode(true);
-          setSelectedMemo(null);
-          setMemoEditTitle("");
-          setMemoEditContent("");
-          setIsEditingMemo(false);
-        } else if (isEditingMemo && selectedMemo) {
-          // 编辑模式：取消编辑
-          setIsEditingMemo(false);
-          setMemoEditTitle(selectedMemo.title);
-          setMemoEditContent(selectedMemo.content);
+        } else if (isEditingMemo) {
+          if (!(await confirmDiscardIfDirty())) return;
+          returnToList();
         } else {
-          // 详情模式：返回列表
-          setIsMemoListMode(true);
-          setSelectedMemo(null);
-          setIsEditingMemo(false);
+          returnToList();
         }
       }
     };
@@ -69,361 +245,299 @@ export function MemoWindow() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown, true);
     };
-  }, [isMemoListMode, isEditingMemo, selectedMemo, handleClose]);
+  }, [
+    isMemoListMode,
+    isEditingMemo,
+    handleClose,
+    handleSave,
+    confirmDiscardIfDirty,
+    returnToList,
+  ]);
 
   const resetMemoState = () => {
-    setIsMemoListMode(true);
+    returnToList();
+  };
+
+  const startNewMemo = () => {
+    setIsMemoListMode(false);
     setSelectedMemo(null);
     setMemoEditTitle("");
     setMemoEditContent("");
-    setIsEditingMemo(false);
+    setIsEditingMemo(true);
   };
 
+  const handleBackOrClose = async () => {
+    if (isMemoListMode) {
+      await handleClose();
+      return;
+    }
+    if (isEditingMemo) {
+      if (!(await confirmDiscardIfDirty())) return;
+    }
+    returnToList();
+  };
+
+  const handleCancelEdit = async () => {
+    if (!(await confirmDiscardIfDirty())) return;
+    discardEdit();
+  };
+
+  const editDirty =
+    isEditingMemo &&
+    isMemoEditDirty(
+      memoEditTitle,
+      memoEditContent,
+      selectedMemo?.title ?? "",
+      selectedMemo?.content ?? ""
+    );
+
+  const isPreviewMode = !isMemoListMode && !isEditingMemo && !!selectedMemo;
+
+  const pageTitle = isMemoListMode
+    ? "备忘录列表"
+    : isEditingMemo
+    ? selectedMemo
+      ? "编辑备忘录"
+      : "新建备忘录"
+    : "预览备忘录";
+
+  /** 顶栏/正文/底栏共用内容列；列表略窄避免宽屏被拉成空条 */
+  const shellClass = isMemoListMode
+    ? "mx-auto w-full max-w-2xl px-4 sm:px-5"
+    : "mx-auto w-full max-w-3xl px-4 sm:px-6";
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-gray-50">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-        <h2 className="text-lg font-semibold text-gray-800">
-          {isMemoListMode
-            ? "备忘录列表"
-            : selectedMemo
-            ? isEditingMemo
-              ? "编辑备忘录"
-              : "备忘录详情"
-            : "新建备忘录"}
-        </h2>
-        <div className="flex items-center gap-2">
-          {isMemoListMode && (
+    <div className="flex h-screen w-screen flex-col bg-gray-50">
+      <div className="shrink-0 border-b border-gray-200/80 bg-white shadow-sm">
+        <div
+          className={`${shellClass} flex items-center justify-between gap-3 py-3`}
+        >
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold tracking-tight text-gray-900">
+              {pageTitle}
+            </h2>
+            {isMemoListMode && memos.length > 0 && (
+              <p className="mt-0.5 text-[11px] text-gray-400">
+                共 {memos.length} 条
+              </p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {isMemoListMode && (
+              <>
+                <button
+                  type="button"
+                  onClick={openMemosFolder}
+                  className={headerBtnSecondary}
+                  title="在资源管理器中打开笔记目录"
+                >
+                  打开目录
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyMemosRootPrompt()}
+                  className={headerBtnSecondary}
+                  title="复制让 AI 阅读全部备忘录的提示词"
+                >
+                  复制提示词
+                </button>
+                <button
+                  type="button"
+                  onClick={startNewMemo}
+                  className={headerBtnPrimary}
+                >
+                  新建
+                </button>
+              </>
+            )}
+            {isPreviewMode && selectedMemo && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMemoEditTitle(selectedMemo.title);
+                  setMemoEditContent(selectedMemo.content);
+                  setIsEditingMemo(true);
+                }}
+                className={headerBtnPrimary}
+              >
+                编辑
+              </button>
+            )}
             <button
-              onClick={() => {
-                setIsMemoListMode(false);
-                setSelectedMemo(null);
-                setMemoEditTitle("");
-                setMemoEditContent("");
-                setIsEditingMemo(true);
-              }}
-              className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+              type="button"
+              onClick={() => void handleBackOrClose()}
+              className={headerBtnSecondary}
             >
-              新建
+              {isMemoListMode ? "关闭" : "返回"}
             </button>
-          )}
-          {!isMemoListMode && !isEditingMemo && selectedMemo && (
-            <button
-              onClick={() => {
-                setIsEditingMemo(true);
-              }}
-              className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded transition-colors"
-            >
-              编辑
-            </button>
-          )}
-          <button
-            onClick={async () => {
-              if (isMemoListMode) {
-                await handleClose();
-              } else if (isEditingMemo && !selectedMemo) {
-                setIsMemoListMode(true);
-                setSelectedMemo(null);
-                setMemoEditTitle("");
-                setMemoEditContent("");
-                setIsEditingMemo(false);
-              } else {
-                setIsMemoListMode(true);
-                setSelectedMemo(null);
-                setIsEditingMemo(false);
-              }
-            }}
-            className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded transition-colors"
-          >
-            {isMemoListMode ? "关闭" : "返回"}
-          </button>
+          </div>
         </div>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div
+        className={`min-h-0 flex-1 ${
+          isEditingMemo
+            ? "flex flex-col overflow-hidden"
+            : "overflow-y-auto"
+        }`}
+      >
+        <div
+          className={`${shellClass} ${
+            isEditingMemo ? "flex min-h-0 flex-1 flex-col py-4" : "py-4"
+          }`}
+        >
         {isMemoListMode ? (
-          <div className="space-y-2">
-            {memos.length === 0 ? (
-              <div className="text-sm text-gray-500">还没有任何备忘录</div>
-            ) : (
-              memos.map((memo) => (
-                <div
+          memos.length === 0 ? (
+            <MemoEmptyState />
+          ) : (
+            <div className="space-y-2">
+              {memos.map((memo) => (
+                <MemoListItem
                   key={memo.id}
-                  className="p-3 border border-gray-200 rounded hover:bg-white transition-colors group"
-                >
-                  <div
-                    className="cursor-pointer"
-                    onClick={(e) => {
-                      // 如果点击的是按钮或其子元素，不执行操作
-                      const target = e.target as HTMLElement;
-                      if (target.closest('button')) {
-                        return;
+                  memo={memo}
+                  thumbSize={48}
+                  onOpen={() => openEdit(memo)}
+                  onPreview={() => openPreview(memo)}
+                  onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
+                  onInsert={async () => {
+                    try {
+                      const textToPaste = memo.title
+                        ? memo.content
+                          ? `${memo.title}\n${memo.content}`
+                          : memo.title
+                        : memo.content || "(无内容)";
+                      await navigator.clipboard.writeText(textToPaste);
+                      await handleHide();
+                      await tauriApi.pasteTextToCursor("");
+                    } catch (error) {
+                      console.error("Failed to paste to cursor:", error);
+                      alert(`插入失败: ${error}`);
+                    }
+                  }}
+                  onCopy={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        memo.title || "(无标题)"
+                      );
+                    } catch (error) {
+                      console.error("Failed to copy to clipboard:", error);
+                      alert(`复制失败: ${error}`);
+                    }
+                  }}
+                  onCopyAndClose={async () => {
+                    try {
+                      await navigator.clipboard.writeText(
+                        memo.title || "(无标题)"
+                      );
+                      await handleClose();
+                    } catch (error) {
+                      console.error("Failed to copy to clipboard:", error);
+                      alert(`复制失败: ${error}`);
+                    }
+                  }}
+                  onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
+                  onDelete={async () => {
+                    const confirmed = await confirm(
+                      "确定要删除这条备忘录吗？",
+                      { title: "删除确认", kind: "warning" }
+                    );
+                    if (!confirmed) return;
+                    try {
+                      await tauriApi.deleteMemo(memo.id);
+                      await loadMemos();
+                      if (selectedMemo?.id === memo.id) {
+                        resetMemoState();
                       }
-                      setIsMemoListMode(false);
-                      setSelectedMemo(memo);
-                      setMemoEditTitle(memo.title);
-                      setMemoEditContent(memo.content);
-                      setIsEditingMemo(false);
-                    }}
-                  >
-                    <div className="font-medium truncate">
-                      {memo.title || "(无标题)"}
-                    </div>
-                    <div className="text-xs text-gray-500 truncate mt-1">
-                      {memo.content ? memo.content.slice(0, 80) : "(无内容)"}
-                      {memo.content && memo.content.length > 80 ? "..." : ""}
-                    </div>
-                    <div className="text-[11px] text-gray-400 mt-1">
-                      更新于 {formatFullDateTime(memo.updated_at)}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          // 组合标题和内容
-                          const textToPaste = memo.title 
-                            ? (memo.content ? `${memo.title}\n${memo.content}` : memo.title)
-                            : (memo.content || "(无内容)");
-                          // 使用 navigator.clipboard.writeText 设置剪贴板（和复制按钮一样的方式）
-                          await navigator.clipboard.writeText(textToPaste);
-                          // 先隐藏窗口（而不是关闭），让用户有时间切换到目标窗口，同时保持 JavaScript 上下文
-                          await handleHide();
-                          // 然后只模拟按键（剪贴板已经通过 navigator.clipboard.writeText 设置好了）
-                          await tauriApi.pasteTextToCursor("");
-                        } catch (error) {
-                          console.error("Failed to paste to cursor:", error);
-                          alert(`插入失败: ${error}`);
-                        }
-                      }}
-                      className="px-2 py-1 text-xs text-purple-600 hover:text-purple-800 hover:bg-purple-50 rounded border border-purple-300 hover:border-purple-400 transition-colors"
-                      title="插入到系统光标位置"
-                    >
-                      插入
-                    </button>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          const textToCopy = memo.title || "(无标题)";
-                          await navigator.clipboard.writeText(textToCopy);
-                        } catch (error) {
-                          console.error("Failed to copy to clipboard:", error);
-                          alert(`复制失败: ${error}`);
-                        }
-                      }}
-                      className="px-2 py-1 text-xs text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded border border-blue-300 hover:border-blue-400 transition-colors"
-                      title="复制标题"
-                    >
-                      复制
-                    </button>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        try {
-                          const textToCopy = memo.title || "(无标题)";
-                          await navigator.clipboard.writeText(textToCopy);
-                          // 复制成功后关闭窗口
-                          await handleClose();
-                        } catch (error) {
-                          console.error("Failed to copy to clipboard:", error);
-                          alert(`复制失败: ${error}`);
-                        }
-                      }}
-                      className="px-2 py-1 text-xs text-green-600 hover:text-green-800 hover:bg-green-50 rounded border border-green-300 hover:border-green-400 transition-colors"
-                      title="复制标题并关闭"
-                    >
-                      复制并关闭
-                    </button>
-                    <button
-                      onMouseDown={async (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const confirmed = await confirm("确定要删除这条备忘录吗？", {
-                          title: "删除确认",
-                          kind: "warning",
-                        });
-                        if (!confirmed) {
-                          return;
-                        }
-                        try {
-                          await tauriApi.deleteMemo(memo.id);
-                          await loadMemos();
-                          // 如果删除的是当前显示的备忘录，重置状态
-                          if (selectedMemo?.id === memo.id) {
-                            resetMemoState();
-                          }
-                        } catch (error) {
-                          console.error("Failed to delete memo:", error);
-                          alert(`删除备忘录失败: ${error}`);
-                        }
-                      }}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                      }}
-                      className="px-2 py-1 text-xs text-red-600 hover:text-red-800 hover:bg-red-50 rounded border border-red-300 hover:border-red-400 transition-colors"
-                      title="删除备忘录"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+                    } catch (error) {
+                      console.error("Failed to delete memo:", error);
+                      alert(`删除备忘录失败: ${error}`);
+                    }
+                  }}
+                />
+              ))}
+            </div>
+          )
         ) : isEditingMemo ? (
-          <div className="space-y-4 max-w-2xl mx-auto">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-4">
+            <div className="shrink-0">
+              <label className="mb-1.5 block text-sm font-medium text-gray-600">
                 标题
               </label>
               <input
                 type="text"
                 value={memoEditTitle}
                 onChange={(e) => setMemoEditTitle(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="输入备忘录标题"
-                autoFocus
+                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-gray-900 shadow-sm transition-shadow placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                placeholder="标题（可选）"
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+            <div className="flex min-h-0 flex-1 flex-col">
+              <label className="mb-1.5 shrink-0 text-sm font-medium text-gray-600">
                 内容
+                <span className="ml-2 font-normal text-xs text-gray-400">
+                  粘贴图片即显 · Ctrl+S 保存
+                </span>
               </label>
-              <textarea
+              <MemoContentEditor
                 value={memoEditContent}
-                onChange={(e) => setMemoEditContent(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                placeholder="输入备忘录内容"
-                rows={12}
+                onChange={setMemoEditContent}
+                autoFocus
+                fillHeight
               />
             </div>
           </div>
         ) : selectedMemo ? (
-          <div className="space-y-4 max-w-2xl mx-auto">
+          <div className="space-y-4">
             <div>
-              <div className="text-sm font-medium text-gray-500 mb-1">标题</div>
-              <div className="text-lg font-semibold text-gray-800">
+              <div className="mb-1.5 text-sm font-medium text-gray-600">
+                标题
+              </div>
+              <div className="text-lg font-semibold tracking-tight text-gray-900">
                 {selectedMemo.title || "(无标题)"}
               </div>
             </div>
             <div>
-              <div className="text-sm font-medium text-gray-500 mb-1">内容</div>
-              <div className="text-gray-700 whitespace-pre-wrap break-words">
-                {selectedMemo.content || "(无内容)"}
+              <div className="mb-1.5 text-sm font-medium text-gray-600">
+                内容
+              </div>
+              <div className="rounded-xl border border-gray-200/80 bg-white px-4 py-3 shadow-sm">
+                <MemoMarkdown content={selectedMemo.content} />
               </div>
             </div>
-            <div className="pt-4 border-t border-gray-200">
-              <div className="text-xs text-gray-500">
-                <div>
-                  创建时间:{" "}
-                  {formatFullDateTime(selectedMemo.created_at)}
-                </div>
-                <div>
-                  更新时间:{" "}
-                  {formatFullDateTime(selectedMemo.updated_at)}
-                </div>
-              </div>
+            <div className="space-y-0.5 border-t border-gray-200/80 pt-3 text-xs text-gray-400 tabular-nums">
+              <div>创建于 {formatFullDateTime(selectedMemo.created_at)}</div>
+              <div>更新于 {formatFullDateTime(selectedMemo.updated_at)}</div>
             </div>
           </div>
         ) : null}
+        </div>
       </div>
 
-      {/* Footer */}
       {isEditingMemo && (
-        <div className="flex items-center justify-end gap-2 p-4 border-t border-gray-200 bg-white">
-          <button
-            onClick={async () => {
-              try {
-                if (selectedMemo) {
-                  await tauriApi.updateMemo(
-                    selectedMemo.id,
-                    memoEditTitle,
-                    memoEditContent
-                  );
-                  await loadMemos();
-                  const list = await tauriApi.getAllMemos();
-                  const updated = list.find((m) => m.id === selectedMemo.id);
-                  if (updated) {
-                    setSelectedMemo(updated);
-                  }
-                  setIsEditingMemo(false);
-                } else {
-                  if (!memoEditTitle.trim() && !memoEditContent.trim()) {
-                    alert("请输入标题或内容");
-                    return;
-                  }
-                  const newMemo = await tauriApi.addMemo(
-                    memoEditTitle.trim() || "无标题",
-                    memoEditContent.trim()
-                  );
-                  await loadMemos();
-                  setSelectedMemo(newMemo);
-                  setIsEditingMemo(false);
-                }
-              } catch (error) {
-                console.error("Failed to save memo:", error);
-                alert(`保存备忘录失败: ${error}`);
-              }
-            }}
-            className="px-4 py-2 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-          >
-            保存
-          </button>
-          <button
-            onClick={() => {
-              if (selectedMemo) {
-                setIsEditingMemo(false);
-                setMemoEditTitle(selectedMemo.title);
-                setMemoEditContent(selectedMemo.content);
-              } else {
-                setIsMemoListMode(true);
-                setSelectedMemo(null);
-                setMemoEditTitle("");
-                setMemoEditContent("");
-                setIsEditingMemo(false);
-              }
-            }}
-            className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded transition-colors"
-          >
-            取消
-          </button>
-          {selectedMemo && (
-            <button
-              onMouseDown={async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const confirmed = await confirm("确定要删除这条备忘录吗？", {
-                  title: "删除确认",
-                  kind: "warning",
-                });
-                if (!confirmed) {
-                  return;
-                }
-                try {
-                  await tauriApi.deleteMemo(selectedMemo.id);
-                  await loadMemos();
-                  resetMemoState();
-                } catch (error) {
-                  console.error("Failed to delete memo:", error);
-                  alert(`删除备忘录失败: ${error}`);
-                }
-              }}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-              }}
-              className="px-4 py-2 text-sm text-red-600 hover:bg-red-50 rounded transition-colors"
-            >
-              删除
-            </button>
-          )}
-        </div>
+        <MemoEditFooter
+          dirty={editDirty}
+          contentClassName={shellClass}
+          onSave={handleSave}
+          onCancel={handleCancelEdit}
+          showDelete={!!selectedMemo}
+          onDelete={async () => {
+            if (!selectedMemo) return;
+            const confirmed = await confirm("确定要删除这条备忘录吗？", {
+              title: "删除确认",
+              kind: "warning",
+            });
+            if (!confirmed) return;
+            try {
+              await tauriApi.deleteMemo(selectedMemo.id);
+              await loadMemos();
+              resetMemoState();
+            } catch (error) {
+              console.error("Failed to delete memo:", error);
+              alert(`删除备忘录失败: ${error}`);
+            }
+          }}
+        />
       )}
     </div>
   );
 }
-

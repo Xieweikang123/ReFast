@@ -92,9 +92,11 @@ const getPluginIcon = (pluginId: string, className: string) => {
         </svg>
       );
     case "memo_center":
+      // 便签 + 多行文字，视觉更饱满，并与 markdown 的文档图标区分
       return (
         <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 3h8l4 4v12a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z" />
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 3v4h4M9 11h6M9 14.5h6M9 18h4" />
         </svg>
       );
     case "markdown_editor":
@@ -268,6 +270,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const isWindowDraggingRef = useRef(false);
   // 记录备忘录弹窗是否打开，用于全局 ESC 处理时优先关闭备忘录，而不是隐藏整个窗口
   const isMemoModalOpenRef = useRef(false);
+  // 备忘录编辑中时由 MemoModal 自行处理 ESC（含脏检查）
+  const isEditingMemoRef = useRef(false);
   // 记录应用中心弹窗是否打开，用于全局 ESC 处理时优先关闭应用中心，而不是隐藏整个窗口
   const isPluginListModalOpenRef = useRef(false);
   // 记录备注弹窗是否打开，用于全局 ESC 处理时优先关闭备注弹窗，而不是隐藏整个窗口
@@ -358,6 +362,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   useEffect(() => {
     isMemoModalOpenRef.current = isMemoModalOpen;
   }, [isMemoModalOpen]);
+
+  useEffect(() => {
+    isEditingMemoRef.current = isEditingMemo;
+  }, [isEditingMemo]);
 
   // 组件卸载时清理 Everything 搜索会话
   // 注意：这个 useEffect 需要在 closeSessionSafe 定义之后，所以放在后面
@@ -534,6 +542,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       if (handleEscapeKey(e, {
         isPluginListModalOpen: () => isPluginListModalOpenRef.current,
         isMemoModalOpen: () => isMemoModalOpenRef.current,
+        isMemoEditing: () => isEditingMemoRef.current,
         showAiAnswer,
         setIsPluginListModalOpen,
         resetMemoState,
@@ -1546,10 +1555,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   );
 
   const handleLaunch = useCallback(
-    async (result: SearchResult) => {
+    async (result: SearchResult, opts?: { openMemoEdit?: boolean }) => {
       await handleLaunchUtil({
         result,
           query,
+        openMemoEdit: opts?.openMemoEdit,
         setOpenHistory,
         setFilteredFiles,
         setApps,
@@ -1826,6 +1836,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         errorMessage,
         isPluginListModalOpen,
         isMemoModalOpen,
+        isMemoListMode,
+        isEditingMemo,
         isRemarkModalOpen,
         pastedImageDataUrl,
         selectedHorizontalIndex,
@@ -1863,6 +1875,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       errorMessage,
       isPluginListModalOpen,
       isMemoModalOpen,
+      isMemoListMode,
+      isEditingMemo,
       isRemarkModalOpen,
       pastedImageDataUrl,
       selectedHorizontalIndex,
@@ -2086,6 +2100,16 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           setIsEditingMemo(true);
           setIsMemoModalOpen(true);
         }}
+        onCopyMemoText={async (text: string, label: string) => {
+          try {
+            await navigator.clipboard.writeText(text);
+            setSuccessMessage(`已复制${label}`);
+            setTimeout(() => setSuccessMessage(null), 2000);
+          } catch (error) {
+            console.error("Failed to copy memo text:", error);
+            setErrorMessage(`复制${label}失败`);
+          }
+        }}
         onDeleteMemo={async (memoId: string) => {
           await tauriApi.deleteMemo(memoId);
         }}
@@ -2120,6 +2144,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         onCopyAiAnswer={async (answer: string) => {
           await navigator.clipboard.writeText(answer);
           alert("AI 回答已复制到剪贴板");
+        }}
+        onCopyInstantValue={async (value: string) => {
+          await navigator.clipboard.writeText(value);
+          setSuccessMessage(`已复制：${value}`);
+          setTimeout(() => setSuccessMessage(null), 3000);
         }}
         query={query}
         selectedMemoId={selectedMemo?.id || null}

@@ -102,6 +102,9 @@ export const tauriApi = {
   updateMemo: async () => ({} as MemoItem),
   deleteMemo: async () => {},
   searchMemos: async () => [] as MemoItem[],
+  saveMemoImage: async () => "images/mock.png",
+  getMemoImageData: async () => new Uint8Array(),
+  getMemosRootPath: async () => "C:\\Users\\mock\\Documents\\ReFast\\memos",
 
   // Window APIs
   showMainWindow: async () => {},

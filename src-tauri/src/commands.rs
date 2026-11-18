@@ -5,7 +5,10 @@ pub mod memos;
 pub mod word_records;
 
 // 重新导出子模块中的所有命令
-pub use memos::{get_all_memos, add_memo, update_memo, delete_memo, search_memos};
+pub use memos::{
+    get_all_memos, add_memo, update_memo, delete_memo, search_memos, save_memo_image,
+    get_memo_image_data, get_memos_root_path,
+};
 pub use word_records::{
     get_all_word_records,
     add_word_record,
@@ -1530,9 +1533,83 @@ pub struct EverythingSearchOptions {
     pub chunk_size: Option<usize>,
 }
 
+/// 去掉成对包裹引号（资源管理器「复制路径」会带 "..."）
+pub(crate) fn strip_wrapping_quotes(s: &str) -> &str {
+    let t = s.trim();
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return t[1..t.len() - 1].trim();
+        }
+    }
+    t
+}
+
+/// 粗略判断是否像 Windows 绝对路径（盘符或 UNC），用于决定是否剥末尾分隔符
+pub(crate) fn looks_like_absolute_path(s: &str) -> bool {
+    let t = strip_wrapping_quotes(s);
+    if t.len() < 3 {
+        return false;
+    }
+    let has_sep = t.contains('\\') || t.contains('/');
+    if !has_sep {
+        return false;
+    }
+    let b = t.as_bytes();
+    // C:\... 或 C:/...
+    if b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+        return true;
+    }
+    // UNC \\server\share
+    t.starts_with("\\\\")
+}
+
+/// 去掉路径末尾的 \ /；保留盘符根（如 C:\），避免变成裸 C:
+pub(crate) fn strip_trailing_path_separators(query: &str) -> String {
+    let trimmed = query.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() == 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return trimmed.to_string();
+    }
+    trimmed
+        .trim_end_matches(|c| c == '\\' || c == '/')
+        .to_string()
+}
+
+/// 发给 Everything 前规范化绝对路径：
+/// - 剥「复制路径」外层引号
+/// - 去掉末尾 \（否则 Everything 当成目录下内容）
+/// - `/` 统一成 `\`（Everything 对正斜杠整路径常 0 命中）
+/// - 含空格时重新加引号（否则被拆成多词）
+pub(crate) fn normalize_everything_base_query(base: &str) -> String {
+    let trimmed = base.trim();
+    let unquoted = strip_wrapping_quotes(trimmed);
+    if !looks_like_absolute_path(unquoted) {
+        // 非绝对路径：保持原样（含用户有意打的引号）
+        return trimmed.to_string();
+    }
+
+    let mut path = strip_trailing_path_separators(unquoted);
+    path = path.replace('/', "\\");
+    // 统一分隔符后再清一次尾缀（如 D:/foo/）
+    path = strip_trailing_path_separators(&path);
+
+    if path.contains(' ') {
+        format!("\"{}\"", path)
+    } else {
+        path
+    }
+}
+
 fn build_everything_query(base: &str, options: &Option<EverythingSearchOptions>) -> (String, usize) {
     let mut parts: Vec<String> = Vec::new();
-    let base_query = base.trim().to_string();
+    let base_query = normalize_everything_base_query(base);
     let _use_regex = false;
 
     let mut max_results = 50usize;
@@ -4210,7 +4287,16 @@ pub async fn show_memo_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // 尝试获取现有窗口
     if let Some(window) = app.get_webview_window("memo-window") {
-        show_and_focus_window(&window)?;
+        // 已显示且聚焦时再触发（如 Ctrl+3）→ 隐藏，符合启动器式 toggle
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        if visible && focused {
+            window
+                .hide()
+                .map_err(|e| format!("隐藏备忘录窗口失败: {}", e))?;
+        } else {
+            show_and_focus_window(&window)?;
+        }
     } else {
         // 动态创建窗口
         let window = tauri::WebviewWindowBuilder::new(
@@ -6589,8 +6675,18 @@ pub async fn copy_image_to_clipboard(image_path: String) -> Result<(), String> {
         use windows_sys::Win32::Foundation::HWND;
         use windows_sys::Win32::Graphics::Gdi::BITMAPINFOHEADER;
 
+        // 相对路径（如 images/xxx.png）解析到备忘录目录；绝对路径保持原样（剪贴板历史等）
+        let resolved_path = {
+            let path = PathBuf::from(&image_path);
+            if path.is_absolute() {
+                path
+            } else {
+                crate::memos::resolve_memo_image_path(&image_path)?
+            }
+        };
+
         // 读取图片文件
-        let image_data = fs::read(&image_path)
+        let image_data = fs::read(&resolved_path)
             .map_err(|e| format!("Failed to read image: {}", e))?;
 
         // 解码 PNG
@@ -6690,4 +6786,60 @@ pub fn get_os_type() -> String {
     { "linux".to_string() }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     { "unknown".to_string() }
+}
+
+#[cfg(test)]
+mod path_query_normalize_tests {
+    use super::{
+        looks_like_absolute_path, normalize_everything_base_query,
+        strip_trailing_path_separators, strip_wrapping_quotes,
+    };
+
+    #[test]
+    fn strips_trailing_sep_on_absolute_path() {
+        let q = r"D:\project\shootAbout\dfhshoot\dist\shanghaiyangpu_20261117-084411\";
+        let expected =
+            r"D:\project\shootAbout\dfhshoot\dist\shanghaiyangpu_20261117-084411";
+        assert!(looks_like_absolute_path(q));
+        assert_eq!(normalize_everything_base_query(q), expected);
+        assert_eq!(strip_trailing_path_separators(q), expected);
+    }
+
+    #[test]
+    fn keeps_drive_root() {
+        assert_eq!(strip_trailing_path_separators(r"C:\"), r"C:\");
+        assert_eq!(normalize_everything_base_query(r"C:\"), r"C:\");
+    }
+
+    #[test]
+    fn leaves_non_path_queries_alone() {
+        assert_eq!(normalize_everything_base_query("excel\\"), "excel\\");
+        assert!(!looks_like_absolute_path("excel\\"));
+    }
+
+    #[test]
+    fn normalizes_forward_slashes() {
+        assert_eq!(
+            normalize_everything_base_query("D:/project/foo/bar/"),
+            r"D:\project\foo\bar"
+        );
+    }
+
+    #[test]
+    fn strips_explorer_quotes_and_requotes_spaces() {
+        assert_eq!(strip_wrapping_quotes(r#""D:\foo\bar""#), r"D:\foo\bar");
+        assert_eq!(
+            normalize_everything_base_query(r#""D:\Program Files\bar\""#),
+            r#""D:\Program Files\bar""#
+        );
+        assert_eq!(
+            normalize_everything_base_query(r"D:\Program Files\bar"),
+            r#""D:\Program Files\bar""#
+        );
+    }
+
+    #[test]
+    fn keeps_quotes_on_non_path_query() {
+        assert_eq!(normalize_everything_base_query(r#""excel""#), r#""excel""#);
+    }
 }

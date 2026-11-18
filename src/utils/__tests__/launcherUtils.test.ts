@@ -14,6 +14,9 @@ import {
   calculateRelevanceScore,
   getMatchTier,
   MatchTier,
+  stripTrailingPathSeparators,
+  stripWrappingQuotes,
+  normalizePathForMatch,
   normalizePathForHistory,
   normalizeAppName,
   appSourceRank,
@@ -214,6 +217,7 @@ describe("launcherUtils", () => {
     it("应该识别 Windows 盘符路径", () => {
       expect(isLikelyAbsolutePath("C:\\Users\\test")).toBe(true);
       expect(isLikelyAbsolutePath("D:/folder/file.txt")).toBe(true);
+      expect(isLikelyAbsolutePath('"D:\\folder\\file.txt"')).toBe(true);
     });
 
     it("应该识别 UNC 路径", () => {
@@ -413,6 +417,64 @@ describe("launcherUtils", () => {
       expect(getMatchTier("word.exe", "C:\\word.exe", "excel*.exe")).toBe(
         MatchTier.NONE
       );
+    });
+
+    it("完整路径带末尾分隔符应命中文件夹本身", () => {
+      const folder =
+        "D:\\project\\shootAbout\\dfhshoot\\dist\\shanghaiyangpu_20261117-084411";
+      const queryWithSlash = `${folder}\\`;
+      expect(
+        getMatchTier("shanghaiyangpu_20261117-084411", folder, queryWithSlash)
+      ).toBe(MatchTier.EXACT);
+      expect(
+        getMatchTier(
+          "build-info.txt",
+          `${folder}\\build-info.txt`,
+          queryWithSlash
+        )
+      ).toBe(MatchTier.PATH);
+    });
+
+    it("完整路径无末尾分隔符仍应命中", () => {
+      const folder = "D:\\project\\foo\\bar";
+      expect(getMatchTier("bar", folder, folder)).toBe(MatchTier.EXACT);
+    });
+
+    it("正斜杠查询应对齐反斜杠结果路径", () => {
+      expect(
+        getMatchTier("bar", "D:\\project\\foo\\bar", "D:/project/foo/bar/")
+      ).toBe(MatchTier.EXACT);
+    });
+
+    it("带引号的完整路径应命中", () => {
+      const folder = "D:\\Program Files\\bar";
+      expect(
+        getMatchTier("bar", folder, `"${folder}"`)
+      ).toBe(MatchTier.EXACT);
+      expect(
+        getMatchTier("readme.txt", `${folder}\\readme.txt`, `"${folder}"`)
+      ).toBe(MatchTier.PATH);
+    });
+  });
+
+  describe("stripTrailingPathSeparators", () => {
+    it("应去掉末尾的反斜杠或斜杠", () => {
+      expect(stripTrailingPathSeparators("D:\\foo\\bar\\")).toBe("D:\\foo\\bar");
+      expect(stripTrailingPathSeparators("D:/foo/bar/")).toBe("D:/foo/bar");
+      expect(stripTrailingPathSeparators("D:\\foo\\bar")).toBe("D:\\foo\\bar");
+    });
+  });
+
+  describe("stripWrappingQuotes / normalizePathForMatch", () => {
+    it("应去掉成对引号", () => {
+      expect(stripWrappingQuotes('"D:\\foo\\bar"')).toBe("D:\\foo\\bar");
+      expect(stripWrappingQuotes("'D:\\foo\\bar'")).toBe("D:\\foo\\bar");
+      expect(stripWrappingQuotes("D:\\foo\\bar")).toBe("D:\\foo\\bar");
+    });
+
+    it("应统一分隔符并去尾缀", () => {
+      expect(normalizePathForMatch('"D:/foo/bar/"')).toBe("d:\\foo\\bar");
+      expect(normalizePathForMatch("D:\\foo\\bar\\")).toBe("d:\\foo\\bar");
     });
   });
 

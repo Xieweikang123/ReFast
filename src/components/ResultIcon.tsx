@@ -295,10 +295,10 @@ export function ResultIcon({
     }
   }
 
-  // 处理插件图标
+  // 处理插件图标（横向网格与应用图标同尺寸，避免细线 SVG 在大方块里显得过小）
   if (result.type === "plugin" && result.plugin) {
     const className = size === "horizontal"
-      ? `${isSelected ? "w-7 h-7" : "w-5 h-5"} ${isSelected 
+      ? `${isSelected ? "w-9 h-9" : "w-7 h-7"} ${isSelected 
           ? (resultStyle === "soft" ? "text-blue-600" : resultStyle === "skeuomorphic" ? "text-[#4a6fa5]" : "text-indigo-600")
           : "text-purple-500"}`
       : `w-5 h-5 ${theme.iconColor(isSelected, "text-purple-500")}`;
@@ -333,7 +333,7 @@ export function ResultIcon({
     );
   }
 
-  // 处理备忘录图标
+  // 处理备忘录图标（便签样式，与 memo_center 插件一致）
   if (result.type === "memo") {
     return (
       <svg className={`w-5 h-5 ${theme.iconColor(isSelected, "text-purple-500")}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -341,7 +341,13 @@ export function ResultIcon({
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeWidth={2}
-          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+          d="M7 3h8l4 4v12a2 2 0 01-2 2H7a2 2 0 01-2-2V5a2 2 0 012-2z"
+        />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M15 3v4h4M9 11h6M9 14.5h6M9 18h4"
         />
       </svg>
     );
@@ -411,6 +417,47 @@ export function ResultIcon({
           strokeLinejoin="round"
           strokeWidth={2}
           d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+        />
+      </svg>
+    );
+  }
+
+  // 即时工具图标
+  if (result.type === "instant") {
+    const color = theme.iconColor(isSelected, "text-teal-500");
+    const kind = result.instantKind;
+    if (kind === "calc" || kind === "unit") {
+      return (
+        <svg className={`w-5 h-5 ${color}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+          />
+        </svg>
+      );
+    }
+    if (kind === "hash") {
+      return (
+        <svg className={`w-5 h-5 ${color}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14"
+          />
+        </svg>
+      );
+    }
+    // guid 默认
+    return (
+      <svg className={`w-5 h-5 ${color}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={2}
+          d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
         />
       </svg>
     );
