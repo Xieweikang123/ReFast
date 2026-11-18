@@ -1,23 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { confirm } from "@tauri-apps/plugin-dialog";
 import { tauriApi } from "../api/tauri";
 import type { MemoItem } from "../types";
+import { useMemoAutosave } from "../hooks/useMemoAutosave";
+import { useMemoFeedback } from "../hooks/useMemoFeedback";
 import { useWindowClose } from "../hooks/useWindowClose";
 import { formatFullDateTime } from "../utils/dateUtils";
-import { hasMemoSubstance } from "../utils/memoPreviewUtils";
+import {
+  filterMemosByQuery,
+  hasMemoSubstance,
+} from "../utils/memoPreviewUtils";
 import {
   buildMemoFileAiPrompt,
   buildMemosRootAiPrompt,
-  isMemoEditDirty,
+  getMemoPrimaryCopyText,
   joinMemoMdPath,
   MEMO_AI_PROMPT_COPIED_MESSAGE,
+  MEMO_DELETE_CONFIRM_MESSAGE,
   MEMO_DISCARD_CONFIRM_MESSAGE,
 } from "../utils/memoUtils";
 import { MemoContentEditor } from "./MemoContentEditor";
 import { MemoEditFooter } from "./MemoEditFooter";
 import { MemoEmptyState } from "./MemoEmptyState";
 import { MemoListItem } from "./MemoListItem";
+import { MemoListSearchBar } from "./MemoListSearchBar";
+import {
+  MemoListError,
+  MemoListLoading,
+  MemoListNoMatch,
+} from "./MemoListStatus";
 import { MemoMarkdown } from "./MemoMarkdown";
 
 const headerBtn =
@@ -34,24 +45,60 @@ export function MemoWindow() {
   const [memoEditContent, setMemoEditContent] = useState("");
   const [isEditingMemo, setIsEditingMemo] = useState(false);
   const [isMemoListMode, setIsMemoListMode] = useState(true);
+  const [listQuery, setListQuery] = useState("");
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+  const { showToast, askConfirm, feedbackNodes } = useMemoFeedback();
 
   const isEditingMemoRef = useRef(isEditingMemo);
-  const memoEditTitleRef = useRef(memoEditTitle);
-  const memoEditContentRef = useRef(memoEditContent);
-  const selectedMemoRef = useRef(selectedMemo);
+  const askConfirmRef = useRef(askConfirm);
   isEditingMemoRef.current = isEditingMemo;
-  memoEditTitleRef.current = memoEditTitle;
-  memoEditContentRef.current = memoEditContent;
-  selectedMemoRef.current = selectedMemo;
+  askConfirmRef.current = askConfirm;
 
-  const loadMemos = async () => {
-    try {
-      const list = await tauriApi.getAllMemos();
-      setMemos(list);
-    } catch (error) {
-      console.error("Failed to load memos:", error);
-    }
-  };
+  const loadMemos = useCallback(
+    async (options?: { quiet?: boolean }) => {
+      const quiet = options?.quiet ?? false;
+      if (!quiet) {
+        setListLoading(true);
+        setListError(null);
+      }
+      try {
+        const list = await tauriApi.getAllMemos();
+        setMemos(list);
+        if (!quiet) setListError(null);
+      } catch (error) {
+        console.error("Failed to load memos:", error);
+        const msg = `加载备忘录失败: ${error}`;
+        if (quiet) {
+          showToast(msg, "error");
+        } else {
+          setListError(msg);
+        }
+      } finally {
+        if (!quiet) setListLoading(false);
+      }
+    },
+    [showToast]
+  );
+
+  const refreshMemosQuiet = useCallback(
+    () => loadMemos({ quiet: true }),
+    [loadMemos]
+  );
+
+  const { statusLabel, isDirty, saveNow, flushOnExit } = useMemoAutosave({
+    enabled: isEditingMemo,
+    selectedMemo,
+    editTitle: memoEditTitle,
+    editContent: memoEditContent,
+    onSelectedMemoChange: setSelectedMemo,
+    onRefreshMemos: refreshMemosQuiet,
+  });
+
+  const isDirtyRef = useRef(isDirty);
+  const flushOnExitRef = useRef(flushOnExit);
+  isDirtyRef.current = isDirty;
+  flushOnExitRef.current = flushOnExit;
 
   const handleClose = useWindowClose();
 
@@ -66,54 +113,48 @@ export function MemoWindow() {
       await tauriApi.revealInFolder(root);
     } catch (error) {
       console.error("打开备忘录目录失败:", error);
-      alert(`打开备忘录目录失败: ${error}`);
+      showToast(`打开备忘录目录失败: ${error}`, "error");
     }
-  }, []);
+  }, [showToast]);
 
   /** 列表顶栏：复制「阅读整个备忘录目录」提示词 */
   const copyMemosRootPrompt = useCallback(async () => {
     try {
       const root = await tauriApi.getMemosRootPath();
       await navigator.clipboard.writeText(buildMemosRootAiPrompt(root));
-      alert(MEMO_AI_PROMPT_COPIED_MESSAGE);
+      showToast(MEMO_AI_PROMPT_COPIED_MESSAGE);
     } catch (error) {
       console.error("复制提示词失败:", error);
-      alert(`复制提示词失败: ${error}`);
+      showToast(`复制提示词失败: ${error}`, "error");
     }
-  }, []);
+  }, [showToast]);
 
   /** 单条：复制「阅读该 .md」提示词 */
-  const copyMemoFilePrompt = useCallback(async (memoId: string) => {
-    try {
-      const root = await tauriApi.getMemosRootPath();
-      const filePath = joinMemoMdPath(root, memoId);
-      await navigator.clipboard.writeText(buildMemoFileAiPrompt(filePath));
-      alert(MEMO_AI_PROMPT_COPIED_MESSAGE);
-    } catch (error) {
-      console.error("复制提示词失败:", error);
-      alert(`复制提示词失败: ${error}`);
-    }
-  }, []);
+  const copyMemoFilePrompt = useCallback(
+    async (memoId: string) => {
+      try {
+        const root = await tauriApi.getMemosRootPath();
+        const filePath = joinMemoMdPath(root, memoId);
+        await navigator.clipboard.writeText(buildMemoFileAiPrompt(filePath));
+        showToast(MEMO_AI_PROMPT_COPIED_MESSAGE);
+      } catch (error) {
+        console.error("复制提示词失败:", error);
+        showToast(`复制提示词失败: ${error}`, "error");
+      }
+    },
+    [showToast]
+  );
 
   const confirmDiscardIfDirty = useCallback(async (): Promise<boolean> => {
     if (!isEditingMemo) return true;
-    const baselineTitle = selectedMemo?.title ?? "";
-    const baselineContent = selectedMemo?.content ?? "";
-    if (
-      !isMemoEditDirty(
-        memoEditTitle,
-        memoEditContent,
-        baselineTitle,
-        baselineContent
-      )
-    ) {
-      return true;
-    }
-    return confirm(MEMO_DISCARD_CONFIRM_MESSAGE, {
+    if (!isDirty()) return true;
+    return askConfirm({
       title: "未保存确认",
-      kind: "warning",
+      message: MEMO_DISCARD_CONFIRM_MESSAGE,
+      confirmText: "丢弃",
+      variant: "warning",
     });
-  }, [isEditingMemo, memoEditTitle, memoEditContent, selectedMemo]);
+  }, [isEditingMemo, isDirty, askConfirm]);
 
   /** 退出编辑回到列表（丢弃本地编辑态） */
   const returnToList = useCallback(() => {
@@ -124,10 +165,12 @@ export function MemoWindow() {
     setIsEditingMemo(false);
   }, []);
 
-  /** 取消编辑：回到列表 */
-  const discardEdit = useCallback(() => {
+  /** 离开编辑：先 flush 有实质内容的改动，再对仍脏的空草稿确认 */
+  const leaveEditToList = useCallback(async () => {
+    await flushOnExit();
+    if (!(await confirmDiscardIfDirty())) return;
     returnToList();
-  }, [returnToList]);
+  }, [flushOnExit, confirmDiscardIfDirty, returnToList]);
 
   /** 打开只读预览（列表「预览」入口） */
   const openPreview = useCallback((memo: MemoItem) => {
@@ -147,61 +190,52 @@ export function MemoWindow() {
     setIsEditingMemo(true);
   }, []);
 
-  /** 保存后留在编辑态，不自动回列表 */
-  const handleSave = useCallback(async () => {
-    try {
-      if (!hasMemoSubstance(memoEditTitle, memoEditContent)) {
-        alert("请输入标题、内容或图片");
-        return;
-      }
-      // 保存成功后留在编辑态，用编辑区内容对齐基线（避免空标题落成「无标题」后误判脏）
-      const saved = selectedMemo
-        ? await tauriApi.updateMemo(
-            selectedMemo.id,
-            memoEditTitle,
-            memoEditContent
-          )
-        : await tauriApi.addMemo(
-            memoEditTitle.trim() || "无标题",
-            memoEditContent
-          );
-      setSelectedMemo({
-        ...saved,
-        title: memoEditTitle,
-        content: memoEditContent,
-      });
-      void loadMemos();
-    } catch (error) {
-      console.error("Failed to save memo:", error);
-      alert(`保存备忘录失败: ${error}`);
-    }
-  }, [selectedMemo, memoEditTitle, memoEditContent]);
-  useEffect(() => {
-    loadMemos();
-  }, []);
+  /** 立即保存并留在编辑态 */
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    return saveNow({ explicit: true });
+  }, [saveNow]);
 
-  // 关闭窗口时：编辑中有未保存改动则确认
+  /** 编辑顶栏「预览」：有未保存改动则先落盘，再切只读预览 */
+  const switchToPreview = useCallback(async () => {
+    if (!hasMemoSubstance(memoEditTitle, memoEditContent) && !selectedMemo) {
+      showToast("请先输入内容", "error");
+      return;
+    }
+    if (isDirty()) {
+      const ok = await saveNow({ explicit: true });
+      if (!ok) return;
+    } else if (!selectedMemo) {
+      showToast("请先输入内容", "error");
+      return;
+    }
+    setIsEditingMemo(false);
+  }, [
+    memoEditTitle,
+    memoEditContent,
+    selectedMemo,
+    isDirty,
+    saveNow,
+    showToast,
+  ]);
+
+  useEffect(() => {
+    void loadMemos();
+  }, [loadMemos]);
+
+  // 关闭窗口时：先 flush，仍脏则确认
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const setup = async () => {
       unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
         if (!isEditingMemoRef.current) return;
-        const baselineTitle = selectedMemoRef.current?.title ?? "";
-        const baselineContent = selectedMemoRef.current?.content ?? "";
-        if (
-          !isMemoEditDirty(
-            memoEditTitleRef.current,
-            memoEditContentRef.current,
-            baselineTitle,
-            baselineContent
-          )
-        ) {
-          return;
-        }
+        await flushOnExitRef.current();
+        if (!isDirtyRef.current()) return;
         event.preventDefault();
-        const ok = await confirm(MEMO_DISCARD_CONFIRM_MESSAGE, {
+        const ok = await askConfirmRef.current({
           title: "未保存确认",
-          kind: "warning",
+          message: MEMO_DISCARD_CONFIRM_MESSAGE,
+          confirmText: "丢弃",
+          variant: "warning",
         });
         if (ok) {
           await getCurrentWindow().destroy();
@@ -233,8 +267,7 @@ export function MemoWindow() {
         if (isMemoListMode) {
           await handleClose();
         } else if (isEditingMemo) {
-          if (!(await confirmDiscardIfDirty())) return;
-          returnToList();
+          await leaveEditToList();
         } else {
           returnToList();
         }
@@ -250,7 +283,7 @@ export function MemoWindow() {
     isEditingMemo,
     handleClose,
     handleSave,
-    confirmDiscardIfDirty,
+    leaveEditToList,
     returnToList,
   ]);
 
@@ -272,26 +305,39 @@ export function MemoWindow() {
       return;
     }
     if (isEditingMemo) {
-      if (!(await confirmDiscardIfDirty())) return;
+      await leaveEditToList();
+      return;
     }
     returnToList();
   };
 
   const handleCancelEdit = async () => {
-    if (!(await confirmDiscardIfDirty())) return;
-    discardEdit();
+    await leaveEditToList();
   };
 
-  const editDirty =
-    isEditingMemo &&
-    isMemoEditDirty(
-      memoEditTitle,
-      memoEditContent,
-      selectedMemo?.title ?? "",
-      selectedMemo?.content ?? ""
-    );
+  const confirmAndDelete = async (memoId: string, afterDelete: () => void) => {
+    const confirmed = await askConfirm({
+      title: "删除确认",
+      message: MEMO_DELETE_CONFIRM_MESSAGE,
+      confirmText: "删除",
+      variant: "danger",
+    });
+    if (!confirmed) return;
+    try {
+      await tauriApi.deleteMemo(memoId);
+      await loadMemos();
+      afterDelete();
+    } catch (error) {
+      console.error("Failed to delete memo:", error);
+      showToast(`删除备忘录失败: ${error}`, "error");
+    }
+  };
+
+  const editDirty = isEditingMemo && isDirty();
 
   const isPreviewMode = !isMemoListMode && !isEditingMemo && !!selectedMemo;
+
+  const filteredMemos = filterMemosByQuery(memos, listQuery);
 
   const pageTitle = isMemoListMode
     ? "备忘录列表"
@@ -307,7 +353,7 @@ export function MemoWindow() {
     : "mx-auto w-full max-w-3xl px-4 sm:px-6";
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-gray-50">
+    <div className="relative flex h-screen w-screen flex-col bg-gray-50">
       <div className="shrink-0 border-b border-gray-200/80 bg-white shadow-sm">
         <div
           className={`${shellClass} flex items-center justify-between gap-3 py-3`}
@@ -316,7 +362,7 @@ export function MemoWindow() {
             <h2 className="truncate text-base font-semibold tracking-tight text-gray-900">
               {pageTitle}
             </h2>
-            {isMemoListMode && memos.length > 0 && (
+            {isMemoListMode && !listLoading && !listError && memos.length > 0 && (
               <p className="mt-0.5 text-[11px] text-gray-400">
                 共 {memos.length} 条
               </p>
@@ -349,6 +395,16 @@ export function MemoWindow() {
                   新建
                 </button>
               </>
+            )}
+            {isEditingMemo && (
+              <button
+                type="button"
+                onClick={() => void switchToPreview()}
+                className={headerBtnSecondary}
+                title="保存后切换到只读预览"
+              >
+                预览
+              </button>
             )}
             {isPreviewMode && selectedMemo && (
               <button
@@ -387,75 +443,87 @@ export function MemoWindow() {
           }`}
         >
         {isMemoListMode ? (
-          memos.length === 0 ? (
+          listLoading && memos.length === 0 ? (
+            <MemoListLoading />
+          ) : listError && memos.length === 0 ? (
+            <MemoListError
+              message={listError}
+              onRetry={() => void loadMemos()}
+            />
+          ) : memos.length === 0 ? (
             <MemoEmptyState />
           ) : (
-            <div className="space-y-2">
-              {memos.map((memo) => (
-                <MemoListItem
-                  key={memo.id}
-                  memo={memo}
-                  thumbSize={48}
-                  onOpen={() => openEdit(memo)}
-                  onPreview={() => openPreview(memo)}
-                  onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
-                  onInsert={async () => {
-                    try {
-                      const textToPaste = memo.title
-                        ? memo.content
-                          ? `${memo.title}\n${memo.content}`
-                          : memo.title
-                        : memo.content || "(无内容)";
-                      await navigator.clipboard.writeText(textToPaste);
-                      await handleHide();
-                      await tauriApi.pasteTextToCursor("");
-                    } catch (error) {
-                      console.error("Failed to paste to cursor:", error);
-                      alert(`插入失败: ${error}`);
-                    }
-                  }}
-                  onCopy={async () => {
-                    try {
-                      await navigator.clipboard.writeText(
-                        memo.title || "(无标题)"
-                      );
-                    } catch (error) {
-                      console.error("Failed to copy to clipboard:", error);
-                      alert(`复制失败: ${error}`);
-                    }
-                  }}
-                  onCopyAndClose={async () => {
-                    try {
-                      await navigator.clipboard.writeText(
-                        memo.title || "(无标题)"
-                      );
-                      await handleClose();
-                    } catch (error) {
-                      console.error("Failed to copy to clipboard:", error);
-                      alert(`复制失败: ${error}`);
-                    }
-                  }}
-                  onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
-                  onDelete={async () => {
-                    const confirmed = await confirm(
-                      "确定要删除这条备忘录吗？",
-                      { title: "删除确认", kind: "warning" }
-                    );
-                    if (!confirmed) return;
-                    try {
-                      await tauriApi.deleteMemo(memo.id);
-                      await loadMemos();
-                      if (selectedMemo?.id === memo.id) {
-                        resetMemoState();
-                      }
-                    } catch (error) {
-                      console.error("Failed to delete memo:", error);
-                      alert(`删除备忘录失败: ${error}`);
-                    }
-                  }}
+            <>
+              <MemoListSearchBar
+                value={listQuery}
+                onChange={setListQuery}
+                matchCount={filteredMemos.length}
+                totalCount={memos.length}
+              />
+              {filteredMemos.length === 0 ? (
+                <MemoListNoMatch
+                  query={listQuery}
+                  onClear={() => setListQuery("")}
                 />
-              ))}
-            </div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredMemos.map((memo) => (
+                    <MemoListItem
+                      key={memo.id}
+                      memo={memo}
+                      thumbSize={48}
+                      onOpen={() => openEdit(memo)}
+                      onPreview={() => openPreview(memo)}
+                      onCopyPrompt={() => copyMemoFilePrompt(memo.id)}
+                      onInsert={async () => {
+                        try {
+                          const textToPaste = memo.title
+                            ? memo.content
+                              ? `${memo.title}\n${memo.content}`
+                              : memo.title
+                            : memo.content || "(无内容)";
+                          await navigator.clipboard.writeText(textToPaste);
+                          await handleHide();
+                          await tauriApi.pasteTextToCursor("");
+                        } catch (error) {
+                          console.error("Failed to paste to cursor:", error);
+                          showToast(`插入失败: ${error}`, "error");
+                        }
+                      }}
+                      onCopy={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            getMemoPrimaryCopyText(memo)
+                          );
+                          showToast("已复制标题");
+                        } catch (error) {
+                          console.error("Failed to copy to clipboard:", error);
+                          showToast(`复制失败: ${error}`, "error");
+                        }
+                      }}
+                      onCopyAndClose={async () => {
+                        try {
+                          await navigator.clipboard.writeText(
+                            getMemoPrimaryCopyText(memo)
+                          );
+                          await handleClose();
+                        } catch (error) {
+                          console.error("Failed to copy to clipboard:", error);
+                          showToast(`复制失败: ${error}`, "error");
+                        }
+                      }}
+                      onDelete={async () => {
+                        await confirmAndDelete(memo.id, () => {
+                          if (selectedMemo?.id === memo.id) {
+                            resetMemoState();
+                          }
+                        });
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           )
         ) : isEditingMemo ? (
           <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -516,28 +584,23 @@ export function MemoWindow() {
       {isEditingMemo && (
         <MemoEditFooter
           dirty={editDirty}
+          statusText={statusLabel}
           contentClassName={shellClass}
-          onSave={handleSave}
+          onSave={async () => {
+            await handleSave();
+          }}
           onCancel={handleCancelEdit}
           showDelete={!!selectedMemo}
           onDelete={async () => {
             if (!selectedMemo) return;
-            const confirmed = await confirm("确定要删除这条备忘录吗？", {
-              title: "删除确认",
-              kind: "warning",
-            });
-            if (!confirmed) return;
-            try {
-              await tauriApi.deleteMemo(selectedMemo.id);
-              await loadMemos();
+            await confirmAndDelete(selectedMemo.id, () => {
               resetMemoState();
-            } catch (error) {
-              console.error("Failed to delete memo:", error);
-              alert(`删除备忘录失败: ${error}`);
-            }
+            });
           }}
         />
       )}
+
+      {feedbackNodes}
     </div>
   );
 }

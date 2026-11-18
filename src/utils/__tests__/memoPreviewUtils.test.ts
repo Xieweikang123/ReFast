@@ -6,6 +6,7 @@ import {
   firstMemoImageRef,
   removeMemoImageRef,
   hasMemoSubstance,
+  filterMemosByQuery,
 } from "../memoPreviewUtils";
 
 describe("memoPreviewUtils", () => {
@@ -55,5 +56,24 @@ describe("memoPreviewUtils", () => {
     expect(hasMemoSubstance("t", "")).toBe(true);
     expect(hasMemoSubstance("", "hello")).toBe(true);
     expect(hasMemoSubstance("", "![x](images/a.png)")).toBe(true);
+  });
+
+  it("按标题或正文过滤", () => {
+    const memos = [
+      { title: "会议纪要", content: "讨论 Q3 目标" },
+      { title: "购物", content: "牛奶 鸡蛋" },
+      { title: "", content: "仅有正文 Hello" },
+    ];
+    expect(filterMemosByQuery(memos, "").length).toBe(3);
+    expect(filterMemosByQuery(memos, "会议").map((m) => m.title)).toEqual([
+      "会议纪要",
+    ]);
+    expect(filterMemosByQuery(memos, "牛奶").map((m) => m.title)).toEqual([
+      "购物",
+    ]);
+    expect(filterMemosByQuery(memos, "hello").map((m) => m.content)).toEqual([
+      "仅有正文 Hello",
+    ]);
+    expect(filterMemosByQuery(memos, "不存在")).toEqual([]);
   });
 });

@@ -11,6 +11,12 @@ export interface EscapeHandlerOptions {
   isMemoModalOpen: boolean | (() => boolean);
   /** 备忘录正在编辑时由 MemoModal 自行处理 ESC（含脏检查） */
   isMemoEditing?: boolean | (() => boolean);
+  /**
+   * 是否处于备忘录列表模式。预览/编辑（非列表）时 ESC 交给 MemoModal
+   *（与 keyboardUtils：`isEditingMemo || !isMemoListMode` 一致）。
+   * 未传入时视为列表模式，保持旧行为。
+   */
+  isMemoListMode?: boolean | (() => boolean);
   showAiAnswer: boolean;
   setIsPluginListModalOpen: (value: boolean) => void;
   resetMemoState: () => void;
@@ -36,9 +42,15 @@ export function handleEscapeKey(
   const isMemoEditing = typeof options.isMemoEditing === 'function'
     ? options.isMemoEditing()
     : !!options.isMemoEditing;
+  const isMemoListMode =
+    typeof options.isMemoListMode === "function"
+      ? options.isMemoListMode()
+      : options.isMemoListMode !== undefined
+        ? !!options.isMemoListMode
+        : true;
 
-  // 编辑中的备忘录交给 MemoModal 处理，此处不拦截
-  if (isMemoModalOpen && isMemoEditing) {
+  // 编辑/预览交给 MemoModal（脏检查或 returnToList）；列表模式才整窗关闭
+  if (isMemoModalOpen && (isMemoEditing || !isMemoListMode)) {
     return false;
   }
 
@@ -54,7 +66,7 @@ export function handleEscapeKey(
     return true;
   }
 
-  // 如果备忘录弹窗已打开，关闭备忘录并隐藏窗口
+  // 如果备忘录弹窗已打开（列表模式），关闭备忘录并隐藏窗口
   if (isMemoModalOpen) {
     options.resetMemoState();
     setTimeout(() => {

@@ -38,4 +38,25 @@ describe("memoUtils", () => {
     expect(isMemoEditDirty("t", "c", "t", "c")).toBe(false);
     expect(isMemoEditDirty("t2", "c", "t", "c")).toBe(true);
   });
+
+  it("joinMemoMdPath：Windows 根路径拼 .md", () => {
+    expect(
+      joinMemoMdPath("C:\\Users\\me\\Documents\\ReFast\\memos", "memo-1")
+    ).toBe("C:\\Users\\me\\Documents\\ReFast\\memos\\memo-1.md");
+    expect(
+      joinMemoMdPath("C:\\Users\\me\\Documents\\ReFast\\memos\\", "memo-1")
+    ).toBe("C:\\Users\\me\\Documents\\ReFast\\memos\\memo-1.md");
+  });
+
+  it("AI 提示词包含绝对路径", () => {
+    const root = "C:\\Users\\me\\Documents\\ReFast\\memos";
+    const rootPrompt = buildMemosRootAiPrompt(root);
+    expect(rootPrompt).toContain(root);
+    expect(rootPrompt).toContain("先列出笔记");
+
+    const file = `${root}\\memo-1.md`;
+    const filePrompt = buildMemoFileAiPrompt(file);
+    expect(filePrompt).toContain(file);
+    expect(filePrompt).toContain("请阅读这篇备忘录");
+  });
 });

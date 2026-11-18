@@ -272,6 +272,8 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const isMemoModalOpenRef = useRef(false);
   // 备忘录编辑中时由 MemoModal 自行处理 ESC（含脏检查）
   const isEditingMemoRef = useRef(false);
+  // 备忘录非列表（预览/编辑）时 ESC 交给 MemoModal，避免整窗隐藏
+  const isMemoListModeRef = useRef(true);
   // 记录应用中心弹窗是否打开，用于全局 ESC 处理时优先关闭应用中心，而不是隐藏整个窗口
   const isPluginListModalOpenRef = useRef(false);
   // 记录备注弹窗是否打开，用于全局 ESC 处理时优先关闭备注弹窗，而不是隐藏整个窗口
@@ -366,6 +368,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   useEffect(() => {
     isEditingMemoRef.current = isEditingMemo;
   }, [isEditingMemo]);
+
+  useEffect(() => {
+    isMemoListModeRef.current = isMemoListMode;
+  }, [isMemoListMode]);
 
   // 组件卸载时清理 Everything 搜索会话
   // 注意：这个 useEffect 需要在 closeSessionSafe 定义之后，所以放在后面
@@ -543,6 +549,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         isPluginListModalOpen: () => isPluginListModalOpenRef.current,
         isMemoModalOpen: () => isMemoModalOpenRef.current,
         isMemoEditing: () => isEditingMemoRef.current,
+        isMemoListMode: () => isMemoListModeRef.current,
         showAiAnswer,
         setIsPluginListModalOpen,
         resetMemoState,
@@ -583,8 +590,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
           closePluginModalAndHide(setIsPluginListModalOpen, hideLauncherAndResetState);
           return;
         }
-        // 如果备忘录弹窗已打开，关闭备忘录并隐藏窗口
+        // 编辑备忘录时不因失焦静默关闭（原生 confirm 抢焦点是坑；站内确认也易与 blur 打架）
         if (isMemoModalOpenRef.current) {
+          if (isEditingMemoRef.current) {
+            return;
+          }
           closeMemoModalAndHide(resetMemoState, hideLauncherAndResetState);
           return;
         }

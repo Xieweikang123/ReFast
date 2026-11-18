@@ -3,6 +3,9 @@ import type { MemoItem } from "../types";
 /** 丢弃未保存备忘录编辑时的确认文案 */
 export const MEMO_DISCARD_CONFIRM_MESSAGE = "有未保存的修改，确定丢弃吗？";
 
+/** 删除备忘录时的确认文案 */
+export const MEMO_DELETE_CONFIRM_MESSAGE = "确定要删除这条备忘录吗？";
+
 /**
  * 编辑中的标题/正文相对基线是否有未保存改动。
  * 新建时基线为空串；编辑时基线为原备忘录的 title/content。

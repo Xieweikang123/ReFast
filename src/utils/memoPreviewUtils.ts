@@ -53,3 +53,17 @@ export function getMemoContentPreview(
   if (stripped.length <= maxLen) return stripped;
   return `${stripped.slice(0, maxLen)}...`;
 }
+
+/** 列表内本地过滤：匹配标题或正文预览（忽略大小写） */
+export function filterMemosByQuery<
+  T extends { title: string; content: string },
+>(memos: T[], query: string): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return memos;
+  return memos.filter((m) => {
+    if (m.title.toLowerCase().includes(q)) return true;
+    const preview = getMemoContentPreview(m.content, 200).toLowerCase();
+    if (preview.includes(q)) return true;
+    return m.content.toLowerCase().includes(q);
+  });
+}
