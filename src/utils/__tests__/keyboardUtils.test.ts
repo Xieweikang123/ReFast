@@ -100,7 +100,8 @@ describe("handleKeyDown 选中锁定", () => {
     });
     await handleKeyDown(options);
     expect(handleLaunch).toHaveBeenCalledTimes(1);
-    expect(handleLaunch).toHaveBeenCalledWith(pinned);
+    // 第二参为 memo Shift+Enter 编辑选项；普通 Enter 传 undefined
+    expect(handleLaunch).toHaveBeenCalledWith(pinned, undefined);
   });
 
   it("非交互期锁定行与当前选中不一致时，Enter 被阻止", async () => {
@@ -125,7 +126,7 @@ describe("handleKeyDown 选中锁定", () => {
     });
     await handleKeyDown(options);
     expect(handleLaunch).toHaveBeenCalledTimes(1);
-    expect(handleLaunch).toHaveBeenCalledWith(target);
+    expect(handleLaunch).toHaveBeenCalledWith(target, undefined);
   });
 
   it("导航键会记录选中锁定", async () => {
