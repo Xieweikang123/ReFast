@@ -44,6 +44,11 @@ import {
   resolveSearchHintKind,
 } from "../utils/searchHintUtils";
 import {
+  resolveClipboardSuggestion,
+  type ClipboardSuggestion,
+} from "../utils/clipboardSuggestionUtils";
+import { resolveBrowserForUrl } from "../utils/browserRules";
+import {
   processPastedPath as processPastedPathUtil,
   handlePaste as handlePasteUtil,
   saveImageToDownloads,
@@ -246,6 +251,11 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   const [launchingAppPath, setLaunchingAppPath] = useState<string | null>(null); // 正在启动的应用路径
   const [pastedImagePath, setPastedImagePath] = useState<string | null>(null); // 粘贴的图片路径
   const [pastedImageDataUrl, setPastedImageDataUrl] = useState<string | null>(null); // 粘贴的图片 base64 data URL
+  /** 剪贴板静默建议（空 query 时展示） */
+  const [clipboardSuggestion, setClipboardSuggestion] =
+    useState<ClipboardSuggestion | null>(null);
+  const clipboardSuggestSeqRef = useRef(0);
+  const refreshClipboardSuggestionRef = useRef<() => void>(() => {});
   const [resultStyle, setResultStyle] = useState<ResultStyle>(() => {
     const cached = localStorage.getItem("result-style");
     if (cached === "soft" || cached === "skeuomorphic" || cached === "compact") {
@@ -419,6 +429,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       setErrorMessage(null); // 清除错误消息
       setPastedImagePath(null); // 清除粘贴的图片路径
       setPastedImageDataUrl(null); // 清除粘贴的图片预览
+      setClipboardSuggestion(null);
       if (options?.resetMemo) {
         resetMemoState();
       }
@@ -436,11 +447,36 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
   }, [query]);
 
   useEffect(() => {
+    if (query.trim()) {
+      setClipboardSuggestion(null);
+    }
+  }, [query]);
+
+  useEffect(() => {
     const keyword = getEffectiveSearchKeyword(query, searchEngines);
     setForceEverythingKeyword((prev) =>
       prev !== null && prev !== keyword ? null : prev
     );
   }, [query, searchEngines]);
+
+  const refreshClipboardSuggestion = useCallback(() => {
+    const currentQuery = inputRef.current?.value ?? "";
+    if (currentQuery.trim()) {
+      setClipboardSuggestion(null);
+      return;
+    }
+    const seq = ++clipboardSuggestSeqRef.current;
+    void resolveClipboardSuggestion(tauriApi).then((hit) => {
+      if (seq !== clipboardSuggestSeqRef.current) return;
+      const q = inputRef.current?.value ?? "";
+      if (q.trim()) {
+        setClipboardSuggestion(null);
+        return;
+      }
+      setClipboardSuggestion(hit);
+    });
+  }, []);
+  refreshClipboardSuggestionRef.current = refreshClipboardSuggestion;
 
   // 插件列表已从 plugins/index.ts 导入
 
@@ -568,6 +604,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     const unlistenFocus = window.onFocusChanged(async ({ payload: focused }) => {
       if (focused) {
         isWindowDraggingRef.current = false;
+        refreshClipboardSuggestionRef.current();
         if (inputRef.current) {
           setTimeout(() => {
             inputRef.current?.focus();
@@ -615,6 +652,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
         const isVisible = await window.isVisible();
         if (isVisible && !lastVisibilityState && inputRef.current) {
           // Only focus when window becomes visible (transition from hidden to visible)
+          refreshClipboardSuggestionRef.current();
           inputRef.current.focus();
           // Only select text if input is empty
           if (!inputRef.current.value) {
@@ -635,6 +673,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
 
     // Also focus on mount
     const focusInput = () => {
+      refreshClipboardSuggestionRef.current();
       if (inputRef.current) {
         inputRef.current.focus();
         inputRef.current.select();
@@ -1480,6 +1519,10 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     });
   }, [setIsDownloadingEverything, setEverythingDownloadProgress, tauriApi]);
 
+  const handleClipboardSuggestionActionRef = useRef<
+    (suggestion: ClipboardSuggestion) => void
+  >(() => {});
+
   const searchHint = useMemo(() => {
     const kind = resolveSearchHintKind({
       query,
@@ -1490,46 +1533,59 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       forceEverythingKeyword,
       everythingTotalCount,
     });
-    if (!kind) return null;
-    switch (kind) {
-      case "engine-local-hidden":
-        return {
-          message: "已进入网页搜索，本地结果已隐藏",
-          actionLabel: "仍搜本地",
-          testId: "include-local-with-search-engine-button",
-          onAction: handleIncludeLocalWithSearchEngine,
-        };
-      case "everything-skipped":
-        return {
-          message: "单字未搜索磁盘文件，避免结果过多",
-          actionLabel: `搜索 ${everythingLabel}`,
-          testId: "search-everything-now-button",
-          onAction: handleSearchEverythingNow,
-        };
-      case "everything-unavailable": {
-        const canStart = everythingError?.startsWith("SERVICE_NOT_RUNNING");
-        return {
-          message: `未搜索磁盘文件（${everythingLabel} 未运行）`,
-          actionLabel: canStart ? "启动" : "下载",
-          testId: "everything-unavailable-action-button",
-          onAction: () => {
-            void (canStart ? handleStartEverything() : handleDownloadEverything());
-          },
-        };
+    if (kind) {
+      switch (kind) {
+        case "engine-local-hidden":
+          return {
+            message: "已进入网页搜索，本地结果已隐藏",
+            actionLabel: "仍搜本地",
+            testId: "include-local-with-search-engine-button",
+            onAction: handleIncludeLocalWithSearchEngine,
+          };
+        case "everything-skipped":
+          return {
+            message: "单字未搜索磁盘文件，避免结果过多",
+            actionLabel: `搜索 ${everythingLabel}`,
+            testId: "search-everything-now-button",
+            onAction: handleSearchEverythingNow,
+          };
+        case "everything-unavailable": {
+          const canStart = everythingError?.startsWith("SERVICE_NOT_RUNNING");
+          return {
+            message: `未搜索磁盘文件（${everythingLabel} 未运行）`,
+            actionLabel: canStart ? "启动" : "下载",
+            testId: "everything-unavailable-action-button",
+            onAction: () => {
+              void (canStart ? handleStartEverything() : handleDownloadEverything());
+            },
+          };
+        }
+        case "everything-truncated":
+          return {
+            message: `磁盘共 ${(everythingTotalCount ?? 0).toLocaleString()} 条，启动器只展示前 ${EVERYTHING_LAUNCHER_MERGE_LIMIT}`,
+            actionLabel: "打开完整搜索",
+            testId: "open-everything-window-button",
+            placement: "bottom" as const,
+            onAction: () => {
+              void handleOpenEverythingWindow();
+            },
+          };
+        default:
+          break;
       }
-      case "everything-truncated":
-        return {
-          message: `磁盘共 ${(everythingTotalCount ?? 0).toLocaleString()} 条，启动器只展示前 ${EVERYTHING_LAUNCHER_MERGE_LIMIT}`,
-          actionLabel: "打开完整搜索",
-          testId: "open-everything-window-button",
-          placement: "bottom" as const,
-          onAction: () => {
-            void handleOpenEverythingWindow();
-          },
-        };
-      default:
-        return null;
     }
+    if (!query.trim() && clipboardSuggestion) {
+      const suggestion = clipboardSuggestion;
+      return {
+        message: suggestion.message,
+        actionLabel: suggestion.actionLabel,
+        testId: suggestion.testId,
+        onAction: () => {
+          handleClipboardSuggestionActionRef.current(suggestion);
+        },
+      };
+    }
+    return null;
   }, [
     query,
     searchEngines,
@@ -1540,6 +1596,7 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
     everythingTotalCount,
     everythingLabel,
     everythingError,
+    clipboardSuggestion,
     handleIncludeLocalWithSearchEngine,
     handleSearchEverythingNow,
     handleStartEverything,
@@ -1784,6 +1841,64 @@ export function LauncherWindow({ updateInfo }: LauncherWindowProps) {
       tauriApi,
     ]
   );
+
+  const handleClipboardSuggestionAction = useCallback(
+    async (suggestion: ClipboardSuggestion) => {
+      try {
+        switch (suggestion.kind) {
+          case "path":
+            await processPastedPath(suggestion.raw);
+            setClipboardSuggestion(null);
+            break;
+          case "url": {
+            const browser = resolveBrowserForUrl(suggestion.raw, browserRules);
+            if (browser !== "default") {
+              await tauriApi.openUrlWithBrowser(suggestion.raw, browser);
+            } else {
+              await tauriApi.openUrl(suggestion.raw);
+            }
+            setClipboardSuggestion(null);
+            await hideLauncherAndResetState();
+            break;
+          }
+          case "json":
+            await tauriApi.showJsonFormatterWindow(suggestion.raw);
+            setClipboardSuggestion(null);
+            await hideLauncherAndResetState();
+            break;
+          case "calc":
+          case "unit":
+            setQueryFromInput(suggestion.raw);
+            setClipboardSuggestion(null);
+            break;
+          case "hex":
+            await tauriApi.showHexConverterWindow();
+            setClipboardSuggestion(null);
+            await hideLauncherAndResetState();
+            break;
+          case "calc_pad":
+            await tauriApi.showCalculatorPadWindow(suggestion.raw);
+            setClipboardSuggestion(null);
+            await hideLauncherAndResetState();
+            break;
+          default:
+            break;
+        }
+      } catch (error) {
+        console.error("Clipboard suggestion action failed:", error);
+        setErrorMessage(
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    },
+    [
+      processPastedPath,
+      browserRules,
+      setQueryFromInput,
+      hideLauncherAndResetState,
+    ]
+  );
+  handleClipboardSuggestionActionRef.current = handleClipboardSuggestionAction;
 
   const handlePaste = useCallback(
     async (e: React.ClipboardEvent) => {
